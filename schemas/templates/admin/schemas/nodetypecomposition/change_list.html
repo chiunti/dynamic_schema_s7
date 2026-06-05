@@ -1,0 +1,31 @@
+{% extends "admin/change_list.html" %}
+{% load i18n static %}
+
+{% block object-tools-items %}
+  <li>
+    {% if current_scope %}
+      <a href="editor/?scope={{ current_scope|urlencode }}" class="addlink">Open editor</a>
+    {% else %}
+      <span class="addlink" style="opacity:.4;cursor:not-allowed;" title="Select a schema type tab first">Open editor</span>
+    {% endif %}
+  </li>
+  {{ block.super }}
+{% endblock %}
+
+{% block content %}
+
+<div class="tabs-container">
+  <div class="tabs">
+    {% for tab in composition_tabs %}
+      <a href="{{ request.path }}?scope={{ tab.scope|urlencode }}"
+         class="tab{% if current_scope == tab.scope %} active{% endif %}">
+        {{ tab.label }}
+      </a>
+    {% endfor %}
+  </div>
+</div>
+
+<link rel="stylesheet" type="text/css" href="{% static 'admin/css/buildstate_tabs.css' %}?v=20260602001">
+
+{{ block.super }}
+{% endblock %}

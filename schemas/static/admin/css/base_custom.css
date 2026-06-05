@@ -1,0 +1,81 @@
+/* Base Admin Site Custom Styles */
+tr.current-model {
+  background-color: #e3f2fd !important;
+}
+tr.current-model a {
+  font-weight: bold;
+  color: #1976d2 !important;
+}
+
+/* Active filter highlight */
+#changelist-filter li.selected {
+  background-color: #e3f2fd;
+  border-radius: 4px;
+}
+#changelist-filter li.selected a {
+  font-weight: bold;
+  color: #1565c0 !important;
+  padding-left: 8px;
+  border-left: 3px solid #1976d2;
+  display: block;
+}
+
+/* S7 Subsection headers */
+tr.s7-subsection-header {
+  background-color: #f5f5f5;
+  border-top: 2px solid #ddd;
+}
+tr.s7-subsection-header th.s7-subsection-title {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Indent catalog and node model rows within S7 section */
+tr.s7-catalog-item th,
+tr.s7-node-item th {
+  padding-left: 24px !important;
+}
+
+/* Admin logo styling */
+.admin-logo {
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+}
+
+.admin-logo img {
+  height: 50px;
+  width: auto;
+}
+
+.admin-title {
+  margin-left: 15px;
+  font-size: 18px;
+  font-weight: bold;
+  color: #fff;
+}
+
+/* Login logo styling */
+.login-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 30px;
+}
+
+.login-logo img {
+  height: 80px;
+  width: auto;
+}
+
+.login-logo h1 {
+  margin-top: 15px;
+  font-size: 24px;
+  font-weight: bold;
+  color: #fff;
+}

@@ -1,0 +1,99 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' 'schemas' %}">Schemas</a>
+    &rsaquo; <a href="{% url 'admin:schemas_schema_changelist' %}">Schemas</a>
+    &rsaquo; Import Schema
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div id="error-message" class="errorlist" style="display: none; margin-bottom: 20px; padding: 10px; background: #fff2f0; border: 1px solid #ffccc7; border-radius: 4px;"></div>
+
+    <form method="post" action="" id="import-schema-form" data-changelist-url="{% url 'admin:schemas_schema_changelist' %}">
+        {% csrf_token %}
+
+        <div class="form-row">
+            <div>
+                <label for="id_schema_text">Schema JSON:</label>
+                <textarea name="schema_text" id="id_schema_text" rows="20" cols="80" required></textarea>
+                <p class="help">Paste your schema JSON here.</p>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div>
+                <label for="id_schema_type">Schema Type:</label>
+                <select name="schema_type" id="id_schema_type" required>
+                    <option value="">---------</option>
+                    {% for rt in root_types %}
+                    <option value="{{ rt.scope }}">{{ rt.label }}</option>
+                    {% endfor %}
+                </select>
+                <p class="help">Select the root node type for this schema.</p>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div>
+                <label for="id_project_id">Project:</label>
+                <select name="project_id" id="id_project_id" required>
+                    <option value="">---------</option>
+                    {% for project in projects %}
+                    <option value="{{ project.id }}">{{ project.name }}</option>
+                    {% endfor %}
+                </select>
+                <p class="help">Every schema must belong to a project.</p>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div>
+                <label for="id_schema_key">Key (optional):</label>
+                <input type="text" name="schema_key" id="id_schema_key" />
+                <p class="help">Leave empty to use the 'id' field from the schema.</p>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div>
+                <label for="id_schema_version">Version (optional):</label>
+                <input type="text" name="schema_version" id="id_schema_version" />
+                <p class="help">Leave empty to use '1' as default.</p>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div>
+                <label for="id_schema_status">Status:</label>
+                <select name="schema_status" id="id_schema_status">
+                    <option value="draft" selected>Draft</option>
+                    <option value="published">Published</option>
+                    <option value="archived">Archived</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div>
+                <label>
+                    <input type="checkbox" name="overwrite" value="true" id="id_overwrite" />
+                    Overwrite if exists
+                </label>
+                <p class="help">Check this box to replace an existing schema with the same key and version.</p>
+            </div>
+        </div>
+
+        <div class="submit-row">
+            <input type="submit" value="Import Schema" class="default" />
+            <a href="{% url 'admin:schemas_schema_changelist' %}" class="button">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script src="{% static 'schemas/js/import_schema.js' %}"></script>
+{% endblock %}

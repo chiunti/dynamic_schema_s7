@@ -1,0 +1,21 @@
+{% extends "admin/change_list.html" %}
+{% load i18n static %}
+
+{% block content %}
+
+<!-- Dynamic Node Type Tabs -->
+<div class="tabs-container">
+  <div class="tabs">
+    {% for tab in node_type_tabs %}
+      <a href="{{ request.path }}?node_type={{ tab.value|urlencode }}"
+         class="tab{% if current_node_type == tab.value %} active{% endif %}">
+        {{ tab.label }}
+      </a>
+    {% endfor %}
+  </div>
+</div>
+
+<link rel="stylesheet" type="text/css" href="{% static "admin/css/buildstate_tabs.css" %}?v=20260602002">
+
+{{ block.super }}
+{% endblock %}

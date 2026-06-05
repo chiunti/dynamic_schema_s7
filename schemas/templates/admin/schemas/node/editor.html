@@ -1,0 +1,103 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block content %}
+<link rel="stylesheet" type="text/css" href="{% static "admin/css/node_editor.css" %}?v=20260602020">
+<div class="s7-row mb-12">
+  <strong>Node:</strong>
+  <label>node_id <input id="node_id" type="text" placeholder="UUID" /></label>
+  <span class="s7-muted">o</span>
+  <label>key <input id="key" type="text" placeholder="e.g., MyForm" /></label>
+  <label>version <input id="version" type="text" placeholder="e.g., v1" /></label>
+  <button class="button" id="load_tree">Load</button>
+</div>
+
+<div class="s7-editor">
+  <div class="s7-panel s7-panel-left">
+    <h2>Tree</h2>
+
+    <div class="s7-actions">
+      <label>
+        Add node:
+        <select id="create_node_type" disabled></select>
+      </label>
+    </div>
+
+    <div class="s7-actions hidden" id="section_key_row">
+      <label>
+        Section
+        <select id="section_key_select">
+          <!-- Options loaded dynamically from NodeTypeComposition -->
+        </select>
+      </label>
+    </div>
+
+    <div class="s7-actions hidden" id="variant_row">
+      <label>
+        Type
+        <select id="variant_select">
+          <!-- Options loaded dynamically from NodeTypeVariant -->
+        </select>
+      </label>
+    </div>
+
+    <div class="s7-actions">
+      <label>
+        name
+        <input id="create_key" type="text" placeholder="auto" disabled />
+      </label>
+      <button class="button" id="btn_create" disabled>Add</button>
+    </div>
+
+    <div class="s7-actions s7-actions-right">
+      <button class="button" id="btn_refresh" title="Refresh">↻</button>
+      <button class="button" id="btn_up" disabled title="Move Up">⬆</button>
+      <button class="button" id="btn_down" disabled title="Move Down">⬇</button>
+      <button class="button" id="btn_delete" disabled title="Delete subtree">🗑</button>
+    </div>
+
+    <div class="s7-tree" id="tree"></div>
+  </div>
+
+  <div class="s7-resizer" id="resizer"></div>
+
+  <div class="s7-panel s7-panel-right">
+    <h2>Properties</h2>
+    <div class="s7-row mb-8">
+      <strong id="sel_title">(select a node)</strong>
+    </div>
+
+    <div class="s7-row mb-8">
+      <label>
+        Name
+        <input id="node_name" type="text" />
+      </label>
+      <button class="button" id="btn_save_key" disabled>Save Name</button>
+    </div>
+
+    <div class="s7-row mb-8 hidden" id="field_type_row">
+      <label>
+        Type
+        <select id="field_type" disabled></select>
+      </label>
+      <button class="button" id="btn_save_type" disabled>Save Type</button>
+    </div>
+
+    <div class="s7-props" id="props"></div>
+
+    <div class="s7-actions">
+      <button class="button" id="btn_save_props" disabled>Save Properties</button>
+    </div>
+  </div>
+</div>
+
+<div class="s7-json-panel">
+  <h3>Tree JSON</h3>
+  <div id="json_warnings" class="s7-json-warnings"></div>
+  <div class="s7-json-wrapper">
+    <div class="s7-json-content" id="json_output">{}</div>
+  </div>
+</div>
+
+<script src="{% static "admin/js/node_editor.js" %}?v=20260602020"></script>
+{% endblock %}

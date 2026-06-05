@@ -1,0 +1,90 @@
+/* BuildState Tabs Styles */
+.tabs-container {
+  margin-bottom: 20px;
+  background: #f8f8f8;
+  padding: 10px 10px 0 10px;
+  border-bottom: 2px solid #ccc;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  padding: 8px 16px;
+  background-color: #fff;
+  color: #333 !important;
+  text-decoration: none !important;
+  border-radius: 4px 4px 0 0;
+  font-weight: normal;
+  display: inline-block;
+  border: 1px solid #ccc;
+  border-bottom: 1px solid #ccc;
+  margin-bottom: -2px;
+}
+
+.tab:hover {
+  background-color: #f0f0f0;
+  color: #000 !important;
+}
+
+.tab.active {
+  background-color: #417690;
+  color: #fff !important;
+  font-weight: bold;
+  border-color: #264b5d;
+  border-bottom: 1px solid #417690;
+}
+
+/* Schema type badge */
+.s7-schema-type {
+  font-size: 0.85em;
+  color: #666;
+}
+
+/* Warning link in changelist */
+.s7-warning-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.s7-warning-link:hover {
+  text-decoration: underline;
+}
+
+.s7-warning-link:hover span:first-child {
+  color: #900 !important;
+}
+
+/* Disabled button with lock icon */
+.button[disabled] {
+  background-color: #e0e0e0 !important;
+  color: #666 !important;
+}
+
+/* Narrow filter sidebar - half width */
+#changelist-filter {
+  width: 180px !important;
+  min-width: 180px !important;
+  max-width: 180px !important;
+}
+
+/* Adjust changelist content to use remaining space */
+#changelist {
+  display: flex;
+}
+
+#changelist-form {
+  flex: 1;
+}
+
+/* Make filter details more compact */
+#changelist-filter details ul {
+  padding-left: 10px;
+}
+
+#changelist-filter details summary {
+  font-size: 12px;
+}

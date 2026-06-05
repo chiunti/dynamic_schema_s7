@@ -1,0 +1,15 @@
+{% extends "admin/login.html" %}
+{% load static %}
+
+{% block extrahead %}
+{{ block.super }}
+<link rel="stylesheet" type="text/css" href="{% static "admin/css/base_custom.css" %}">
+{% endblock %}
+
+{% block form %}
+<div class="login-logo">
+    <img src="{% static 'img/s7-logo.png' %}" alt="Structure Seven">
+    <h1>Structure Seven</h1>
+</div>
+{{ block.super }}
+{% endblock %}

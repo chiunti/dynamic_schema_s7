@@ -1,0 +1,183 @@
+{% load i18n %}
+
+{% if app_list %}
+  <div class="app-list">
+    {% for app in app_list %}
+      {% if app.app_label == "schemas" %}
+
+        <!-- Tenancy -->
+        <div class="app-schemas-tenancy module">
+          <table>
+            <caption>
+              <span class="section">Tenancy</span>
+            </caption>
+            {% for model in app.models %}
+              {% if model.object_name == "Organization" or model.object_name == "OrganizationMember" or model.object_name == "Project" %}
+                <tr class="model-{{ model.object_name|lower }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </table>
+        </div>
+
+        <!-- Structure Seven (S7) -->
+        <div class="app-schemas module">
+          <table>
+            <caption>
+              <span class="section">Structure Seven Core</span>
+            </caption>
+            <!-- Catalogs -->
+            <tr class="s7-subsection-header">
+              <th colspan="3" class="s7-subsection-title">Catalogs (Schema/Metadata)</th>
+            </tr>
+            {% for model in app.models %}
+              {% if model.object_name == "DataType" %}
+                <tr class="model-{{ model.object_name|lower }} s7-catalog-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            {% for model in app.models %}
+              {% if model.object_name == "NodeType" %}
+                <tr class="model-{{ model.object_name|lower }} s7-catalog-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            {% for model in app.models %}
+              {% if model.object_name == "NodeTypeVariant" %}
+                <tr class="model-{{ model.object_name|lower }} s7-catalog-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            {% for model in app.models %}
+              {% if model.object_name == "Domain" %}
+                <tr class="model-{{ model.object_name|lower }} s7-catalog-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            {% for model in app.models %}
+              {% if model.object_name == "DomainItem" %}
+                <tr class="model-{{ model.object_name|lower }} s7-catalog-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            {% for model in app.models %}
+              {% if model.object_name == "AttributeDef" %}
+                <tr class="model-{{ model.object_name|lower }} s7-catalog-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            <!-- Nodes -->
+            <tr class="s7-subsection-header">
+              <th colspan="3" class="s7-subsection-title">Nodes (Data/Instances)</th>
+            </tr>
+            {% for model in app.models %}
+              {% if model.object_name == "Node" %}
+                <tr class="model-{{ model.object_name|lower }} s7-node-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            {% for model in app.models %}
+              {% if model.object_name == "NodeAttribute" %}
+                <tr class="model-{{ model.object_name|lower }} s7-node-item{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </table>
+        </div>
+
+        <!-- Schemas -->
+        <div class="app-schemas module">
+          <table>
+            <caption>
+              <span class="section">Schemas</span>
+            </caption>
+            <tr class="model-schema{% if '/schemas/schema/' in request.path %} current-model{% endif %}">
+              <th scope="row"><a href="{% url 'admin:schemas_schema_changelist' %}"{% if '/schemas/schema/' in request.path %} aria-current="page"{% endif %}>Schema Definitions</a></th>
+              <td><a href="{% url 'admin:schemas_schema_add' %}" class="addlink">{% translate 'Add' %}</a></td>
+              <td></td>
+            </tr>
+            {% for model in app.models %}
+              {% if model.object_name == "NodeTypeComposition" %}
+                <tr class="model-nodetypecomposition{% if '/schemas/nodetypecomposition/' in request.path %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if '/schemas/nodetypecomposition/' in request.path %} aria-current="page"{% endif %}>Node Compositions</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+            <tr class="model-componentproperties{% if 'component-properties' in request.path %} current-model{% endif %}">
+              <th scope="row"><a href="{% url 'admin:schemas_component_properties' %}"{% if 'component-properties' in request.path %} aria-current="page"{% endif %}>Component Properties</a></th>
+              <td></td>
+              <td></td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- Build -->
+        <div class="app-schemas-build module">
+          <table>
+            <caption>
+              <span class="section">Build</span>
+            </caption>
+            {% for model in app.models %}
+              {% if model.object_name == "BuildState" or model.object_name == "SchemaCache" %}
+                <tr class="model-{{ model.object_name|lower }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                  <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
+                  <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                  <td></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </table>
+        </div>
+
+      {% else %}
+        <div class="app-{{ app.app_label }} module">
+          <table>
+            <caption>
+              <a href="{{ app.app_url }}" class="section" title="{% blocktranslate with name=app.name %}Models in the {{ name }} application{% endblocktranslate %}">{{ app.name }}</a>
+            </caption>
+            {% for model in app.models %}
+              <tr class="model-{{ model.object_name|lower }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
+                <th scope="row">
+                  {% if model.admin_url %}<a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a>{% else %}{{ model.name }}{% endif %}
+                </th>
+                <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>
+                <td>{% if model.admin_url and model.view_only %}<a href="{{ model.admin_url }}" class="viewlink">{% translate 'View' %}</a>{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+{% else %}
+  <p>{% translate "You don't have permission to view or edit anything." %}</p>
+{% endif %}

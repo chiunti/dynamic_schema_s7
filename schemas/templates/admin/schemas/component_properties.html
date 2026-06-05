@@ -1,0 +1,46 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block content %}
+<link rel="stylesheet" type="text/css" href="{% static 'admin/css/buildstate_tabs.css' %}?v=3">
+<link rel="stylesheet" type="text/css" href="{% static 'admin/css/component_properties.css' %}">
+
+<div class="tabs-container">
+  <div class="tabs">
+    {% for tab in scope_tabs %}
+      <a href="?scope={{ tab.scope|urlencode }}"
+         class="tab{% if current_scope == tab.scope %} active{% endif %}">
+        {{ tab.label }}
+      </a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if current_scope %}
+<p class="s7-muted" style="margin-top:1em;">
+  Select a variant (component type) on the left to view its attribute definitions.
+</p>
+
+<div class="s7-comp-editor">
+  <div class="s7-comp-panel s7-comp-panel-narrow">
+    <h2>Variants</h2>
+    <ul class="s7-comp-list" id="variant_list"></ul>
+  </div>
+
+  <div class="s7-comp-panel">
+    <h2>Attribute Defs for: <span id="selected_variant_label" class="text-muted">(none selected)</span></h2>
+    <div id="attrs_container"><p class="s7-muted">Select a variant on the left.</p></div>
+  </div>
+</div>
+
+<div id="page-config"
+  data-url-variants="{% url 'schemas_api_variants_by_scope' %}?scope={{ current_scope|urlencode }}"
+  data-url-attributes-by-variant="{% url 'schemas_api_attributes_by_variant' variant_key='__VK__' %}"
+></div>
+<script src="{% static 'admin/js/component_properties.js' %}?v=1"></script>
+
+{% else %}
+  <p style="margin-top:2em;color:#666;">Select a schema type tab to manage its component properties.</p>
+{% endif %}
+
+{% endblock %}

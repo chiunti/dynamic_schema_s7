@@ -1,0 +1,27 @@
+{% extends "admin/change_list.html" %}
+{% load i18n static %}
+
+{% block object-tools-items %}
+  {{ block.super }}
+  <li>
+    <a href="{% url 'admin:schemas_schema_import' %}" class="button">Import Schema</a>
+  </li>
+{% endblock %}
+
+{% block content %}
+
+<div class="tabs-container">
+  <div class="tabs">
+    {% for tab in schema_tabs %}
+      <a href="{{ request.path }}?scope={{ tab.scope|urlencode }}"
+         class="tab{% if current_scope == tab.scope %} active{% endif %}">
+        {{ tab.label }}
+      </a>
+    {% endfor %}
+  </div>
+</div>
+
+<link rel="stylesheet" type="text/css" href="{% static 'admin/css/buildstate_tabs.css' %}?v=20260602001">
+
+{{ block.super }}
+{% endblock %}

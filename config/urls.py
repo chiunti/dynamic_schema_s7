@@ -22,7 +22,6 @@ from django.db import connection
 
 from schemas.admin_api_views import (
     api_component_types,
-    api_attribute_defs,
     api_component_properties,
     api_save_component_properties,
     api_variants_by_scope,
@@ -49,7 +48,6 @@ urlpatterns = [
     path('health/', health_check, name='health_check'),
     # Global API endpoints - must come BEFORE admin URLs
     re_path(r'^admin/schemas/api/component-types/$', api_component_types, name="schemas_api_component_types"),
-    re_path(r'^admin/schemas/api/attribute-defs/$', api_attribute_defs, name="schemas_api_attribute_defs"),
     re_path(r'^admin/schemas/api/component-properties/(?P<component_type>[^/]+)/$', api_component_properties, name="schemas_api_component_properties"),
     re_path(r'^admin/schemas/api/component-properties/(?P<component_type>[^/]+)/save/$', api_save_component_properties, name="schemas_api_save_component_properties"),
     re_path(r'^admin/schemas/api/variants/$', api_variants_by_scope, name="schemas_api_variants_by_scope"),

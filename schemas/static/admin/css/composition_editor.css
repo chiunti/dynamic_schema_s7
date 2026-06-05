@@ -1,0 +1,68 @@
+/* Composition Editor Styles */
+.s7-editor { display: flex; gap: 16px; }
+.s7-panel { flex: 1; border: 1px solid var(--hairline-color, #ddd); border-radius: 6px; padding: 12px; }
+.s7-panel h2 { margin-top: 0; }
+.s7-tree { max-height: 70vh; overflow: auto; }
+.s7-props { max-height: 70vh; overflow: auto; }
+.s7-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.s7-table { width: 100%; border-collapse: collapse; }
+.s7-table th, .s7-table td { border-bottom: 1px solid var(--hairline-color, #eee); padding: 6px; vertical-align: top; }
+.s7-selected { background: rgba(25, 118, 210, 0.08); }
+.s7-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Utility classes */
+.mb-8 { margin-bottom: 8px; }
+
+/* Tree lines */
+.s7-tree ul, .s7-tree li {
+  list-style: none !important;
+  margin: 0;
+  padding: 0;
+}
+.s7-tree-children {
+  list-style: none !important;
+  margin: 0;
+  padding-left: 0;
+}
+.s7-tree-children > li {
+  list-style: none !important;
+  position: relative;
+  padding-left: 20px;
+  margin: 0;
+}
+/* Vertical line: runs from top through the row center, continues down for non-last items */
+.s7-tree-children > li::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #ccc;
+}
+/* Last sibling stops vertical line at row center (14px = half of 28px row height) */
+.s7-tree-children > li.s7-last::before {
+  bottom: calc(100% - 14px);
+}
+/* Horizontal elbow: always at 14px from top (center of 28px row) */
+.s7-tree-children > li::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 14px;
+  width: 10px;
+  height: 1px;
+  background: #ccc;
+}
+.s7-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.s7-tree-row:hover { background: rgba(0,0,0,0.04); }
+.s7-tree-row.s7-selected { background: rgba(25, 118, 210, 0.08); }

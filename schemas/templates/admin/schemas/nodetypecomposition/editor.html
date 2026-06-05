@@ -1,0 +1,66 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block content %}
+<link rel="stylesheet" type="text/css" href="{% static "admin/css/composition_editor.css" %}">
+
+<div class="s7-editor">
+  <div class="s7-panel">
+    <h2>Type Tree</h2>
+
+    <div class="s7-actions">
+      <button class="button" id="btn_refresh">Refresh</button>
+    </div>
+
+    <div class="s7-actions">
+      <label>
+        Parent type
+        <select id="parent_type"></select>
+      </label>
+      <label>
+        Child type
+        <select id="child_type"></select>
+      </label>
+      <button class="button" id="btn_create">Create relationship</button>
+    </div>
+
+    <div class="s7-tree" id="tree"></div>
+  </div>
+
+  <div class="s7-panel">
+    <h2>Properties</h2>
+    <div class="s7-row mb-8">
+      <strong id="sel_title">(select a relationship)</strong>
+    </div>
+
+    <div class="s7-props" id="props">
+      <table class="s7-table">
+        <tbody>
+          <tr>
+            <th>collection_key</th>
+            <td><input id="collection_key" type="text" disabled /></td>
+          </tr>
+          <tr>
+            <th>min_children</th>
+            <td><input id="min_children" type="number" disabled /></td>
+          </tr>
+          <tr>
+            <th>max_children</th>
+            <td><input id="max_children" type="number" disabled /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="s7-actions">
+      <button class="button" id="btn_save" disabled>Save</button>
+      <button class="button" id="btn_delete" disabled>Delete relationship</button>
+    </div>
+  </div>
+</div>
+<script>
+  window.treeMode = '{{ tree_mode|default:"compositions" }}';
+  window.currentScope = '{{ current_scope|default:"" }}';
+</script>
+<script src="{% static "admin/js/composition_editor.js" %}?v=2"></script>
+{% endblock %}

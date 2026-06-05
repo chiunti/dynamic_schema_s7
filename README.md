@@ -119,6 +119,100 @@ The project follows **Clean Architecture** principles with clear separation of c
 | **Services** | Orchestration, business rules, transactions | Direct DB access, view concerns |
 | **Views** | HTTP handling, serialization, auth | Repository access, business logic |
 
+### EAV Pattern & s7 Schema Architecture
+
+The system implements an **Entity-Attribute-Value (EAV)** pattern to enable dynamic schema definitions without database schema changes. This architecture is encapsulated in the PostgreSQL `s7` schema for isolation and performance.
+
+#### EAV Core Concepts
+
+**Traditional tables vs EAV:**
+```
+Traditional (fixed schema):
+┌─────────────┬──────────┬─────────────┬──────────┐
+│ id          │ name     │ email       │ age      │
+├─────────────┼──────────┼─────────────┼──────────┤
+│ 1           │ John     │ john@...    │ 30       │
+└─────────────┴──────────┴─────────────┴──────────┘
+
+EAV (dynamic schema):
+┌─────────────┬─────────────┬─────────────┬──────────────┐
+│ Node (Entity)│ AttributeDef│ NodeAttribute│ Value Store  │
+├─────────────┼─────────────┼─────────────┼──────────────┤
+│ id          │ id          │ id          │ value_string  │
+│ node_type   │ json_key    │ node        │ value_number  │
+│ key         │ data_type   │ attribute_def│ value_json   │
+│ version     │ ...         │ ...         │ ...          │
+└─────────────┴─────────────┴─────────────┴──────────────┘
+```
+
+#### EAV Implementation Layers
+
+| Table | Purpose | Key Fields |
+|-------|---------|------------|
+| `schema_node_types` | Defines entity types (templates) | `name`, `is_container` |
+| `schema_nodes` | Entity instances (actual data) | `node_type`, `key`, `version`, `parent` |
+| `schema_attribute_defs` | Attribute definitions (metadata) | `json_key`, `data_type`, `domain` |
+| `schema_node_attributes` | EAV values (dynamic data) | `node`, `attribute_def`, `value_*` |
+
+#### s7 Schema Purpose
+
+The `s7` PostgreSQL schema provides:
+
+1. **Isolation**: Business logic separated from Django's public schema
+2. **Performance**: Pre-computed views and cached JSON schemas
+3. **Integrity**: Database-level constraints and triggers
+4. **Atomicity**: PL/pgSQL functions for complex operations
+
+#### Origin of "Structure Seven" (S7)
+
+The name "Structure Seven" (S7) refers to the **seven core components** that form the foundation of the dynamic schema system:
+
+| # | Component | Purpose | Table |
+|---|-----------|---------|-------|
+| 1 | **DataType** | Defines data types (string, number, boolean, json, etc.) | `schema_data_types` |
+| 2 | **NodeType** | Defines entity types/templates (containers, leaves) | `schema_node_types` |
+| 3 | **NodeTypeVariant** | Defines variants of node types (e.g., text_field, number_field) | `schema_node_type_variants` |
+| 4 | **Domain** | Defines enumerated value sets for constraints (with DomainItem values) | `schema_domains` |
+| 5 | **AttributeDef** | Defines attributes/properties for node types | `schema_attribute_defs` |
+| 6 | **Node** | Actual data instances arranged hierarchically | `schema_nodes` |
+| 7 | **NodeTypeComposition** | Defines parent-child relationships between NodeTypes | `schema_node_type_compositions` |
+
+**Supporting components** (not counted in the 7):
+- `DomainItem` - Individual values within a Domain
+- `NodeAttribute` - EAV values linking Nodes to AttributeDefs
+- `BuildState` - Schema build tracking
+- `SchemaCache` - Pre-computed JSON schemas
+
+These seven components work together to enable the EAV pattern: **DataType** and **Domain** provide type safety, **NodeType** and **NodeTypeVariant** define structure, **NodeTypeComposition** defines hierarchy, **AttributeDef** defines properties, and **Node** holds the actual data instances.
+
+#### Key s7 Functions
+
+| Function | Purpose |
+|----------|---------|
+| `s7_import_schema` | Import schema JSON with validation |
+| `s7_publish_schema` | Transition draft → published state |
+| `s7_get_node_tree` | Retrieve hierarchical node structure |
+| `s7_delete_node_tree` | Delete node and all descendants |
+| `s7_build_schema_cached` | Build and cache JSON schema |
+| `s7_check_key_version_unique` | Validate key+version uniqueness |
+
+#### Data Flow Example
+
+```
+1. Define NodeType (template)
+   └─ "survey" with attributes: title, description, status
+
+2. Create Node (instance)
+   └─ Node(key="customer-sat-2026", version="1.0", node_type="survey")
+
+3. Set NodeAttributes (values)
+   └─ NodeAttribute(node=survey, attribute_def=title, value_string="Customer Satisfaction")
+   └─ NodeAttribute(node=survey, attribute_def=status, value_string="published")
+
+4. Build cached schema
+   └─ s7_build_schema_cached() → FormSchemaCache with pre-computed JSON
+```
+
 ---
 
 ## Quick Start

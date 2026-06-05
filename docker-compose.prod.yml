@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:15-alpine
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dynamic_schema}
+      POSTGRES_USER: ${POSTGRES_USER:-dynamic_schema}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dynamic_schema}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: ${DB_CPU_LIMIT:-2.0}
+          memory: ${DB_MEMORY_LIMIT:-1G}
+        reservations:
+          cpus: ${DB_CPU_RESERVATION:-0.5}
+          memory: ${DB_MEMORY_RESERVATION:-256M}
+
+  web:
+    build: .
+    command: >
+      sh -c "python manage.py migrate &&
+             gunicorn --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-4} --threads ${GUNICORN_THREADS:-2} --timeout ${GUNICORN_TIMEOUT:-120} config.wsgi:application"
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      DJANGO_SETTINGS_MODULE: config.settings.production
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: ${WEB_CPU_LIMIT:-2.0}
+          memory: ${WEB_MEMORY_LIMIT:-1G}
+        reservations:
+          cpus: ${WEB_CPU_RESERVATION:-0.5}
+          memory: ${WEB_MEMORY_RESERVATION:-256M}
+
+volumes:
+  postgres_data:

@@ -127,7 +127,7 @@ The project follows **Clean Architecture** principles with clear separation of c
 
 ```bash
 # Clone the repository
-git clone https://github.com/chiunti/dynamic_schema_s7.git
+git clone git@github.com:chiunti/dynamic_schema_s7.git
 cd dynamic_schema_s7
 
 # Copy environment variables
@@ -246,14 +246,24 @@ The project provides admin-facing API endpoints for managing schemas:
 # Component types (for admin UI)
 GET /admin/schemas/api/component-types/
 
-# Attribute definitions
-GET /admin/schemas/api/attribute-defs/
+# Component properties by type
+GET /admin/schemas/api/component-properties/<component_type>/
+POST /admin/schemas/api/component-properties/<component_type>/save/
 
 # Variants by scope
 GET /admin/schemas/api/variants/
+
+# Attributes by variant
+GET /admin/schemas/api/attributes-by-variant/<variant_key>/
+
+# Attribute definitions management
+POST /admin/schemas/api/create-attribute-def/
+POST /admin/schemas/api/update-attribute-common/
+POST /admin/schemas/api/update-attribute-specific/
+POST /admin/schemas/api/delete-attribute-def/
 ```
 
-For public schema consumption, implement your own API views in `schemas/api_views.py`.
+For public schema consumption, use the endpoints in `schemas/api_views.py`.
 
 ---
 
@@ -271,7 +281,19 @@ All write operations (POST, PATCH, PUT, DELETE) require authentication. The sche
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/schema/{node_type}/{key}/{version}/` | Get schema by type, key, and version |
+| GET | `/api/schema/{node_type}/{key}/{version}/` | Get published schema by type, key, and version (public, cached) |
+
+**Schema Response Format:**
+```json
+{
+  "data": { /* schema JSON */ },
+  "meta": {
+    "node_type": "string",
+    "key": "string",
+    "version": "string"
+  }
+}
+```
 
 ### Organizations
 
@@ -305,7 +327,7 @@ All endpoints require authentication except `/api/schema/{...}/`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DJANGO_DEBUG` | `0` | Enable debug mode (0/1, true/false) |
+| `DJANGO_DEBUG` | `1` | Enable debug mode (0/1, true/false) |
 | `DJANGO_SECRET_KEY` | Required | Django secret key |
 | `POSTGRES_DB` | `dynamic_schema` | PostgreSQL database name |
 | `POSTGRES_USER` | `dynamic_schema` | PostgreSQL username |
@@ -313,7 +335,9 @@ All endpoints require authentication except `/api/schema/{...}/`.
 | `POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `POSTGRES_PORT` | `5432` | PostgreSQL port |
 | `POSTGRES_SCHEMA` | `s7,public` | PostgreSQL search path |
-| `DJANGO_ALLOWED_HOSTS` | `localhost` | Comma-separated allowed hosts |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated allowed hosts |
+| `TIME_ZONE` | `America/Mexico_City` | Application timezone |
+| `LANGUAGE_CODE` | `en-us` | Language code |
 
 ### Database Configuration
 
@@ -430,20 +454,34 @@ docker compose exec web python manage.py createsuperuser
 ## Project Structure
 
 ```
-dynamic_schema/
+dynamic_schema_s7/
 ├── accounts/               # User authentication
 ├── config/                 # Django configuration
 │   ├── settings/           # Environment-specific settings
 │   ├── urls.py             # URL routing
+│   ├── asgi.py             # ASGI entry point
 │   └── wsgi.py             # WSGI entry point
 ├── schemas/                # Core application
 │   ├── admin/              # Admin interface customizations
+│   ├── constants/          # Constants and enums
+│   ├── management/         # Django management commands
 │   ├── migrations/         # Database migrations
-│   ├── models.py           # Data models
 │   ├── repositories/       # Data access layer
 │   ├── services/           # Business logic
-│   ├── api_views.py        # API endpoints
-│   └── templates/          # Admin templates
+│   ├── static/             # Static files (admin UI)
+│   ├── templates/          # Admin templates
+│   ├── admin_api_views.py  # Admin-facing API endpoints
+│   ├── api_views.py        # Public API endpoints
+│   ├── constants.py        # Application constants
+│   ├── models.py           # Data models
+│   ├── urls.py             # Schema app URL routing
+│   ├── utils.py            # Utility functions
+│   ├── views.py            # Schema views
+│   └── tests.py            # Test cases
+├── .env.example            # Environment variables template
+├── Dockerfile              # Docker configuration
+├── docker-compose.yml      # Development Docker Compose
+├── docker-compose.prod.yml # Production Docker Compose
 ├── requirements.txt        # Python dependencies
 ├── manage.py               # Django management
 └── README.md               # This file

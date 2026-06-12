@@ -18,7 +18,7 @@ from django.shortcuts import render
 from django.urls import path, reverse
 from django.utils.html import format_html
 
-from ..models import Schema
+from ..models import Schema, Project
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..services.schema_service import SchemaService
 from ..services.node_service import NodeService

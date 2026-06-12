@@ -221,8 +221,10 @@ class NodeService:
     def _auto_create_min_children(self, node):
         """Auto-create minimum required children based on min_children constraint"""
         child_compositions = self.schema_repository.get_compositions_by_parent_type(node.node_type, min_children_gt=0)
-        
+
         for comp in child_compositions:
+            if comp.min_children is None:
+                continue
             current_count = self.schema_repository.count_children_by_parent_and_type(node, comp.child_type)
             if current_count < comp.min_children:
                 for i in range(current_count, comp.min_children):

@@ -535,7 +535,7 @@ class SchemaRepository:
     def delete_schema_cache_by_key_version(self, key, version):
         """Delete schema cache by key and version"""
         from ..models import SchemaCache
-        SchemaCache.schemas.filter(key=key, version=version).delete()
+        SchemaCache.objects.filter(key=key, version=version).delete()
 
     def get_node_attributes(self, node, attribute_def):
         """Get node attribute by node and attribute def"""

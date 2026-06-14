@@ -10,6 +10,85 @@
   const apiNodeJson = baseUrl + '/editor/api/node-json/';
   const apiNodeTypeVariants = (nodeType) => `${baseUrl}/editor/api/node-type-variants/?node_type=${nodeType}`;
 
+  // Extension registration system
+  window.s7Editors = {
+    renderers: [],
+    checkHandlers: [],
+    saveHandlers: [],
+    registerRenderer(patternCheck, renderFn) {
+      this.renderers.push({ patternCheck, renderFn });
+    },
+    registerCheckHandler(patternCheck, handleFn) {
+      this.checkHandlers.push({ patternCheck, handleFn });
+    },
+    registerSaveHandler(patternCheck, handleFn) {
+      this.saveHandlers.push({ patternCheck, handleFn });
+    },
+    findRenderer(props) {
+      for (const renderer of this.renderers) {
+        if (renderer.patternCheck(props)) {
+          return renderer.renderFn;
+        }
+      }
+      return null;
+    },
+    findCheckHandler(props) {
+      for (const handler of this.checkHandlers) {
+        if (handler.patternCheck(props)) {
+          return handler.handleFn;
+        }
+      }
+      return null;
+    },
+    findSaveHandler(props) {
+      for (const handler of this.saveHandlers) {
+        if (handler.patternCheck(props)) {
+          return handler.handleFn;
+        }
+      }
+      return null;
+    }
+  };
+
+  // Dynamically load external editor scripts
+  // Auto-discover extensions from Django endpoint
+  async function loadExternalEditors() {
+    try {
+      const manifestUrl = baseUrl + '/editor/api/extensions/';
+      const response = await fetch(manifestUrl);
+      if (!response.ok) {
+        console.warn('[node_editor] Failed to fetch extensions manifest:', response.status);
+        return;
+      }
+      
+      const data = await response.json();
+      const extensionBaseUrl = '/static/admin/js/extensions_editor/';
+      
+      data.extensions.forEach(extensionFile => {
+        const src = extensionBaseUrl + extensionFile + '?v=' + Date.now();
+        if (!document.querySelector(`script[src^="${extensionBaseUrl}${extensionFile}"]`)) {
+          const script = document.createElement('script');
+          script.src = src;
+          document.head.appendChild(script);
+        }
+      });
+    } catch (e) {
+      console.warn('[node_editor] Failed to load editor extensions manifest:', e);
+    }
+  }
+
+  // Load external editors on page load
+  loadExternalEditors();
+
+  // Expose core functions for extensions
+  window.s7NodeEditor = {
+    renderPropRow,
+    checkPropsChanges,
+    apiProps,
+    requestJson,
+    updateNodeJson,
+  };
+
   // Alert messages
   const MSG_PROVIDE_NODE_ID_OR_KEY_VERSION = 'Provide node_id or key+version';
 
@@ -437,6 +516,17 @@
   function checkPropsChanges() {
     const propsContainer = document.getElementById('props');
     const originalProps = JSON.parse(propsContainer.dataset.originalProps || '[]');
+
+    // Check if any registered extension wants to handle change detection
+    if (window.s7Editors) {
+      const customHandler = window.s7Editors.findCheckHandler(originalProps);
+      if (customHandler) {
+        const result = customHandler();
+        document.getElementById('btn_save_props').disabled = !result;
+        return result;
+      }
+    }
+
     const currentProps = [];
 
     document.querySelectorAll('#props [data-json-key]').forEach(el => {
@@ -484,255 +574,184 @@
     document.getElementById('btn_save_props').disabled = !hasChanges;
   }
 
-  function buildPropsTable(props) {
-    const table = document.createElement('table');
-    table.className = 's7-table';
-    const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Property</th><th>Type</th><th>Value</th></tr>';
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    props.forEach(p => {
-      const tr = document.createElement('tr');
+  // Render a single property row with any data type (simple or complex)
+  // This function is exposed to extensions for reusability
+  function renderPropRow(p, tbody, checkHandler = checkPropsChanges) {
+    const tr = document.createElement('tr');
 
-      const tdKey = document.createElement('td');
-      tdKey.textContent = p.is_required ? `${p.json_key} *` : p.json_key;
-      if (p.is_required) {
-        tdKey.style.fontWeight = 'bold';
-        tdKey.style.color = 'var(--error-fg, #a94442)';
+    const tdKey = document.createElement('td');
+    tdKey.textContent = p.is_required ? `${p.json_key} *` : p.json_key;
+    if (p.is_required) {
+      tdKey.style.fontWeight = 'bold';
+      tdKey.style.color = 'var(--error-fg, #a94442)';
+    }
+    tr.appendChild(tdKey);
+
+    const tdType = document.createElement('td');
+    tdType.textContent = p.domain ? `${p.data_type} (${p.domain})` : p.data_type;
+    tr.appendChild(tdType);
+
+    const tdVal = document.createElement('td');
+
+    let input;
+    const current = p.value || {};
+
+    if (p.data_type === 'domain_list' && p.domain) {
+      // Multi-select with checkboxes for domain items
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'flex';
+      wrapper.style.flexDirection = 'column';
+      wrapper.style.gap = '4px';
+      wrapper.style.maxHeight = '200px';
+      wrapper.style.overflowY = 'auto';
+      wrapper.style.padding = '4px';
+      wrapper.style.border = '1px solid var(--border-color,#ddd)';
+      wrapper.style.borderRadius = '4px';
+
+      const currentValues = current.value_json || [];
+      const valuesArray = Array.isArray(currentValues) ? currentValues : [];
+
+      (p.domain_items || []).forEach(di => {
+        const labelRow = document.createElement('label');
+        labelRow.style.display = 'flex';
+        labelRow.style.alignItems = 'center';
+        labelRow.style.gap = '6px';
+        labelRow.style.fontSize = '0.85em';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = di.value;
+        checkbox.checked = valuesArray.includes(di.value);
+        checkbox.dataset.domainList = '1';
+        checkbox.addEventListener('change', checkHandler);
+
+        const labelText = document.createElement('span');
+        labelText.textContent = di.label;
+
+        labelRow.appendChild(checkbox);
+        labelRow.appendChild(labelText);
+        wrapper.appendChild(labelRow);
+      });
+
+      // Hidden textarea to store the JSON array
+      input = document.createElement('textarea');
+      input.style.display = 'none';
+      input.dataset.json = '1';
+      input.dataset.domainListWidget = '1';
+      input.value = valuesArray.length > 0 ? JSON.stringify(valuesArray) : '';
+
+      // Sync checkboxes to hidden textarea
+      const syncDomainList = () => {
+        const checked = wrapper.querySelectorAll('input[type="checkbox"]:checked');
+        const values = Array.from(checked).map(cb => cb.value);
+        input.value = values.length > 0 ? JSON.stringify(values) : '';
+        checkHandler();
+      };
+
+      wrapper.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', syncDomainList);
+      });
+
+      tdVal.appendChild(wrapper);
+      tdVal.appendChild(input);
+      input.dataset.jsonKey = p.json_key;
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+      return;
+    } else if (p.data_type === 'int_tuple') {
+      // Fixed-length array of integers
+      // Length is determined by domain_items count if available
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'flex';
+      wrapper.style.flexDirection = 'column';
+      wrapper.style.gap = '4px';
+
+      const currentValues = current.value_json || [];
+      const valuesArray = Array.isArray(currentValues) ? currentValues : [];
+
+      // Use labels from domain_items if available, otherwise show warning
+      let labels;
+      let fixedLength = null;
+      if (p.domain && p.domain_items && p.domain_items.length > 0) {
+        // Use natural order from domain_items
+        labels = p.domain_items.map(di => di.label);
+        fixedLength = p.domain_items.length;
+      } else {
+        // No domain: render warning and skip widget
+        const warn = document.createElement('div');
+        warn.className = 's7-field-warning';
+        warn.textContent = `⚠ int_tuple requires a domain to define its fields. Assign a domain to attribute "${p.json_key}" to enable editing.`;
+        tdVal.appendChild(warn);
+        tr.appendChild(tdVal);
+        tbody.appendChild(tr);
+        return;
       }
-      tr.appendChild(tdKey);
 
-      const tdType = document.createElement('td');
-      tdType.textContent = p.domain ? `${p.data_type} (${p.domain})` : p.data_type;
-      tr.appendChild(tdType);
+      // If fixed length is specified by domain_items, ensure we have that many fields
+      const displayLength = fixedLength || valuesArray.length;
+      const displayValues = fixedLength
+        ? valuesArray.length >= fixedLength ? valuesArray.slice(0, fixedLength) : Array(fixedLength).fill(0)
+        : valuesArray;
 
-      const tdVal = document.createElement('td');
+      const inputs = [];
 
-      let input;
-      const current = p.value || {};
+      labels.forEach((label, index) => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.gap = '6px';
 
-      if (p.data_type === 'domain_list' && p.domain) {
-        // Multi-select with checkboxes for domain items
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.flexDirection = 'column';
-        wrapper.style.gap = '4px';
-        wrapper.style.maxHeight = '200px';
-        wrapper.style.overflowY = 'auto';
-        wrapper.style.padding = '4px';
-        wrapper.style.border = '1px solid var(--border-color,#ddd)';
-        wrapper.style.borderRadius = '4px';
+        const labelSpan = document.createElement('span');
+        labelSpan.textContent = label;
+        labelSpan.style.fontSize = '0.85em';
+        labelSpan.style.minWidth = '30px';
 
-        const currentValues = current.value_json || [];
-        const valuesArray = Array.isArray(currentValues) ? currentValues : [];
+        const numInput = document.createElement('input');
+        numInput.type = 'number';
+        numInput.value = displayValues[index] ?? 0;
+        numInput.style.flex = '1';
+        numInput.dataset.intTuple = '1';
+        numInput.dataset.index = index;
+        numInput.addEventListener('change', checkHandler);
 
-        (p.domain_items || []).forEach(di => {
-          const labelRow = document.createElement('label');
-          labelRow.style.display = 'flex';
-          labelRow.style.alignItems = 'center';
-          labelRow.style.gap = '6px';
-          labelRow.style.fontSize = '0.85em';
+        row.appendChild(labelSpan);
+        row.appendChild(numInput);
+        wrapper.appendChild(row);
+        inputs.push(numInput);
+      });
 
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.value = di.value;
-          checkbox.checked = valuesArray.includes(di.value);
-          checkbox.dataset.domainList = '1';
-          checkbox.addEventListener('change', checkPropsChanges);
+      // Hidden textarea to store the JSON array
+      input = document.createElement('textarea');
+      input.style.display = 'none';
+      input.dataset.json = '1';
+      input.dataset.intTupleWidget = '1';
+      input.value = JSON.stringify(displayValues);
 
-          const labelText = document.createElement('span');
-          labelText.textContent = di.label;
+      // Sync number inputs to hidden textarea
+      const syncIntTuple = () => {
+        const values = inputs.map(inp => parseFloat(inp.value) || 0);
+        input.value = JSON.stringify(values);
+        checkHandler();
+      };
 
-          labelRow.appendChild(checkbox);
-          labelRow.appendChild(labelText);
-          wrapper.appendChild(labelRow);
-        });
+      inputs.forEach(inp => {
+        inp.addEventListener('change', syncIntTuple);
+      });
 
-        // Hidden textarea to store the JSON array
-        input = document.createElement('textarea');
-        input.style.display = 'none';
-        input.dataset.json = '1';
-        input.dataset.domainListWidget = '1';
-        input.value = valuesArray.length > 0 ? JSON.stringify(valuesArray) : '';
+      tdVal.appendChild(wrapper);
+      tdVal.appendChild(input);
+      input.dataset.jsonKey = p.json_key;
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+      return;
+    } else if (p.data_type === 'dict') {
+      // Dictionary with key-value pairs
+      // If domain_items are available, show fixed fields with those keys
+      // Otherwise show generic key-value editor
+      const hasDomainItems = p.domain && p.domain_items && p.domain_items.length > 0;
 
-        // Sync checkboxes to hidden textarea
-        const syncDomainList = () => {
-          const checked = wrapper.querySelectorAll('input[type="checkbox"]:checked');
-          const values = Array.from(checked).map(cb => cb.value);
-          input.value = values.length > 0 ? JSON.stringify(values) : '';
-          checkPropsChanges();
-        };
-
-        wrapper.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-          cb.addEventListener('change', syncDomainList);
-        });
-
-        tdVal.appendChild(wrapper);
-        tdVal.appendChild(input);
-        input.dataset.jsonKey = p.json_key;
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-        return;
-      } else if (p.data_type === 'int_tuple') {
-        // Fixed-length array of integers
-        // Length is determined by domain_items count if available
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.flexDirection = 'column';
-        wrapper.style.gap = '4px';
-
-        const currentValues = current.value_json || [];
-        const valuesArray = Array.isArray(currentValues) ? currentValues : [];
-
-        // Use labels from domain_items if available, otherwise show warning
-        let labels;
-        let fixedLength = null;
-        if (p.domain && p.domain_items && p.domain_items.length > 0) {
-          // Use natural order from domain_items
-          labels = p.domain_items.map(di => di.label);
-          fixedLength = p.domain_items.length;
-        } else {
-          // No domain: render warning and skip widget
-          const warn = document.createElement('div');
-          warn.className = 's7-field-warning';
-          warn.textContent = `⚠ int_tuple requires a domain to define its fields. Assign a domain to attribute "${p.json_key}" to enable editing.`;
-          tdVal.appendChild(warn);
-          tr.appendChild(tdVal);
-          tbody.appendChild(tr);
-          return;
-        }
-
-        // If fixed length is specified by domain_items, ensure we have that many fields
-        const displayLength = fixedLength || valuesArray.length;
-        const displayValues = fixedLength
-          ? valuesArray.length >= fixedLength ? valuesArray.slice(0, fixedLength) : Array(fixedLength).fill(0)
-          : valuesArray;
-
-        const inputs = [];
-
-        labels.forEach((label, index) => {
-          const row = document.createElement('div');
-          row.style.display = 'flex';
-          row.style.alignItems = 'center';
-          row.style.gap = '6px';
-
-          const labelSpan = document.createElement('span');
-          labelSpan.textContent = label;
-          labelSpan.style.fontSize = '0.85em';
-          labelSpan.style.minWidth = '30px';
-
-          const numInput = document.createElement('input');
-          numInput.type = 'number';
-          numInput.value = displayValues[index] ?? 0;
-          numInput.style.flex = '1';
-          numInput.dataset.intTuple = '1';
-          numInput.dataset.index = index;
-          numInput.addEventListener('change', checkPropsChanges);
-
-          row.appendChild(labelSpan);
-          row.appendChild(numInput);
-          wrapper.appendChild(row);
-          inputs.push(numInput);
-        });
-
-        // Hidden textarea to store the JSON array
-        input = document.createElement('textarea');
-        input.style.display = 'none';
-        input.dataset.json = '1';
-        input.dataset.intTupleWidget = '1';
-        input.value = JSON.stringify(displayValues);
-
-        // Sync number inputs to hidden textarea
-        const syncIntTuple = () => {
-          const values = inputs.map(inp => parseFloat(inp.value) || 0);
-          input.value = JSON.stringify(values);
-          checkPropsChanges();
-        };
-
-        inputs.forEach(inp => {
-          inp.addEventListener('change', syncIntTuple);
-        });
-
-        tdVal.appendChild(wrapper);
-        tdVal.appendChild(input);
-        input.dataset.jsonKey = p.json_key;
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-        return;
-      } else if (p.data_type === 'dict') {
-        // Dictionary with key-value pairs
-        // If domain_items are available, show fixed fields with those keys
-        // Otherwise show generic key-value editor
-        const hasDomainItems = p.domain && p.domain_items && p.domain_items.length > 0;
-
-        if (hasDomainItems) {
-          // Fixed fields based on domain_items
-          const wrapper = document.createElement('div');
-          wrapper.style.display = 'flex';
-          wrapper.style.flexDirection = 'column';
-          wrapper.style.gap = '4px';
-
-          const currentDict = current.value_json || {};
-          const dictObj = typeof currentDict === 'object' && currentDict !== null ? currentDict : {};
-
-          const labels = p.domain_items.map(di => di.label);
-          const inputs = [];
-
-          labels.forEach(label => {
-            const row = document.createElement('div');
-            row.style.display = 'flex';
-            row.style.alignItems = 'center';
-            row.style.gap = '6px';
-
-            const labelSpan = document.createElement('span');
-            labelSpan.textContent = label;
-            labelSpan.style.fontSize = '0.85em';
-            labelSpan.style.minWidth = '50px';
-
-            const valueInput = document.createElement('input');
-            valueInput.type = 'text';
-            valueInput.value = dictObj[label] ?? '';
-            valueInput.style.flex = '1';
-            valueInput.dataset.dictFixedKey = '1';
-            valueInput.addEventListener('change', checkPropsChanges);
-
-            row.appendChild(labelSpan);
-            row.appendChild(valueInput);
-            wrapper.appendChild(row);
-            inputs.push(valueInput);
-          });
-
-          // Hidden textarea to store the JSON object
-          input = document.createElement('textarea');
-          input.style.display = 'none';
-          input.dataset.json = '1';
-          input.dataset.dictFixedWidget = '1';
-
-          const syncDictFixed = () => {
-            const obj = {};
-            labels.forEach((label, index) => {
-              const val = inputs[index].value.trim();
-              if (val) obj[label] = val;
-            });
-            input.value = JSON.stringify(obj);
-            checkPropsChanges();
-          };
-
-          inputs.forEach(inp => {
-            inp.addEventListener('change', syncDictFixed);
-          });
-
-          syncDictFixed();
-
-          tdVal.appendChild(wrapper);
-          tdVal.appendChild(input);
-          input.dataset.jsonKey = p.json_key;
-          tr.appendChild(tdVal);
-          tbody.appendChild(tr);
-          return;
-        }
-
-        // Generic dict editor for other cases
+      if (hasDomainItems) {
+        // Fixed fields based on domain_items
         const wrapper = document.createElement('div');
         wrapper.style.display = 'flex';
         wrapper.style.flexDirection = 'column';
@@ -741,436 +760,569 @@
         const currentDict = current.value_json || {};
         const dictObj = typeof currentDict === 'object' && currentDict !== null ? currentDict : {};
 
-        const rows = [];
+        const labels = p.domain_items.map(di => di.label);
+        const inputs = [];
 
-        const renderDictRows = () => {
-          // Clear existing rows
-          rows.forEach(row => wrapper.removeChild(row));
-          rows.length = 0;
+        labels.forEach(label => {
+          const row = document.createElement('div');
+          row.style.display = 'flex';
+          row.style.alignItems = 'center';
+          row.style.gap = '6px';
 
-          Object.entries(dictObj).forEach(([key, value]) => {
-            const row = document.createElement('div');
-            row.style.display = 'flex';
-            row.style.alignItems = 'center';
-            row.style.gap = '4px';
+          const labelSpan = document.createElement('span');
+          labelSpan.textContent = label;
+          labelSpan.style.fontSize = '0.85em';
+          labelSpan.style.minWidth = '50px';
 
-            const keyInput = document.createElement('input');
-            keyInput.type = 'text';
-            keyInput.value = key;
-            keyInput.style.flex = '1';
-            keyInput.style.minWidth = '80px';
-            keyInput.dataset.dictKey = '1';
-            keyInput.addEventListener('change', () => {
-              const newKey = keyInput.value.trim();
-              if (newKey && newKey !== key) {
-                dictObj[newKey] = dictObj[key];
-                delete dictObj[key];
-                renderDictRows();
-                syncDict();
-              }
-            });
+          const valueInput = document.createElement('input');
+          valueInput.type = 'text';
+          valueInput.value = dictObj[label] ?? '';
+          valueInput.style.flex = '1';
+          valueInput.dataset.dictFixedKey = '1';
+          valueInput.addEventListener('change', checkHandler);
 
-            const valueInput = document.createElement('input');
-            valueInput.type = 'text';
-            valueInput.value = value !== null && value !== undefined ? String(value) : '';
-            valueInput.style.flex = '1';
-            valueInput.dataset.dictValue = '1';
-            valueInput.addEventListener('change', () => {
-              const raw = valueInput.value.trim();
-              // Strip surrounding quotes → always treat as literal string
-              if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-                dictObj[key] = raw.slice(1, -1);
-              } else if (raw === 'true') {
-                dictObj[key] = true;
-              } else if (raw === 'false') {
-                dictObj[key] = false;
-              } else if (raw !== '' && !isNaN(Number(raw))) {
-                dictObj[key] = Number(raw);
-              } else {
-                dictObj[key] = raw;
-              }
-              syncDict();
-            });
-
-            const deleteBtn = document.createElement('button');
-            deleteBtn.textContent = '×';
-            deleteBtn.style.padding = '2px 8px';
-            deleteBtn.style.cursor = 'pointer';
-            deleteBtn.addEventListener('click', () => {
-              delete dictObj[key];
-              renderDictRows();
-              syncDict();
-            });
-
-            row.appendChild(keyInput);
-            row.appendChild(valueInput);
-            row.appendChild(deleteBtn);
-            wrapper.appendChild(row);
-            rows.push(row);
-          });
-        };
+          row.appendChild(labelSpan);
+          row.appendChild(valueInput);
+          wrapper.appendChild(row);
+          inputs.push(valueInput);
+        });
 
         // Hidden textarea to store the JSON object
         input = document.createElement('textarea');
         input.style.display = 'none';
         input.dataset.json = '1';
-        input.dataset.dictWidget = '1';
-        input.value = JSON.stringify(dictObj);
+        input.dataset.dictFixedWidget = '1';
 
-        const syncDict = () => {
-          input.value = JSON.stringify(dictObj);
-          checkPropsChanges();
-        };
-
-        // Add button
-        const addBtn = document.createElement('button');
-        addBtn.textContent = '+ Add';
-        addBtn.style.padding = '4px 8px';
-        addBtn.style.cursor = 'pointer';
-        addBtn.addEventListener('click', () => {
-          const newKey = `key_${Object.keys(dictObj).length}`;
-          dictObj[newKey] = '';
-          renderDictRows();
-          syncDict();
-        });
-
-        renderDictRows();
-        wrapper.appendChild(addBtn);
-
-        tdVal.appendChild(wrapper);
-        tdVal.appendChild(input);
-        input.dataset.jsonKey = p.json_key;
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-        return;
-      } else if (p.domain) {
-        input = document.createElement('select');
-        const empty = document.createElement('option');
-        empty.value = '';
-        empty.textContent = '';
-        input.appendChild(empty);
-        (p.domain_items || []).forEach(di => {
-          const opt = document.createElement('option');
-          opt.value = di.value;
-          opt.textContent = di.label;
-          input.appendChild(opt);
-        });
-        input.value = current.value_string ?? '';
-      } else if (p.data_type === 'bool') {
-        input = document.createElement('input');
-        input.type = 'checkbox';
-        if (current.value_bool === true) {
-          input.checked = true;
-          input.indeterminate = false;
-          input.dataset.boolState = 'true';
-        } else if (current.value_bool === false) {
-          input.checked = false;
-          input.indeterminate = false;
-          input.dataset.boolState = 'false';
-        } else {
-          input.checked = false;
-          input.indeterminate = true;
-          input.dataset.boolState = 'null';
-        }
-        input.dataset.checkbox = '1';
-        input.addEventListener('click', (e) => {
-          const currentState = e.target.dataset.boolState;
-          if (currentState === 'null') {
-            e.target.checked = true;
-            e.target.indeterminate = false;
-            e.target.dataset.boolState = 'true';
-          } else if (currentState === 'true') {
-            e.target.checked = false;
-            e.target.indeterminate = false;
-            e.target.dataset.boolState = 'false';
-          } else {
-            e.target.checked = false;
-            e.target.indeterminate = true;
-            e.target.dataset.boolState = 'null';
-          }
-          checkPropsChanges();
-        });
-      } else if (p.data_type === 'color') {
-        // Color picker + hex text input side by side
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.alignItems = 'center';
-        wrapper.style.gap = '6px';
-
-        const colorPicker = document.createElement('input');
-        colorPicker.type = 'color';
-        colorPicker.value = current.value_string || '#000000';
-        colorPicker.style.width = '40px';
-        colorPicker.style.height = '28px';
-        colorPicker.style.padding = '0';
-        colorPicker.style.border = 'none';
-        colorPicker.style.cursor = 'pointer';
-
-        const hexInput = document.createElement('input');
-        hexInput.type = 'text';
-        hexInput.value = current.value_string || '';
-        hexInput.placeholder = '#rrggbb';
-        hexInput.style.flex = '1';
-        hexInput.maxLength = 7;
-
-        colorPicker.addEventListener('input', () => {
-          hexInput.value = colorPicker.value;
-          checkPropsChanges();
-        });
-        hexInput.addEventListener('input', () => {
-          if (/^#[0-9a-fA-F]{6}$/.test(hexInput.value)) {
-            colorPicker.value = hexInput.value;
-          }
-          checkPropsChanges();
-        });
-
-        input = hexInput;
-        wrapper.appendChild(colorPicker);
-        wrapper.appendChild(hexInput);
-        tdVal.appendChild(wrapper);
-        input.dataset.jsonKey = p.json_key;
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-        return;
-      } else if (p.data_type === 'list_string' || p.data_type === 'list_int') {
-        // Editable list: one item per row with add/remove buttons
-        const isInt = p.data_type === 'list_int';
-        const currentList = Array.isArray(current.value_json) ? current.value_json : [];
-        const items = currentList.map(v => String(v));
-
-        const wrapper = document.createElement('div');
-        wrapper.style.display = 'flex';
-        wrapper.style.flexDirection = 'column';
-        wrapper.style.gap = '4px';
-
-        input = document.createElement('textarea');
-        input.style.display = 'none';
-        input.dataset.json = '1';
-
-        const syncList = () => {
-          const rowInputs = wrapper.querySelectorAll('input[data-list-item]');
-          const vals = Array.from(rowInputs).map(r => isInt ? (parseInt(r.value, 10) || 0) : r.value).filter(v => !isInt || !isNaN(v));
-          input.value = vals.length ? JSON.stringify(vals) : '';
-          checkPropsChanges();
-        };
-
-        const addRow = (val = '') => {
-          const row = document.createElement('div');
-          row.style.display = 'flex';
-          row.style.gap = '4px';
-
-          const itemInput = document.createElement('input');
-          itemInput.type = isInt ? 'number' : 'text';
-          itemInput.value = val;
-          itemInput.style.flex = '1';
-          itemInput.dataset.listItem = '1';
-          itemInput.addEventListener('input', syncList);
-
-          const rmBtn = document.createElement('button');
-          rmBtn.textContent = '✕';
-          rmBtn.style.cssText = 'padding:2px 6px;cursor:pointer;font-size:0.8em;';
-          rmBtn.addEventListener('click', () => {
-            wrapper.removeChild(row);
-            syncList();
-          });
-
-          row.appendChild(itemInput);
-          row.appendChild(rmBtn);
-          wrapper.insertBefore(row, addBtn);
-        };
-
-        const addBtn = document.createElement('button');
-        addBtn.textContent = '+ Add item';
-        addBtn.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:0.85em;align-self:flex-start;';
-        addBtn.addEventListener('click', () => { addRow(); syncList(); });
-        wrapper.appendChild(addBtn);
-
-        items.forEach(v => addRow(v));
-        syncList();
-
-        tdVal.appendChild(wrapper);
-        tdVal.appendChild(input);
-        input.dataset.jsonKey = p.json_key;
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-        return;
-      } else if (p.data_type === 'date') {
-        input = document.createElement('input');
-        input.type = 'date';
-        input.value = current.value_string ?? '';
-      } else if (p.data_type === 'int') {
-        input = document.createElement('input');
-        input.type = 'number';
-        input.step = '1';
-        input.dataset.numericType = 'int';
-        input.value = current.value_number ?? '';
-      } else if (p.data_type === 'float' || p.data_type === 'number') {
-        input = document.createElement('input');
-        input.type = 'number';
-        input.step = 'any';
-        input.dataset.numericType = 'float';
-        input.value = current.value_number ?? '';
-      } else if ((p.json_key === 'padding' || p.json_key === 'margin') && p.data_type === 'json') {
-        // 4-value editor: [top, right, bottom, left]
-        const raw = current.value_json;
-        const vals = Array.isArray(raw) ? raw : [null, null, null, null];
-        const wrapper = document.createElement('table');
-        const sides = ['top', 'right', 'bottom', 'left'];
-        sides.forEach((side, i) => {
-          const lbl = document.createElement('label');
-          lbl.style.cssText = 'font-size:0.8em; color:var(--body-quiet-color,#666); display:flex; flex-direction:column; gap:2px;';
-          lbl.textContent = side;
-          const n = document.createElement('input');
-          n.type = 'number';
-          n.step = 'any';
-          n.value = vals[i] != null ? vals[i] : '';
-          n.style.width = '100%';
-          n.dataset.edgeSide = side;
-          n.addEventListener('input', checkPropsChanges);
-          n.addEventListener('change', checkPropsChanges);
-          lbl.appendChild(n);
-          wrapper.appendChild(lbl);
-        });
-        // Hidden textarea that holds the JSON array — read by checkPropsChanges / save
-        input = document.createElement('textarea');
-        input.style.display = 'none';
-        input.dataset.json = '1';
-        input.dataset.edgeWidget = '1';
-        input.value = raw != null ? JSON.stringify(raw) : '';
-        const syncEdge = () => {
-          const arr = sides.map(s => {
-            const n = wrapper.querySelector(`[data-edge-side="${s}"]`);
-            return n.value !== '' ? parseFloat(n.value) : null;
-          });
-          const allNull = arr.every(v => v === null);
-          input.value = allNull ? '' : JSON.stringify(arr);
-          checkPropsChanges();
-        };
-        // Table layout: predictable alignment for top/left+right/bottom
-        wrapper.style.cssText = 'border-collapse:collapse; width:260px;';
-        wrapper.innerHTML = '';
-        const LBL = 'font-size:0.78em; color:var(--body-quiet-color,#666); padding:2px 4px 2px 0; white-space:nowrap; vertical-align:middle; background:transparent;';
-        const INP = 'text-align:center; width:100%; box-sizing:border-box;';
-        const TR  = 'background:transparent !important;';
-        const makeEdgeRow = (side, idx, colspan) => {
-          const tr = document.createElement('tr');
-          tr.style.cssText = TR;
-          const tdl = document.createElement('td'); tdl.style.cssText = LBL; tdl.textContent = side;
-          const tdi = document.createElement('td'); tdi.colSpan = colspan;
-          const n = document.createElement('input'); n.type='number'; n.step='any';
-          n.value = vals[idx] != null ? vals[idx] : '';
-          n.style.cssText = INP; n.dataset.edgeSide = side;
-          n.addEventListener('input', syncEdge); n.addEventListener('change', syncEdge);
-          tdi.appendChild(n); tr.appendChild(tdl); tr.appendChild(tdi);
-          return tr;
-        };
-        // top row
-        wrapper.appendChild(makeEdgeRow('top', 0, 3));
-        // middle row: left | right
-        const midTr = document.createElement('tr');
-        midTr.style.cssText = TR;
-        const tdll = document.createElement('td'); tdll.style.cssText = LBL; tdll.textContent = 'left';
-        const tdli = document.createElement('td');
-        const nLeft = document.createElement('input'); nLeft.type='number'; nLeft.step='any';
-        nLeft.value = vals[3] != null ? vals[3] : ''; nLeft.style.cssText = INP; nLeft.dataset.edgeSide = 'left';
-        nLeft.addEventListener('input', syncEdge); nLeft.addEventListener('change', syncEdge);
-        tdli.appendChild(nLeft);
-        const tdrl = document.createElement('td'); tdrl.style.cssText = LBL; tdrl.textContent = 'right';
-        const tdri = document.createElement('td');
-        const nRight = document.createElement('input'); nRight.type='number'; nRight.step='any';
-        nRight.value = vals[1] != null ? vals[1] : ''; nRight.style.cssText = INP; nRight.dataset.edgeSide = 'right';
-        nRight.addEventListener('input', syncEdge); nRight.addEventListener('change', syncEdge);
-        tdri.appendChild(nRight);
-        midTr.appendChild(tdll); midTr.appendChild(tdli); midTr.appendChild(tdrl); midTr.appendChild(tdri);
-        wrapper.appendChild(midTr);
-        // bottom row
-        wrapper.appendChild(makeEdgeRow('bottom', 2, 3));
-        tdVal.appendChild(wrapper);
-        tdVal.appendChild(input);
-        input.dataset.jsonKey = p.json_key;
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-        return;
-      } else if (p.json_key === 'position' && p.data_type === 'json') {
-        // Key-value editor: optional top/right/bottom/left numeric fields
-        const raw = current.value_json;
-        const posMap = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-        const posSides = ['top', 'right', 'bottom', 'left'];
-        const posWrapper = document.createElement('table');
-        const posHidden = document.createElement('textarea');
-        posHidden.style.display = 'none';
-        posHidden.dataset.json = '1';
-        posHidden.dataset.posWidget = '1';
-        posHidden.value = raw != null ? JSON.stringify(raw) : '';
-        const syncPos = () => {
+        const syncDictFixed = () => {
           const obj = {};
-          posSides.forEach(s => {
-            const n = posWrapper.querySelector(`[data-pos-value="${s}"]`);
-            if (n && n.value !== '') obj[s] = parseFloat(n.value);
+          labels.forEach((label, index) => {
+            const val = inputs[index].value.trim();
+            if (val) obj[label] = val;
           });
-          posHidden.value = Object.keys(obj).length ? JSON.stringify(obj) : '';
-          checkPropsChanges();
+          input.value = JSON.stringify(obj);
+          checkHandler();
         };
-        // Table layout for position widget
-        posWrapper.style.cssText = 'border-collapse:collapse; width:260px;';
-        const PLBL = 'font-size:0.78em; color:var(--body-quiet-color,#666); padding:2px 4px 2px 0; white-space:nowrap; vertical-align:middle; background:transparent;';
-        const PINP = 'text-align:center; width:100%; box-sizing:border-box;';
-        const PTR  = 'background:transparent !important;';
-        const makePosRow = (side, colspan) => {
-          const tr = document.createElement('tr');
-          tr.style.cssText = PTR;
-          const tdl = document.createElement('td'); tdl.style.cssText = PLBL; tdl.textContent = side;
-          const tdi = document.createElement('td'); tdi.colSpan = colspan;
-          const n = document.createElement('input'); n.type='number'; n.step='any';
-          n.value = posMap[side] != null ? posMap[side] : '';
-          n.style.cssText = PINP; n.dataset.posValue = side;
-          n.addEventListener('input', syncPos); n.addEventListener('change', syncPos);
-          tdi.appendChild(n); tr.appendChild(tdl); tr.appendChild(tdi);
-          return tr;
-        };
-        posWrapper.appendChild(makePosRow('top', 3));
-        const posMidTr = document.createElement('tr');
-        posMidTr.style.cssText = PTR;
-        const ptdll = document.createElement('td'); ptdll.style.cssText = PLBL; ptdll.textContent = 'left';
-        const ptdli = document.createElement('td');
-        const pnLeft = document.createElement('input'); pnLeft.type='number'; pnLeft.step='any';
-        pnLeft.value = posMap['left'] != null ? posMap['left'] : ''; pnLeft.style.cssText = PINP; pnLeft.dataset.posValue = 'left';
-        pnLeft.addEventListener('input', syncPos); pnLeft.addEventListener('change', syncPos); ptdli.appendChild(pnLeft);
-        const ptdrl = document.createElement('td'); ptdrl.style.cssText = PLBL; ptdrl.textContent = 'right';
-        const ptdri = document.createElement('td');
-        const pnRight = document.createElement('input'); pnRight.type='number'; pnRight.step='any';
-        pnRight.value = posMap['right'] != null ? posMap['right'] : ''; pnRight.style.cssText = PINP; pnRight.dataset.posValue = 'right';
-        pnRight.addEventListener('input', syncPos); pnRight.addEventListener('change', syncPos); ptdri.appendChild(pnRight);
-        posMidTr.appendChild(ptdll); posMidTr.appendChild(ptdli); posMidTr.appendChild(ptdrl); posMidTr.appendChild(ptdri);
-        posWrapper.appendChild(posMidTr);
-        posWrapper.appendChild(makePosRow('bottom', 3));
-        input = posHidden;
-        tdVal.appendChild(posWrapper);
-        tdVal.appendChild(posHidden);
+
+        inputs.forEach(inp => {
+          inp.addEventListener('change', syncDictFixed);
+        });
+
+        syncDictFixed();
+
+        tdVal.appendChild(wrapper);
+        tdVal.appendChild(input);
         input.dataset.jsonKey = p.json_key;
         tr.appendChild(tdVal);
         tbody.appendChild(tr);
         return;
-      } else if (p.data_type === 'json' || p.data_type === 'list_string') {
-        input = document.createElement('textarea');
-        input.value = current.value_json != null ? JSON.stringify(current.value_json) : '';
-        input.dataset.json = '1';
-      } else {
-        input = document.createElement('input');
-        input.type = 'text';
-        input.value = current.value_string ?? '';
       }
 
-      input.dataset.jsonKey = p.json_key;
-      // Add listener to detect changes in properties
-      input.addEventListener('input', checkPropsChanges);
-      input.addEventListener('change', checkPropsChanges);
+      // Generic dict editor for other cases
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'flex';
+      wrapper.style.flexDirection = 'column';
+      wrapper.style.gap = '4px';
+
+      const currentDict = current.value_json || {};
+      const dictObj = typeof currentDict === 'object' && currentDict !== null ? currentDict : {};
+
+      const rows = [];
+
+      const renderDictRows = () => {
+        // Clear existing rows
+        rows.forEach(row => wrapper.removeChild(row));
+        rows.length = 0;
+
+        Object.entries(dictObj).forEach(([key, value]) => {
+          const row = document.createElement('div');
+          row.style.display = 'flex';
+          row.style.alignItems = 'center';
+          row.style.gap = '4px';
+
+          const keyInput = document.createElement('input');
+          keyInput.type = 'text';
+          keyInput.value = key;
+          keyInput.style.flex = '1';
+          keyInput.style.minWidth = '80px';
+          keyInput.dataset.dictKey = '1';
+          keyInput.addEventListener('change', () => {
+            const newKey = keyInput.value.trim();
+            if (newKey && newKey !== key) {
+              dictObj[newKey] = dictObj[key];
+              delete dictObj[key];
+              renderDictRows();
+              syncDict();
+            }
+          });
+
+          const valueInput = document.createElement('input');
+          valueInput.type = 'text';
+          valueInput.value = value !== null && value !== undefined ? String(value) : '';
+          valueInput.style.flex = '1';
+          valueInput.dataset.dictValue = '1';
+          valueInput.addEventListener('change', () => {
+            const raw = valueInput.value.trim();
+            // Strip surrounding quotes → always treat as literal string
+            if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+              dictObj[key] = raw.slice(1, -1);
+            } else if (raw === 'true') {
+              dictObj[key] = true;
+            } else if (raw === 'false') {
+              dictObj[key] = false;
+            } else if (raw !== '' && !isNaN(Number(raw))) {
+              dictObj[key] = Number(raw);
+            } else {
+              dictObj[key] = raw;
+            }
+            syncDict();
+          });
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.textContent = '×';
+          deleteBtn.style.padding = '2px 8px';
+          deleteBtn.style.cursor = 'pointer';
+          deleteBtn.addEventListener('click', () => {
+            delete dictObj[key];
+            renderDictRows();
+            syncDict();
+          });
+
+          row.appendChild(keyInput);
+          row.appendChild(valueInput);
+          row.appendChild(deleteBtn);
+          wrapper.appendChild(row);
+          rows.push(row);
+        });
+      };
+
+      // Hidden textarea to store the JSON object
+      input = document.createElement('textarea');
+      input.style.display = 'none';
+      input.dataset.json = '1';
+      input.dataset.dictWidget = '1';
+      input.value = JSON.stringify(dictObj);
+
+      const syncDict = () => {
+        input.value = JSON.stringify(dictObj);
+        checkHandler();
+      };
+
+      // Add button
+      const addBtn = document.createElement('button');
+      addBtn.textContent = '+ Add';
+      addBtn.style.padding = '4px 8px';
+      addBtn.style.cursor = 'pointer';
+      addBtn.addEventListener('click', () => {
+        const newKey = `key_${Object.keys(dictObj).length}`;
+        dictObj[newKey] = '';
+        renderDictRows();
+        syncDict();
+      });
+
+      renderDictRows();
+      wrapper.appendChild(addBtn);
+
+      tdVal.appendChild(wrapper);
       tdVal.appendChild(input);
+      input.dataset.jsonKey = p.json_key;
       tr.appendChild(tdVal);
-
       tbody.appendChild(tr);
-    });
+      return;
+    } else if (p.domain) {
+      input = document.createElement('select');
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '';
+      input.appendChild(empty);
+      (p.domain_items || []).forEach(di => {
+        const opt = document.createElement('option');
+        opt.value = di.value;
+        opt.textContent = di.label;
+        input.appendChild(opt);
+      });
+      input.value = current.value_string ?? '';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
+    } else if (p.data_type === 'bool') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      if (current.value_bool === true) {
+        input.checked = true;
+        input.indeterminate = false;
+        input.dataset.boolState = 'true';
+      } else if (current.value_bool === false) {
+        input.checked = false;
+        input.indeterminate = false;
+        input.dataset.boolState = 'false';
+      } else {
+        input.checked = false;
+        input.indeterminate = true;
+        input.dataset.boolState = 'null';
+      }
+      input.dataset.checkbox = '1';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('click', (e) => {
+        const currentState = e.target.dataset.boolState;
+        if (currentState === 'null') {
+          e.target.checked = true;
+          e.target.indeterminate = false;
+          e.target.dataset.boolState = 'true';
+        } else if (currentState === 'true') {
+          e.target.checked = false;
+          e.target.indeterminate = false;
+          e.target.dataset.boolState = 'false';
+        } else {
+          e.target.checked = false;
+          e.target.indeterminate = true;
+          e.target.dataset.boolState = 'null';
+        }
+        checkHandler();
+      });
+      tdVal.appendChild(input);
+    } else if (p.data_type === 'color') {
+      // Color picker + hex text input side by side
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'flex';
+      wrapper.style.alignItems = 'center';
+      wrapper.style.gap = '6px';
 
+      const colorPicker = document.createElement('input');
+      colorPicker.type = 'color';
+      colorPicker.value = current.value_string || '#000000';
+      colorPicker.style.width = '40px';
+      colorPicker.style.height = '28px';
+      colorPicker.style.padding = '0';
+      colorPicker.style.border = 'none';
+      colorPicker.style.cursor = 'pointer';
+
+      const hexInput = document.createElement('input');
+      hexInput.type = 'text';
+      hexInput.value = current.value_string || '';
+      hexInput.placeholder = '#rrggbb';
+      hexInput.style.flex = '1';
+      hexInput.maxLength = 7;
+
+      colorPicker.addEventListener('input', () => {
+        hexInput.value = colorPicker.value;
+        checkHandler();
+      });
+      hexInput.addEventListener('input', () => {
+        if (/^#[0-9a-fA-F]{6}$/.test(hexInput.value)) {
+          colorPicker.value = hexInput.value;
+        }
+        checkHandler();
+      });
+
+      input = hexInput;
+      wrapper.appendChild(colorPicker);
+      wrapper.appendChild(hexInput);
+      tdVal.appendChild(wrapper);
+      input.dataset.jsonKey = p.json_key;
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+      return;
+    } else if (p.data_type === 'list_string' || p.data_type === 'list_int') {
+      // Editable list: one item per row with add/remove buttons
+      const isInt = p.data_type === 'list_int';
+      const currentList = Array.isArray(current.value_json) ? current.value_json : [];
+      const items = currentList.map(v => String(v));
+
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'flex';
+      wrapper.style.flexDirection = 'column';
+      wrapper.style.gap = '4px';
+
+      input = document.createElement('textarea');
+      input.style.display = 'none';
+      input.dataset.json = '1';
+
+      const syncList = () => {
+        const rowInputs = wrapper.querySelectorAll('input[data-list-item]');
+        const vals = Array.from(rowInputs).map(r => isInt ? (parseInt(r.value, 10) || 0) : r.value).filter(v => !isInt || !isNaN(v));
+        input.value = vals.length ? JSON.stringify(vals) : '';
+        checkHandler();
+      };
+
+      const addRow = (val = '') => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '4px';
+
+        const itemInput = document.createElement('input');
+        itemInput.type = isInt ? 'number' : 'text';
+        itemInput.value = val;
+        itemInput.style.flex = '1';
+        itemInput.dataset.listItem = '1';
+        itemInput.addEventListener('input', syncList);
+
+        const rmBtn = document.createElement('button');
+        rmBtn.textContent = '✕';
+        rmBtn.style.cssText = 'padding:2px 6px;cursor:pointer;font-size:0.8em;';
+        rmBtn.addEventListener('click', () => {
+          wrapper.removeChild(row);
+          syncList();
+        });
+
+        row.appendChild(itemInput);
+        row.appendChild(rmBtn);
+        wrapper.insertBefore(row, addBtn);
+      };
+
+      const addBtn = document.createElement('button');
+      addBtn.textContent = '+ Add item';
+      addBtn.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:0.85em;align-self:flex-start;';
+      addBtn.addEventListener('click', () => { addRow(); syncList(); });
+      wrapper.appendChild(addBtn);
+
+      items.forEach(v => addRow(v));
+      syncList();
+
+      tdVal.appendChild(wrapper);
+      tdVal.appendChild(input);
+      input.dataset.jsonKey = p.json_key;
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+      return;
+    } else if (p.data_type === 'date') {
+      input = document.createElement('input');
+      input.type = 'date';
+      input.value = current.value_string ?? '';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
+    } else if (p.data_type === 'int') {
+      input = document.createElement('input');
+      input.type = 'number';
+      input.step = '1';
+      input.dataset.numericType = 'int';
+      input.value = current.value_number ?? '';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
+    } else if (p.data_type === 'float' || p.data_type === 'number') {
+      input = document.createElement('input');
+      input.type = 'number';
+      input.step = 'any';
+      input.dataset.numericType = 'float';
+      input.value = current.value_number ?? '';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
+    } else if ((p.json_key === 'padding' || p.json_key === 'margin') && p.data_type === 'json') {
+      // 4-value editor: [top, right, bottom, left]
+      const raw = current.value_json;
+      const vals = Array.isArray(raw) ? raw : [null, null, null, null];
+      const wrapper = document.createElement('table');
+      const sides = ['top', 'right', 'bottom', 'left'];
+      sides.forEach((side, i) => {
+        const lbl = document.createElement('label');
+        lbl.style.cssText = 'font-size:0.8em; color:var(--body-quiet-color,#666); display:flex; flex-direction:column; gap:2px;';
+        lbl.textContent = side;
+        const n = document.createElement('input');
+        n.type = 'number';
+        n.step = 'any';
+        n.value = vals[i] != null ? vals[i] : '';
+        n.style.width = '100%';
+        n.dataset.edgeSide = side;
+        n.addEventListener('input', checkHandler);
+        n.addEventListener('change', checkHandler);
+        lbl.appendChild(n);
+        wrapper.appendChild(lbl);
+      });
+      // Hidden textarea that holds the JSON array — read by checkPropsChanges / save
+      input = document.createElement('textarea');
+      input.style.display = 'none';
+      input.dataset.json = '1';
+      input.dataset.edgeWidget = '1';
+      input.value = raw != null ? JSON.stringify(raw) : '';
+      const syncEdge = () => {
+        const arr = sides.map(s => {
+          const n = wrapper.querySelector(`[data-edge-side="${s}"]`);
+          return n.value !== '' ? parseFloat(n.value) : null;
+        });
+        const allNull = arr.every(v => v === null);
+        input.value = allNull ? '' : JSON.stringify(arr);
+        checkHandler();
+      };
+      // Table layout: predictable alignment for top/left+right/bottom
+      wrapper.style.cssText = 'border-collapse:collapse; width:260px;';
+      wrapper.innerHTML = '';
+      const LBL = 'font-size:0.78em; color:var(--body-quiet-color,#666); padding:2px 4px 2px 0; white-space:nowrap; vertical-align:middle; background:transparent;';
+      const INP = 'text-align:center; width:100%; box-sizing:border-box;';
+      const TR  = 'background:transparent !important;';
+      const makeEdgeRow = (side, idx, colspan) => {
+        const tr = document.createElement('tr');
+        tr.style.cssText = TR;
+        const tdl = document.createElement('td'); tdl.style.cssText = LBL; tdl.textContent = side;
+        const tdi = document.createElement('td'); tdi.colSpan = colspan;
+        const n = document.createElement('input'); n.type='number'; n.step='any';
+        n.value = vals[idx] != null ? vals[idx] : '';
+        n.style.cssText = INP; n.dataset.edgeSide = side;
+        n.addEventListener('input', syncEdge); n.addEventListener('change', syncEdge);
+        tdi.appendChild(n); tr.appendChild(tdl); tr.appendChild(tdi);
+        return tr;
+      };
+      // top row
+      wrapper.appendChild(makeEdgeRow('top', 0, 3));
+      // middle row: left | right
+      const midTr = document.createElement('tr');
+      midTr.style.cssText = TR;
+      const tdll = document.createElement('td'); tdll.style.cssText = LBL; tdll.textContent = 'left';
+      const tdli = document.createElement('td');
+      const nLeft = document.createElement('input'); nLeft.type='number'; nLeft.step='any';
+      nLeft.value = vals[3] != null ? vals[3] : ''; nLeft.style.cssText = INP; nLeft.dataset.edgeSide = 'left';
+      nLeft.addEventListener('input', syncEdge); nLeft.addEventListener('change', syncEdge);
+      tdli.appendChild(nLeft);
+      const tdrl = document.createElement('td'); tdrl.style.cssText = LBL; tdrl.textContent = 'right';
+      const tdri = document.createElement('td');
+      const nRight = document.createElement('input'); nRight.type='number'; nRight.step='any';
+      nRight.value = vals[1] != null ? vals[1] : ''; nRight.style.cssText = INP; nRight.dataset.edgeSide = 'right';
+      nRight.addEventListener('input', syncEdge); nRight.addEventListener('change', syncEdge);
+      tdri.appendChild(nRight);
+      midTr.appendChild(tdll); midTr.appendChild(tdli); midTr.appendChild(tdrl); midTr.appendChild(tdri);
+      wrapper.appendChild(midTr);
+      // bottom row
+      wrapper.appendChild(makeEdgeRow('bottom', 2, 3));
+      tdVal.appendChild(wrapper);
+      tdVal.appendChild(input);
+      input.dataset.jsonKey = p.json_key;
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+      return;
+    } else if (p.json_key === 'position' && p.data_type === 'json') {
+      // Key-value editor: optional top/right/bottom/left numeric fields
+      const raw = current.value_json;
+      const posMap = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+      const posSides = ['top', 'right', 'bottom', 'left'];
+      const posWrapper = document.createElement('table');
+      const posHidden = document.createElement('textarea');
+      posHidden.style.display = 'none';
+      posHidden.dataset.json = '1';
+      posHidden.dataset.posWidget = '1';
+      posHidden.value = raw != null ? JSON.stringify(raw) : '';
+      const syncPos = () => {
+        const obj = {};
+        posSides.forEach(s => {
+          const n = posWrapper.querySelector(`[data-pos-value="${s}"]`);
+          if (n && n.value !== '') obj[s] = parseFloat(n.value);
+        });
+        posHidden.value = Object.keys(obj).length ? JSON.stringify(obj) : '';
+        checkHandler();
+      };
+      // Table layout for position widget
+      posWrapper.style.cssText = 'border-collapse:collapse; width:260px;';
+      const PLBL = 'font-size:0.78em; color:var(--body-quiet-color,#666); padding:2px 4px 2px 0; white-space:nowrap; vertical-align:middle; background:transparent;';
+      const PINP = 'text-align:center; width:100%; box-sizing:border-box;';
+      const PTR  = 'background:transparent !important;';
+      const makePosRow = (side, colspan) => {
+        const tr = document.createElement('tr');
+        if (colspan === 2) {
+          const td = document.createElement('td');
+          td.colSpan = 2;
+          td.style.cssText = 'text-align:center; padding:2px;';
+          const inp = document.createElement('input');
+          inp.type = 'number';
+          inp.style.cssText = PINP + PTR;
+          inp.dataset.posValue = side;
+          inp.value = posMap[side] ?? '';
+          inp.addEventListener('change', syncPos);
+          td.appendChild(inp);
+          tr.appendChild(td);
+        } else {
+          const tdLbl = document.createElement('td');
+          tdLbl.style.cssText = PLBL;
+          tdLbl.textContent = side;
+          const tdInp = document.createElement('td');
+          tdInp.style.cssText = 'padding:2px;';
+          const inp = document.createElement('input');
+          inp.type = 'number';
+          inp.style.cssText = PINP + PTR;
+          inp.dataset.posValue = side;
+          inp.value = posMap[side] ?? '';
+          inp.addEventListener('change', syncPos);
+          tdInp.appendChild(inp);
+          tr.appendChild(tdLbl);
+          tr.appendChild(tdInp);
+        }
+        return tr;
+      };
+      posWrapper.appendChild(makePosRow('top', 2));
+      const midRow = document.createElement('tr');
+      const leftCell = document.createElement('td');
+      leftCell.style.cssText = 'padding:2px;';
+      const leftInp = document.createElement('input');
+      leftInp.type = 'number';
+      leftInp.style.cssText = PINP + PTR;
+      leftInp.dataset.posValue = 'left';
+      leftInp.value = posMap.left ?? '';
+      leftInp.addEventListener('change', syncPos);
+      leftCell.appendChild(leftInp);
+      const rightCell = document.createElement('td');
+      rightCell.style.cssText = 'padding:2px;';
+      const rightInp = document.createElement('input');
+      rightInp.type = 'number';
+      rightInp.style.cssText = PINP + PTR;
+      rightInp.dataset.posValue = 'right';
+      rightInp.value = posMap.right ?? '';
+      rightInp.addEventListener('change', syncPos);
+      rightCell.appendChild(rightInp);
+      midRow.appendChild(leftCell);
+      midRow.appendChild(rightCell);
+      posWrapper.appendChild(midRow);
+      posWrapper.appendChild(makePosRow('bottom', 2));
+      tdVal.appendChild(posWrapper);
+      tdVal.appendChild(posHidden);
+      posHidden.dataset.jsonKey = p.json_key;
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+      return;
+    } else if (p.data_type === 'json' || p.data_type === 'list_string') {
+      input = document.createElement('textarea');
+      input.value = current.value_json != null ? JSON.stringify(current.value_json) : '';
+      input.dataset.json = '1';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
+    } else if (p.data_type === 'natural_uuid') {
+      // natural_uuid is read-only (maps to PK)
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = current.value_string ?? '';
+      input.readOnly = true;
+      input.style.backgroundColor = 'var(--body-bg, #f5f5f5)';
+      input.style.cursor = 'not-allowed';
+      input.dataset.jsonKey = p.json_key;
+      tdVal.appendChild(input);
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = current.value_string ?? '';
+      input.dataset.jsonKey = p.json_key;
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
+    }
+
+    tr.appendChild(tdVal);
+    tbody.appendChild(tr);
+  }
+
+  function buildPropsTable(props) {
+    const table = document.createElement('table');
+    table.className = 's7-table';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Property</th><th>Type</th><th>Value</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    props.forEach(p => {
+      renderPropRow(p, tbody, checkPropsChanges);
+    });
     table.appendChild(tbody);
     return table;
   }
@@ -1178,6 +1330,15 @@
   function renderProps(props) {
     const container = document.getElementById('props');
     container.innerHTML = '';
+
+    // Check if any registered extension wants to handle these props
+    if (window.s7Editors) {
+      const customRenderer = window.s7Editors.findRenderer(props);
+      if (customRenderer) {
+        customRenderer(props);
+        return;
+      }
+    }
 
     // Variant grouping: universal (NULL) vs type-specific
     const hasVariantGroups = props.some(p => p.variant_key !== null);
@@ -1251,6 +1412,18 @@
 
     const propsContainer = document.getElementById('props');
     const nodeType = propsContainer.dataset.nodeType;
+
+    // Check if any registered extension wants to handle saving
+    if (window.s7Editors) {
+      const props = JSON.parse(propsContainer.dataset.originalProps || '[]');
+      const customHandler = window.s7Editors.findSaveHandler(props);
+      if (customHandler) {
+        const handled = await customHandler(currentSelectedNodeId);
+        if (handled) {
+          return;
+        }
+      }
+    }
 
     let updates = {};
 

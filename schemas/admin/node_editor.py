@@ -10,6 +10,7 @@ This mixin provides all the AJAX endpoints for the tree editor:
 
 import json
 import logging
+import os
 from collections import deque
 
 from django.http import JsonResponse
@@ -17,6 +18,7 @@ from django.db import transaction
 from django.db.models import Count, Max
 from django.urls import path
 from django.shortcuts import render
+from django.conf import settings
 
 from ..models import (
     Node,
@@ -75,6 +77,7 @@ class NodeEditorMixin:
             path("editor/api/move/", self.admin_site.admin_view(self.api_move), name="schemas_node_editor_move"),
             path("editor/api/reorder/", self.admin_site.admin_view(self.api_reorder), name="schemas_node_editor_reorder"),
             path("editor/api/node-json/", self.admin_site.admin_view(self.api_node_json), name="schemas_node_editor_node_json"),
+            path("editor/api/extensions/", self.admin_site.admin_view(self.api_editor_extensions), name="schemas_node_editor_extensions"),
         ]
         return custom_urls + urls
 
@@ -551,4 +554,43 @@ class NodeEditorMixin:
         """
         from .utils import build_node_line_map
         return build_node_line_map(json_text, root_id)
+
+    def api_editor_extensions(self, request):
+        """List all JavaScript files in the extensions_editor directory."""
+        if request.method != "GET":
+            return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
+
+        try:
+            # In development, use STATICFILES_DIRS (source files)
+            # In production, use STATIC_ROOT (collected files)
+            static_dirs = getattr(settings, 'STATICFILES_DIRS', [])
+            static_root = getattr(settings, 'STATIC_ROOT', None)
+            
+            # Try STATICFILES_DIRS first (development)
+            extensions_dir = None
+            for static_dir in static_dirs:
+                potential_path = os.path.join(static_dir, 'admin', 'js', 'extensions_editor')
+                if os.path.exists(potential_path):
+                    extensions_dir = potential_path
+                    break
+            
+            # If not found in STATICFILES_DIRS, try STATIC_ROOT (production)
+            if not extensions_dir and static_root:
+                potential_path = os.path.join(static_root, 'admin', 'js', 'extensions_editor')
+                if os.path.exists(potential_path):
+                    extensions_dir = potential_path
+
+            if not extensions_dir or not os.path.exists(extensions_dir):
+                return JsonResponse({"extensions": []})
+
+            # List all .js files in the directory
+            extensions = []
+            for filename in os.listdir(extensions_dir):
+                if filename.endswith('.js') and not filename.startswith('.'):
+                    extensions.append(filename)
+            
+            return JsonResponse({"extensions": extensions})
+        except Exception as e:
+            logging.error(f"Error listing editor extensions: {e}", exc_info=True)
+            return JsonResponse({"extensions": []})
 

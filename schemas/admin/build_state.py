@@ -57,23 +57,42 @@ class BuildStateAdmin(admin.ModelAdmin):
 
     def get_changelist_instance(self, request):
         """Override to capture node_type filter before Django's changelist processes it."""
-        self._node_type_filter = request.GET.get('node_type') or ''
+        self._node_type_filter = request.GET.get('node_type')
+        if 'node_type' in request.GET:
+            from django.http import QueryDict
+            original_get = request.GET
+            modified_get = QueryDict(mutable=True)
+            modified_get.update(original_get)
+            if 'node_type' in modified_get:
+                del modified_get['node_type']
+            request._original_get = original_get
+            request.GET = modified_get
+            try:
+                cl = super().get_changelist_instance(request)
+            finally:
+                request.GET = request._original_get
+                del request._original_get
+            return cl
         return super().get_changelist_instance(request)
 
     def changelist_view(self, request, extra_context=None):
         """Override to add dynamic node type tabs for root types only"""
         extra_context = extra_context or {}
-        
+
         node_types = NodeType.objects.filter(json_scope__endswith='_root')
-        
+
         tabs = [{'label': 'All', 'value': ''}]
         for nt in node_types:
             label = nt.name.replace('_', ' ').title()
             tabs.append({'label': label, 'value': nt.name})
-        
+
         extra_context['node_type_tabs'] = tabs
-        extra_context['current_node_type'] = request.GET.get('node_type', '')
-        
+        # Get current_node_type from the original request.GET before it's modified by get_changelist_instance
+        current_node_type = request.GET.get('node_type', '')
+        extra_context['current_node_type'] = current_node_type
+        # Store the node_type for get_changelist_instance to use
+        self._node_type_filter = current_node_type
+
         try:
             return super().changelist_view(request, extra_context=extra_context)
         except IncorrectLookupParameters:

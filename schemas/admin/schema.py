@@ -175,7 +175,11 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             label = _root_node_type_name_for(nt).replace("_", " ").title()
             tabs.append({"label": label, "scope": nt.json_scope or ""})
         extra_context["schema_tabs"] = tabs
-        extra_context["current_scope"] = getattr(self, "_scope_filter", None) or request.GET.get("scope", "")
+        # Get current_scope from the original request.GET before it's modified by get_changelist_instance
+        current_scope = request.GET.get("scope", "")
+        extra_context["current_scope"] = current_scope
+        # Store the scope for get_changelist_instance to use
+        self._scope_filter = current_scope
         try:
             return super().changelist_view(request, extra_context=extra_context)
         except IncorrectLookupParameters:

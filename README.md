@@ -1,6 +1,6 @@
 # Dynamic Schema
 
-A production-grade platform for managing dynamic form schemas. Built on Django 5.0+ with PostgreSQL, it provides a flexible, version-controlled schema engine that allows non-technical users to define complex form structures through a hierarchical node system. Suitable for enterprise applications, government services, healthcare, finance, education, and any domain requiring dynamic data collection.
+A production-grade platform for managing dynamic schemas. Built on Django 5.0+ with PostgreSQL, it provides a flexible, version-controlled schema engine that allows non-technical users to define complex data structures through a hierarchical node system. Suitable for enterprise applications, government services, healthcare, finance, education, and any domain requiring dynamic data modeling.
 
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://python.org)
 [![Django](https://img.shields.io/badge/Django-5.0+-green.svg)](https://djangoproject.com)
@@ -29,34 +29,47 @@ A production-grade platform for managing dynamic form schemas. Built on Django 5
 
 ## Overview
 
-Dynamic Schema solves the challenge of rapidly evolving form requirements in enterprise environments. Instead of hardcoding form structures, this platform enables:
+Dynamic Schema solves the challenge of rapidly evolving data structure requirements in enterprise environments. Instead of hardcoding data models, this platform enables:
 
-- **Non-technical users** to design and modify forms through an intuitive admin interface
+- **Non-technical users** to design and modify schemas through an intuitive admin interface
 - **Version control** for every schema change (draft → published → archived lifecycle)
-- **Hierarchical composition** of complex forms from reusable building blocks
+- **Hierarchical composition** of complex structures from reusable building blocks
 - **Type-safe attributes** with strong data type definitions and domain constraints
 - **Multi-tenant support** for organizations and projects
 - **Industry agnostic** - used in government, healthcare, finance, education, and more
 
 ### Core Purpose
 
-- Enable dynamic form and data structure creation without code changes
+- Enable dynamic schema creation for any data structure without code changes
 - Maintain strict version control of schemas with full audit trail
 - Provide a hierarchical node-based system for complex data modeling
 - Ensure enterprise-grade data integrity through PostgreSQL schema isolation (`s7` schema)
+
+### What It Can Model
+
+This system is **domain-agnostic** and can create any type of data structure:
+- **Forms**: Dynamic forms for data collection
+- **System configurations**: Complex parameters and settings
+- **Data structures**: Dynamic data models for any domain
+- **Workflows**: Process definitions and state machines
+- **Catalogs and taxonomies**: Classification hierarchies
+- **User interfaces**: Layout and component definitions
+- **API contracts**: Request/response schema definitions
+- **Business rules**: Validation and conditional logic
+- **Integrations**: Data mappings and transformations
 
 ---
 
 ## Key Features
 
 ### Schema Versioning
-- Every form has a unique `key` + `version` combination
+- Every schema has a unique `key` + `version` combination
 - Strict mutational control (immutable published schemas)
 - Draft → Published → Archived lifecycle
 - Build counter tracking for cache invalidation
 
 ### Hierarchical Composition
-- Forms built from nodes that can contain child nodes
+- Schemas built from nodes that can contain child nodes
 - `NodeTypeComposition` defines parent-child relationships
 - Support for unlimited nesting depth
 - Self-referencing hierarchies (e.g., taxonomy categories with subcategories)
@@ -310,7 +323,7 @@ python manage.py runserver
 
 ## Usage
 
-### Creating a Form Schema
+### Creating a Schema
 
 1. **Access the Admin Interface**
    - Navigate to `http://localhost:8000/admin/`
@@ -318,7 +331,7 @@ python manage.py runserver
 
 2. **Create Node Types**
    - Go to `Schemas > Node types`
-   - Define the structure of your form elements
+   - Define the structure of your schema elements
 
 3. **Define Compositions**
    - Go to `Schemas > Node type compositions`
@@ -328,9 +341,9 @@ python manage.py runserver
    - Go to `Schemas > Attribute definitions`
    - Define the properties each node type can have
 
-5. **Build Your Form**
+5. **Build Your Schema**
    - Go to `Schemas > Nodes`
-   - Create the actual form structure using the visual editor
+   - Create the actual schema structure using the visual editor
 
 ### API Endpoints
 
@@ -493,9 +506,51 @@ The admin interface uses custom JavaScript for the visual node editor:
 # Navigate to admin static files
 cd schemas/static/admin/js/
 
-# The main editor is in editor.js
+# The main editor is in node_editor.js
 # Templates are in schemas/templates/admin/
 ```
+
+#### Editor Extension System
+
+The node editor supports a plugin-based extension system for custom property editors. Extensions are automatically loaded from `schemas/static/admin/js/extensions_editor/` and registered with the `window.s7Editors` API.
+
+**Built-in Extensions:**
+
+- **geo_editor.js** - Geographic coordinates editor with lat/lng inputs
+- **url_editor.js** - URL input with validation and open-in-new-tab button
+- **uuid_editor.js** - UUID editor with generate and copy-to-clipboard buttons
+
+**Creating Custom Extensions:**
+
+Extensions register pattern detectors and custom renderers:
+
+```javascript
+// Pattern detection function
+function isMyPattern(props) {
+  return props.some(p => p.data_type === 'my_custom_type');
+}
+
+// Custom renderer
+function renderMyEditor(props) {
+  const container = document.getElementById('props');
+  container.innerHTML = '';
+  // Custom UI implementation
+}
+
+// Register with the extension system
+if (window.s7Editors) {
+  window.s7Editors.registerRenderer(isMyPattern, renderMyEditor);
+}
+```
+
+**Extension API:**
+
+- `registerRenderer(patternCheck, renderFn)` - Register custom UI renderer
+- `registerCheckHandler(patternCheck, handleFn)` - Register custom change detection
+- `registerSaveHandler(patternCheck, handleFn)` - Register custom save logic
+- `window.s7NodeEditor` - Exposed core functions: `renderPropRow`, `checkPropsChanges`, `apiProps`, `requestJson`, `updateNodeJson`
+
+Extensions are auto-discovered via the `/editor/api/extensions/` endpoint which returns a list of extension files to load.
 
 ---
 
@@ -587,7 +642,7 @@ dynamic_schema_s7/
 
 ### Customer Satisfaction Survey (Included Example)
 
-The project includes a complete **Survey System** example in `0005_example_seed.py` demonstrating how to model a real-world data-collection use case end-to-end.
+The project includes a complete **Survey System** example in `0005_example_seed.py` demonstrating how to model a real-world data-collection use case end-to-end. This is one of many possible applications of the dynamic schema engine.
 
 #### What Gets Created
 

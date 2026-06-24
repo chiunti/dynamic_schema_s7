@@ -25,6 +25,7 @@ DATA_TYPES = [
     ('domain_list', 'List of domain item values (stored in value_json array, validated against domain)'),
     ('url',         'URL string (stored in value_string)'),
     ('options_field', 'Array of label/value objects for select options (stored in value_json)'),
+    ('conditional', 'Conditional logic structure (stored in value_json)'),
     # UUID types
     ('uuid',        'UUID string (stored in value_string)'),
     ('auto_uuid',   'Auto-generated UUID (stored in value_string, auto-assigned)'),

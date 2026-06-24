@@ -34,21 +34,31 @@ from ..constants import (
     ERR_INVALID_SCHEMA,
     ERR_IMPORT_FAILED,
     ERR_INVALID_JSON_MSG,
+    SCHEMA_KEY_SUFFIX,
 )
 from .base import RootNodeAdminMixin
 from .node_editor import NodeEditorMixin
 
 
-def _validate_schema_json(schema_text):
+def _validate_schema_json(schema_text, schema_key=None):
     try:
         schema = json.loads(schema_text)
     except json.JSONDecodeError as e:
         raise ValueError(ERR_INVALID_JSON_MSG.format(error=e))
     if not isinstance(schema, dict):
         raise ValueError(ERR_SCHEMA_MUST_BE_JSON_OBJECT)
+    
+    # Get the root object (first key in the JSON, e.g., "form", "screen", "survey")
+    root_key = next(iter(schema.keys())) if schema else None
+    root_obj = schema[root_key] if root_key and isinstance(schema[root_key], dict) else schema
+    
     # Accept 'id' or 'key' as name field for schemas
-    if "name" not in schema and "id" not in schema and "key" not in schema:
-        raise ValueError(ERR_SCHEMA_MUST_HAVE_NAME_ID_OR_KEY)
+    # If schema_key is provided via form, use it if JSON doesn't have name/id/key
+    if "name" not in root_obj and "id" not in root_obj and "key" not in root_obj:
+        if schema_key:
+            root_obj["key"] = schema_key
+        else:
+            raise ValueError(ERR_SCHEMA_MUST_HAVE_NAME_ID_OR_KEY)
     return schema
 
 
@@ -353,19 +363,61 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             if not root_node_type:
                 return JsonResponse({"error": ERR_INVALID_SCHEMA_TYPE}, status=400)
             try:
-                validated_schema = _validate_schema_json(schema_text)
+                validated_schema = _validate_schema_json(schema_text, schema_key)
             except ValueError as e:
                 return JsonResponse({"error": ERR_INVALID_SCHEMA, "detail": str(e)}, status=400)
+            
+            # Validate that JSON root key matches selected schema type
+            json_root_key = next(iter(validated_schema.keys())) if validated_schema else None
+            if json_root_key and json_root_key != root_node_type.name and json_root_key != root_node_type.json_scope:
+                return JsonResponse({
+                    "error": ERR_INVALID_SCHEMA,
+                    "detail": f"JSON root key '{json_root_key}' does not match selected schema type '{root_node_type.name}' (json_scope: '{root_node_type.json_scope}')"
+                }, status=400)
+            
+            # Generate schema_key if not provided and not in JSON
+            # Get the root object for key generation
+            json_root_key = next(iter(validated_schema.keys())) if validated_schema else None
+            root_obj = validated_schema[json_root_key] if json_root_key and isinstance(validated_schema[json_root_key], dict) else validated_schema
+            
+            if not schema_key and "key" not in root_obj:
+                if "name" in root_obj:
+                    schema_key = f"{root_obj['name']}{SCHEMA_KEY_SUFFIX}"
+                    # Truncate to max 30 chars (suffix is 4 chars, so name max 26)
+                    if len(schema_key) > 30:
+                        schema_key = schema_key[:30]
+                    root_obj["key"] = schema_key
+                elif "id" in root_obj:
+                    schema_key = str(root_obj["id"])
+                    # Truncate to max 30 chars
+                    if len(schema_key) > 30:
+                        schema_key = schema_key[:30]
+                    root_obj["key"] = schema_key
+                else:
+                    return JsonResponse({"error": ERR_INVALID_SCHEMA, "detail": "Cannot generate schema_key: JSON must have 'name' or 'id' field in the root object"}, status=400)
+            
+            # If schema_version is not provided, pass empty string to allow JSON version to be used
+            # The import_schema method will handle the fallback to "1" if needed
+            if not schema_version:
+                schema_version = ""
+            
             validated_schema["node_type"] = root_node_type.name
             try:
-                SchemaService().import_schema(
+                schema_id, version_warning = SchemaService().import_schema(
                     validated_schema, schema_key, schema_version, schema_status, overwrite,
                     project_id=project_id
                 )
             except Exception as e:
-                return JsonResponse({"error": ERR_IMPORT_FAILED, "detail": str(e)}, status=500)
+                import traceback
+                error_detail = str(e)
+                error_traceback = traceback.format_exc()
+                return JsonResponse({"error": ERR_IMPORT_FAILED, "detail": error_detail, "traceback": error_traceback}, status=500)
 
-            return HttpResponseRedirect(reverse("admin:schemas_schema_changelist"))
+            response_data = {"success": True, "schema_id": str(schema_id)}
+            if version_warning:
+                response_data["warning"] = version_warning
+            
+            return JsonResponse(response_data)
 
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 

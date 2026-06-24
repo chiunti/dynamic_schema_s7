@@ -66,8 +66,9 @@ class NodeTypeCompositionInline(admin.TabularInline):
 
 class NodeTypeVariantInline(admin.TabularInline):
     model = NodeTypeVariant
+    fk_name = 'node_type'
     extra = 0
-    fields = ("variant_key",)
+    fields = ("variant_key", "discriminator_attr", "props_node_type")
 
 
 @admin.register(NodeType)

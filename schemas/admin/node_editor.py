@@ -191,11 +191,26 @@ class NodeEditorMixin:
             .values_list("node_type_id", "cnt")
         )
 
+        # For collection_key-based compositions, check if a child with that key already exists
+        # Build a set of existing keys (regardless of node_type) for singleton slots
+        existing_keys = set(
+            Node.objects.filter(parent=node, node_type_id__in=child_type_ids, key__isnull=False)
+            .values_list("key", flat=True)
+        )
+
         allowed = []
         for c in compositions:
             max_c = c.max_children
-            if max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
+            
+            # For collection_key-based compositions (singleton slots), check if key already exists
+            if c.collection_key:
+                if c.collection_key in existing_keys:
+                    # A child with this collection_key already exists (any node type)
+                    continue
+            # For non-collection_key compositions, use count-based check
+            elif max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
                 continue
+            
             allowed.append({
                 "node_type": c.child_type.name,
                 "label": c.child_type.label,
@@ -217,13 +232,34 @@ class NodeEditorMixin:
         )
         existing = {na.attribute_def_id: na for na in NodeAttribute.objects.filter(node=node).select_related("attribute_def")}
 
-        # Resolve current variant from the 'type' attribute (if present)
-        type_def = next((d for d in all_defs if d.json_key == "type" and d.variant_key is None), None)
+        # Resolve current variant from the 'type' attribute (if present).
+        # For sdui_props nodes, the variant is inherited from the parent's component type.
         current_variant = None
-        if type_def:
-            type_attr = existing.get(type_def.id)
-            if type_attr and type_attr.value_string:
-                current_variant = type_attr.value_string
+        if node.node_type.name == 'sdui_props' and node.parent:
+            # Read the parent's type attribute to determine the variant for props
+            parent = Node.objects.select_related("node_type").filter(id=node.parent_id).first()
+            if parent:
+                parent_type_attr = NodeAttribute.objects.filter(
+                    node=parent,
+                    attribute_def__json_key='type'
+                ).select_related('attribute_def').first()
+                if parent_type_attr and parent_type_attr.value_string:
+                    current_variant = parent_type_attr.value_string
+        else:
+            # Standard variant resolution: read 'type' from the current node
+            type_def = next((d for d in all_defs if d.json_key == "type" and d.variant_key is None), None)
+            if type_def:
+                type_attr = existing.get(type_def.id)
+                if type_attr and type_attr.value_string:
+                    current_variant = type_attr.value_string
+            if current_variant is None:
+                # Fallback: find any 'type' NodeAttribute regardless of variant_key scoping
+                for d in all_defs:
+                    if d.json_key == "type":
+                        type_attr = existing.get(d.id)
+                        if type_attr and type_attr.value_string:
+                            current_variant = type_attr.value_string
+                            break
 
         # Filter by variant_key and is_common: show universal common (NULL + is_common=True) + current variant only.
         # Catalog defs (variant_key=NULL + is_common=False) are templates and should not be shown.
@@ -237,6 +273,30 @@ class NodeEditorMixin:
                 defs = [d for d in all_defs if d.variant_key is None and d.is_common]
         else:
             defs = all_defs
+
+        # Filter out json_keys that correspond to child nodes (without collection_key)
+        # These are structural child nodes like layout, props, show_if, etc.
+        # Check if there's a composition where child_type.name ends with _json_key
+        # (e.g., sdui_layout ends with _layout, sdui_show_if ends with _show_if)
+        from schemas.models import NodeTypeComposition
+        child_type_names = set(
+            NodeTypeComposition.objects
+            .filter(parent_type=node.node_type, collection_key__isnull=True)
+            .values_list('child_type__name', flat=True)
+        )
+        
+        filtered_defs = []
+        for d in defs:
+            json_key = d.json_key
+            # Check if child_type.name ends with _json_key (suffix match with underscore)
+            is_child_node = any(
+                child_name == json_key  # Exact match
+                or child_name.endswith('_' + json_key)  # Suffix match (e.g., sdui_layout -> layout)
+                for child_name in child_type_names
+            )
+            if not is_child_node:
+                filtered_defs.append(d)
+        defs = filtered_defs
 
         if request.method == "GET":
             domain_ids = [d.domain_id for d in defs if d.domain_id]
@@ -299,14 +359,18 @@ class NodeEditorMixin:
             }
 
             # Populate type selector options for nodes that have variants
+            # For sdui_container with collection_key, type is already "container" - don't show variants
+            # For sdui_widget with collection_key, type is null - allow variant selection
             if has_variant_defs:
-                variants = list(
-                    NodeTypeVariant.objects.filter(node_type=node.node_type)
-                    .order_by("variant_key")
-                    .values_list("variant_key", flat=True)
-                )
-                options = [{"value": v, "label": v} for v in variants]
-                response_data["variant_options"] = options
+                # Skip variant options for sdui_container nodes with collection_key (type is fixed to "container")
+                if not (node.node_type.name == 'sdui_container' and node.key):
+                    variants = list(
+                        NodeTypeVariant.objects.filter(node_type=node.node_type)
+                        .order_by("variant_key")
+                        .values_list("variant_key", flat=True)
+                    )
+                    options = [{"value": v, "label": v} for v in variants]
+                    response_data["variant_options"] = options
 
             return JsonResponse(response_data)
 
@@ -351,6 +415,7 @@ class NodeEditorMixin:
         parent_id = payload.get("parent_id")
         node_type_name = payload.get("node_type")
         variant_key = payload.get("variant_key")
+        collection_key = payload.get("collection_key")
         if not parent_id or not node_type_name:
             return JsonResponse({"error": ERR_PARENT_ID_AND_NODE_TYPE_REQUIRED}, status=400)
 
@@ -362,14 +427,34 @@ class NodeEditorMixin:
         if not child_type:
             return JsonResponse({"error": ERR_NODE_TYPE_NOT_FOUND}, status=404)
 
-        composition = NodeTypeComposition.objects.filter(parent_type=parent.node_type, child_type=child_type).first()
+        # Filter composition by collection_key if provided
+        if collection_key:
+            composition = NodeTypeComposition.objects.filter(
+                parent_type=parent.node_type,
+                child_type=child_type,
+                collection_key=collection_key
+            ).first()
+        else:
+            composition = NodeTypeComposition.objects.filter(
+                parent_type=parent.node_type,
+                child_type=child_type
+            ).first()
+        
         if not composition:
             return JsonResponse({"error": ERR_COMPOSITION_NOT_ALLOWED}, status=400)
 
-        if composition.max_children is not None:
+        # For collection_key-based compositions, check if a child with that key already exists
+        if composition.collection_key:
+            existing = Node.objects.filter(parent=parent, key=composition.collection_key).exists()
+            if existing:
+                return JsonResponse({"error": f"A child with key '{composition.collection_key}' already exists"}, status=400)
+        # For non-collection_key compositions, use count-based check
+        elif composition.max_children is not None:
             current_children_count = Node.objects.filter(parent=parent, node_type=child_type).count()
             if current_children_count >= composition.max_children:
                 return JsonResponse({"error": ERR_MAX_CHILDREN_REACHED}, status=400)
+        
+        logging.info(f"Creating node: parent={parent_id}, node_type={node_type_name}, collection_key={collection_key}, composition.collection_key={composition.collection_key}")
 
         max_pos = Node.objects.filter(parent=parent).aggregate(Max("sort_order")).get("sort_order__max")
         next_pos = 0 if max_pos is None else int(max_pos) + 1
@@ -377,9 +462,12 @@ class NodeEditorMixin:
         if name is None or str(name).strip() == "":
             name = f"{node_type_name}_{next_pos}"
 
+        # Use collection_key as the node key if available
+        node_key = composition.collection_key if composition.collection_key else None
+
         try:
             node_service = NodeService()
-            node = node_service.create_node(parent_id, node_type_name, name, variant_key)
+            node = node_service.create_node(parent_id, node_type_name, name, variant_key, key=node_key, collection_key=collection_key)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:

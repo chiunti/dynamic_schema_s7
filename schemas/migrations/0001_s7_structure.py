@@ -553,7 +553,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name="nodetypecomposition",
-            constraint=models.UniqueConstraint(fields=["parent_type", "child_type"], name="uq_snode_type_comps"),
+            constraint=models.UniqueConstraint(fields=["parent_type", "child_type", "collection_key"], name="uq_snode_type_comps"),
         ),
         # ------------------------------
         # NodeTypeVariant
@@ -580,6 +580,27 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("variant_key", models.CharField(max_length=255)),
+                (
+                    "discriminator_attr",
+                    models.CharField(
+                        max_length=255,
+                        default='type',
+                        null=True,
+                        blank=True,
+                        help_text='Attribute name that discriminates this variant (e.g., type, input_mode, widget_class)'
+                    ),
+                ),
+                (
+                    "props_node_type",
+                    models.ForeignKey(
+                        on_delete=models.SET_NULL,
+                        null=True,
+                        blank=True,
+                        to="schemas.nodetype",
+                        related_name='+',
+                        help_text='Child node type that holds variant-specific props (null = parent node itself)'
+                    ),
+                ),
             ],
             options={
                 "db_table": "schema_node_type_variants",
@@ -588,8 +609,8 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="nodetypevariant",
             constraint=models.UniqueConstraint(
-                fields=["node_type", "variant_key"],
-                name="uq_snode_type_variants",
+                fields=["node_type", "variant_key", "discriminator_attr"],
+                name="uq_snode_type_variants_nt_key_disc",
             ),
         ),
         # ------------------------------

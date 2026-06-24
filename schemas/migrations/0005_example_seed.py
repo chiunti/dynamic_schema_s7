@@ -276,6 +276,10 @@ def create_survey_structure(apps, schema_editor):
         NodeTypeVariant.objects.get_or_create(
             node_type=question_nt,
             variant_key=variant_key,
+            defaults={
+                'discriminator_attr': 'type',
+                'props_node_type': None,
+            },
         )
         for json_key, dt_name, domain_name, is_required in attr_defs:
             AttributeDef.objects.get_or_create(

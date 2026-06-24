@@ -70,7 +70,7 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF v_type_name IN ('string', 'date', 'color') THEN
+  IF v_type_name IN ('string', 'date', 'color', 'internal') THEN
     IF NEW.value_string IS NULL THEN
       RAISE EXCEPTION 'Expected value_string for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;
@@ -117,7 +117,7 @@ BEGIN
          FROM s7.schema_nodes n
          JOIN s7.schema_node_types nt ON nt.id = n.node_type_id
          WHERE n.parent_id = p_node_id
-           AND nt.name = 'condition_group'
+           AND nt.name IN ('condition_group', 'sdui_show_if')
        ),
        cg_attrs AS (
          SELECT
@@ -132,12 +132,17 @@ BEGIN
        condition_groups AS (
          SELECT
            n.id,
-           MAX(CASE WHEN ca.name = 'usage' THEN ca.value_string END) AS usage,
+           -- Use stored 'usage' attribute when available, fall back to node.key
+           -- (sdui_show_if nodes store the slot in node.key, not as an attribute)
+           COALESCE(
+             MAX(CASE WHEN ca.name = 'usage' THEN ca.value_string END),
+             n.key
+           ) AS usage,
            MAX(CASE WHEN ca.name = 'logic' THEN ca.value_string END) AS logic
          FROM cg
          JOIN s7.schema_nodes n ON n.id = cg.id
          LEFT JOIN cg_attrs ca ON ca.node_id = n.id
-         GROUP BY n.id
+         GROUP BY n.id, n.key
        ),
        conditions AS (
          SELECT
@@ -219,6 +224,54 @@ SET search_path TO s7, public;
 
 
  # ------------------------------
+ # strip_empty_values
+ # ------------------------------
+FN_STRIP_EMPTY_VALUES_SQL = r"""
+SET search_path TO s7, public;
+
+CREATE OR REPLACE FUNCTION s7_strip_empty_values(p_jsonb JSONB)
+RETURNS JSONB AS $$
+DECLARE
+  v_key TEXT;
+  v_value JSONB;
+  v_result JSONB := '{}'::jsonb;
+BEGIN
+  FOR v_key, v_value IN SELECT * FROM jsonb_each(p_jsonb) LOOP
+    -- Skip null values
+    IF v_value IS NULL OR v_value = 'null'::jsonb THEN
+      CONTINUE;
+    END IF;
+    
+    -- Skip empty strings
+    IF v_value #>> '{}' = '' THEN
+      CONTINUE;
+    END IF;
+    
+    -- Skip empty arrays
+    IF jsonb_typeof(v_value) = 'array' AND jsonb_array_length(v_value) = 0 THEN
+      CONTINUE;
+    END IF;
+    
+    -- Skip empty objects
+    IF jsonb_typeof(v_value) = 'object' AND v_value = '{}'::jsonb THEN
+      CONTINUE;
+    END IF;
+    
+    -- Recursively process nested objects
+    IF jsonb_typeof(v_value) = 'object' THEN
+      v_result := v_result || jsonb_build_object(v_key, s7_strip_empty_values(v_value));
+    ELSE
+      v_result := v_result || jsonb_build_object(v_key, v_value);
+    END IF;
+  END LOOP;
+  
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql;
+"""
+
+
+ # ------------------------------
  # build_node_json
  # ------------------------------
 FN_BUILD_NODE_JSON_SQL = r"""
@@ -236,6 +289,7 @@ DECLARE
   v_show_if         JSONB;
   v_enabled_if      JSONB;
   v_children_json   JSONB;
+  v_keyed_children  JSONB;
   v_result          JSONB;
   v_slots           JSONB;
   v_node_type_name  TEXT;
@@ -264,16 +318,20 @@ BEGIN
     AND ad.node_type_id = n.node_type_id
   LIMIT 1;
 
-  -- Collect stored attributes (excluding natural_* types — they are never in schema_node_attributes)
+  -- Collect stored attributes (excluding natural_* and internal types)
   SELECT
     jsonb_object_agg(ad.json_key,
-                     COALESCE(na.value_number::text::jsonb, na.value_bool::text::jsonb, na.value_json, to_jsonb(na.value_string)))
+                     CASE dt.name
+                       WHEN 'int' THEN to_jsonb(TRUNC(na.value_number)::bigint)
+                       ELSE COALESCE(na.value_number::text::jsonb, na.value_bool::text::jsonb, na.value_json, to_jsonb(na.value_string))
+                     END)
   INTO v_attrs
   FROM s7.schema_node_attributes na
   JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
   JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
   WHERE na.node_id = p_node_id
-    AND dt.name NOT LIKE 'natural_%';
+    AND dt.name NOT LIKE 'natural_%'
+    AND dt.name <> 'internal';
 
   -- Build natural field overrides from schema_nodes columns, driven by AttributeDef definitions.
   -- Only include natural fields that are explicitly defined as AttributeDefs for this node's type.
@@ -312,6 +370,8 @@ BEGIN
 
   -- Extract all children grouped by collection_key
   -- If max_children=1, extract as object (not array)
+  -- For singleton slots (max_children=1): child.key must match collection_key exactly
+  -- For collections (max_children != 1): include all children of the correct type
   SELECT
     jsonb_object_agg(
       col.collection_key,
@@ -334,22 +394,55 @@ BEGIN
     JOIN s7.schema_nodes ch
       ON ch.parent_id = parent.id
       AND ch.node_type_id = ntc.child_type_id
+      AND (
+        -- For singleton slots: key must match collection_key exactly
+        (ntc.max_children = 1 AND ch.key = ntc.collection_key)
+        OR
+        -- For collections: include all children of this type under this parent
+        (ntc.max_children IS NULL OR ntc.max_children != 1)
+      )
     WHERE parent.id = p_node_id
     GROUP BY ntc.collection_key, ntc.max_children
   ) AS col;
 
-  -- Generic JSON structure - merge attrs and children directly into root.
-  -- v_natural_attrs overrides any stored attrs for the same json_key (e.g. 'id' maps to PK).
-  v_result := jsonb_strip_nulls(
-    COALESCE(v_attrs, '{}'::jsonb)
-    || jsonb_build_object(
-         'key', v_key,
-         'showIf', v_show_if,
-         'enabledIf', v_enabled_if
-       )
+  -- Extract children without collection_key (e.g. layout, props sub-nodes).
+  -- Also captures shorthand-dispatch children: nodes in singleton compositions
+  -- (max_children=1) that were stored under a key != ntc.collection_key
+  -- (e.g. appbar, fab, drawer stored as screen_section children).
+  -- Condition-group-like nodes (condition_group / sdui_show_if) are already
+  -- handled by s7_build_node_conditions and must be skipped here.
+  SELECT jsonb_object_agg(ch.key, s7_build_node_json(ch.id))
+  INTO v_keyed_children
+  FROM s7.schema_nodes ch
+  JOIN s7.schema_node_types ch_nt ON ch_nt.id = ch.node_type_id
+  JOIN s7.schema_node_type_compositions ntc
+    ON ntc.child_type_id = ch.node_type_id
+  JOIN s7.schema_nodes parent ON parent.id = p_node_id
+    AND ntc.parent_type_id = parent.node_type_id
+  WHERE ch.parent_id = p_node_id
+    AND ch_nt.name NOT IN ('condition_group', 'sdui_show_if')
+    AND (
+      ntc.collection_key IS NULL
+      OR (ntc.max_children = 1 AND ch.key <> ntc.collection_key)
+    );
+
+  IF v_keyed_children IS NOT NULL THEN
+    v_children_json := COALESCE(v_children_json, '{}'::jsonb) || v_keyed_children;
+  END IF;
+
+  v_result := (
+    jsonb_strip_nulls(
+      COALESCE(v_natural_attrs, '{}'::jsonb)
+    || COALESCE(v_attrs, '{}'::jsonb)
+    || CASE WHEN v_show_if    IS NOT NULL THEN jsonb_build_object('show_if',     v_show_if)    ELSE '{}'::jsonb END
+    || CASE WHEN v_enabled_if IS NOT NULL THEN jsonb_build_object('enabled_if',  v_enabled_if) ELSE '{}'::jsonb END
+    )
     || COALESCE(v_children_json, '{}'::jsonb)
     || COALESCE(v_natural_attrs, '{}'::jsonb)
   );
+
+  -- Strip empty objects (e.g., "props": {}, "layout": {}) from the final JSON
+  v_result := s7_strip_empty_values(v_result);
 
   RETURN v_result;
 END;
@@ -521,7 +614,7 @@ BEGIN
   ELSIF p_value_json IS NOT NULL THEN
     RETURN p_value_json;
   ELSIF p_value_string IS NOT NULL THEN
-    RETURN p_value_string::text::jsonb;
+    RETURN to_jsonb(p_value_string);
   ELSE
     RETURN NULL::jsonb;
   END IF;
@@ -683,7 +776,22 @@ DECLARE
   v_domain_id    UUID;
   v_attr_id      UUID;
   v_variant_key_eff TEXT;
+  v_is_collection_key BOOLEAN;
 BEGIN
+  -- Do not create AttributeDefs for json_keys that correspond to collection_keys
+  -- These are child nodes defined by NodeTypeComposition, not properties
+  SELECT EXISTS (
+    SELECT 1 FROM schema_node_type_compositions
+    WHERE parent_type_id = (
+      SELECT id FROM schema_node_types WHERE name = p_node_type_name LIMIT 1
+    )
+    AND collection_key = p_json_key
+  ) INTO v_is_collection_key;
+
+  IF v_is_collection_key THEN
+    RETURN NULL;
+  END IF;
+
   v_node_type_id := s7_ensure_node_type(p_node_type_name, p_node_type_name, TRUE, FALSE, NULL);
   v_data_type_id := s7_ensure_data_type(p_data_type_name, p_data_type_name);
   v_domain_id := NULL;
@@ -1393,10 +1501,12 @@ SET search_path TO s7, public;
 
 CREATE OR REPLACE FUNCTION s7_import_schema(
   p_schema     JSONB,
-  p_key   TEXT DEFAULT NULL,
+  p_key        TEXT DEFAULT NULL,
   p_version    TEXT DEFAULT NULL,
   p_status     TEXT DEFAULT NULL,
-  p_overwrite  BOOLEAN DEFAULT FALSE
+  p_overwrite  BOOLEAN DEFAULT FALSE,
+  p_project_id UUID DEFAULT NULL,
+  p_organization_id UUID DEFAULT NULL
 )
 RETURNS UUID AS $$
 DECLARE
@@ -1406,8 +1516,10 @@ DECLARE
   v_key_eff TEXT;
   v_version_eff TEXT;
   v_status_eff TEXT;
+  v_root_key TEXT;
 BEGIN
-  RAISE NOTICE 's7_import_schema called with p_schema: %, p_key: %, p_version: %, p_status: %', p_schema, p_key, p_version, p_status;
+  RAISE NOTICE 's7_import_schema called with p_schema: %, p_key: %, p_version: %, p_status: %, p_project_id: %, p_organization_id: %', 
+    p_schema, p_key, p_version, p_status, p_project_id, p_organization_id;
   
   IF p_schema IS NULL OR p_schema = 'null'::jsonb THEN
     RAISE EXCEPTION 'schema is required';
@@ -1428,28 +1540,98 @@ BEGIN
     v_status_eff := 'draft';
   END IF;
 
-  -- Get the root node type (is_root=true)
-  SELECT id INTO v_root_type_id FROM schema_node_types WHERE is_root = true LIMIT 1;
+  -- Detect root node type from JSON root key
+  -- The JSON should have a root key that maps to a NodeType (name or json_scope)
+  -- Example: {"schema_type": {...}} where "schema_type" matches NodeType.name or NodeType.json_scope
+  SELECT jsonb_object_keys(p_schema) INTO v_root_key;
+  IF v_root_key IS NULL THEN
+    RAISE EXCEPTION 'Schema JSON must have a root key that maps to a NodeType';
+  END IF;
+  
+  -- Get the root node type by matching the JSON root key to node_type name or json_scope
+  -- The JSON root key is NOT the schema type itself, but a key that identifies which NodeType to use
+  SELECT id INTO v_root_type_id FROM schema_node_types 
+  WHERE (name = v_root_key OR json_scope = v_root_key) AND is_root = true;
   IF v_root_type_id IS NULL THEN
-    RAISE EXCEPTION 'No root node type found (is_root=true)';
+    RAISE EXCEPTION 'Root node type not found for JSON root key: %', v_root_key;
   END IF;
 
+  -- Check for existing schema with matching key/version OR key=NULL (edge case from manual creation)
   v_existing_root_id := s7_find_schema_node_id(v_key_eff, v_version_eff);
+  
+  -- Also check for nodes with key=NULL of the same node_type and project
+  IF v_existing_root_id IS NULL THEN
+    SELECT id INTO v_existing_root_id FROM schema_nodes
+    WHERE key IS NULL
+      AND version = v_version_eff
+      AND node_type_id = v_root_type_id
+      AND project_id = p_project_id
+      AND parent_id IS NULL
+    LIMIT 1;
+  END IF;
+  
   IF v_existing_root_id IS NOT NULL THEN
     IF NOT p_overwrite THEN
       RAISE EXCEPTION 'Schema already exists for key=% version=%', v_key_eff, v_version_eff;
     END IF;
-    DELETE FROM schema_nodes WHERE id = v_existing_root_id;
+    
+    -- Delete all nodes in the schema tree (bottom-up to avoid FK violations)
+    -- Use recursive CTE to find ALL root nodes with matching key/version and their descendants
+    -- This handles the case where multiple root nodes exist with the same key/version
+    
+    -- First delete attributes (they reference nodes)
+    WITH RECURSIVE tree_nodes AS (
+      -- Base case: ALL root nodes with matching key and version
+      -- Also include nodes with key=NULL of the same node_type and project (edge case from manual creation)
+      SELECT id, parent_id, 0 AS depth
+      FROM schema_nodes
+      WHERE (key = v_key_eff OR (key IS NULL AND node_type_id = v_root_type_id AND project_id = p_project_id))
+        AND version = v_version_eff 
+        AND parent_id IS NULL
+      
+      UNION ALL
+      
+      -- Recursive case: all children of all matched root nodes
+      SELECT n.id, n.parent_id, tn.depth + 1
+      FROM schema_nodes n
+      INNER JOIN tree_nodes tn ON n.parent_id = tn.id
+    )
+    DELETE FROM schema_node_attributes
+    WHERE node_id IN (SELECT id FROM tree_nodes);
+    
+    -- Then delete nodes (bottom-up order)
+    WITH RECURSIVE tree_nodes AS (
+      -- Base case: ALL root nodes with matching key and version
+      -- Also include nodes with key=NULL of the same node_type and project (edge case from manual creation)
+      SELECT id, parent_id, 0 AS depth
+      FROM schema_nodes
+      WHERE (key = v_key_eff OR (key IS NULL AND node_type_id = v_root_type_id AND project_id = p_project_id))
+        AND version = v_version_eff 
+        AND parent_id IS NULL
+      
+      UNION ALL
+      
+      -- Recursive case: all children of all matched root nodes
+      SELECT n.id, n.parent_id, tn.depth + 1
+      FROM schema_nodes n
+      INNER JOIN tree_nodes tn ON n.parent_id = tn.id
+    )
+    DELETE FROM schema_nodes
+    WHERE id IN (
+      SELECT id FROM tree_nodes
+      ORDER BY depth DESC
+    );
   END IF;
 
-  -- Create root node
-  INSERT INTO schema_nodes (node_type_id, parent_id, sort_order, key, name, version)
-  VALUES (v_root_type_id, NULL, 1, v_key_eff, v_key_eff, v_version_eff)
+  -- Create root node with project_id and organization_id
+  INSERT INTO schema_nodes (node_type_id, parent_id, sort_order, key, name, version, project_id, organization_id)
+  VALUES (v_root_type_id, NULL, 1, v_key_eff, v_key_eff, v_version_eff, p_project_id, p_organization_id)
   RETURNING id INTO v_root_id;
 
   -- Note: The schema structure should be built by domain-specific import functions
   -- This function only creates the root node with basic metadata
-  RAISE NOTICE 'Schema root node created with id=%', v_root_id;
+  RAISE NOTICE 'Schema root node created with id=%, node_type_id=%, root_key=%, project_id=%, organization_id=%', 
+    v_root_id, v_root_type_id, v_root_key, p_project_id, p_organization_id;
 
   RETURN v_root_id;
 EXCEPTION
@@ -1673,6 +1855,7 @@ class Migration(migrations.Migration):
         migrations.RunSQL(FN_VALIDATE_VALUE_TYPE_SQL),
         migrations.RunSQL(FN_ATTRIBUTE_VALUE_TO_JSONB_SQL),
         migrations.RunSQL(FN_BUILD_NODE_CONDITIONS_SQL),
+        migrations.RunSQL(FN_STRIP_EMPTY_VALUES_SQL),
         migrations.RunSQL(FN_BUILD_NODE_JSON_SQL),
         migrations.RunSQL(FN_BUILD_SCHEMA_SQL),
         migrations.RunSQL(FN_BUILD_SCHEMA_TEXT_SQL),

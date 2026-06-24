@@ -23,6 +23,8 @@ DATA_TYPES = [
     ('dict',        'Arbitrary dictionary (stored in value_json object)'),
     ('list_int',    'List of integers (stored in value_json array)'),
     ('domain_list', 'List of domain item values (stored in value_json array, validated against domain)'),
+    ('url',         'URL string (stored in value_string)'),
+    ('options_field', 'Array of label/value objects for select options (stored in value_json)'),
     # UUID types
     ('uuid',        'UUID string (stored in value_string)'),
     ('auto_uuid',   'Auto-generated UUID (stored in value_string, auto-assigned)'),
@@ -33,6 +35,8 @@ DATA_TYPES = [
     ('natural_version',  'Maps to schema_nodes.version column — bidirectional sync with JSON export, enforces key+version uniqueness'),
     ('natural_order',    'Maps to schema_nodes.sort_order column — bidirectional sync with JSON export (0-based)'),
     ('display_order',    'Maps to schema_nodes.sort_order column — bidirectional sync with JSON export (1-based for human readability)'),
+    # Internal routing/discriminator values — stored in value_string but never emitted in JSON output.
+    ('internal',         'Internal discriminator stored in value_string — never included in JSON export'),
 ]
 
 # No domain-specific seeds here — those belong to each domain seed migration.

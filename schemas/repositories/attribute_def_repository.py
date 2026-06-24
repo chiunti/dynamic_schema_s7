@@ -95,6 +95,30 @@ class AttributeDefRepository:
             qs = qs.filter(node_type_id__in=type_ids)
         return list(qs.values("id", "variant_key", "node_type__name"))
 
+    def get_type_ids_with_catalog_attrs(self, type_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+        """Return the subset of type_ids that have at least one catalog attr (is_common=False, variant_key=None)."""
+        return list(
+            AttributeDef.objects.filter(
+                node_type_id__in=type_ids, is_common=False, variant_key=None
+            ).values_list("node_type_id", flat=True).distinct()
+        )
+
+    def get_type_ids_with_common_attrs(self, type_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+        """Return the subset of type_ids that have at least one common attr (is_common=True, variant_key=None)."""
+        return list(
+            AttributeDef.objects.filter(
+                node_type_id__in=type_ids, is_common=True, variant_key=None
+            ).values_list("node_type_id", flat=True).distinct()
+        )
+
+    def get_parent_node_type_ids(self, child_type_ids: list[uuid.UUID], scope_type_ids: list[uuid.UUID] = None) -> list[uuid.UUID]:
+        """Return NodeType IDs that are direct composition parents of the given child type IDs.
+        Optionally restricted to a scope (pass scope_type_ids to limit results)."""
+        qs = NodeTypeComposition.objects.filter(child_type_id__in=child_type_ids)
+        if scope_type_ids:
+            qs = qs.filter(parent_type_id__in=scope_type_ids)
+        return list(qs.values_list("parent_type_id", flat=True).distinct())
+
     def get_node_type_ids_for_variant(self, variant_key: str, target_node_type_names: list[str] = None) -> list[uuid.UUID]:
         """Return NodeType IDs that have a given variant_key, optionally filtered by name list."""
         qs = NodeTypeVariant.objects.filter(variant_key=variant_key)
@@ -281,4 +305,17 @@ class AttributeDefRepository:
                 node__node_type__name=node_type_name,
                 attribute_def__json_key='key'
             ).values_list('value_string', flat=True)
+        )
+
+    def get_node_type_variant_config(
+        self,
+        node_type_ids: list[uuid.UUID],
+        variant_key: str
+    ) -> list[dict]:
+        """Get NodeTypeVariant configs for given node types and variant key."""
+        return list(
+            NodeTypeVariant.objects.filter(
+                node_type_id__in=node_type_ids,
+                variant_key=variant_key
+            ).values('node_type_id', 'discriminator_attr', 'props_node_type_id')
         )

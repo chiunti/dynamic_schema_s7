@@ -198,26 +198,63 @@ class AttributeDefService:
     def get_attributes_by_variant(self, variant_key: str, scope: str = "") -> dict:
         """
         Return the full attribute breakdown for a given variant_key:
-        - common_attrs: is_common=True, variant_key=None
-        - catalog_attrs: is_common=False, variant_key=None (with active flag)
-        - variant_attrs: is_common=False, variant_key=variant_key
+        - common_attrs: is_common=True, variant_key=None  — from the direct semantic owner type(s)
+          (e.g. sdui_container for 'container', sdui_widget for widget variants)
+        - catalog_attrs: is_common=False, variant_key=None (with active flag) — from the catalog type(s)
+          (e.g. sdui_props)
+        - variant_attrs: variant_key=variant_key — from the node type(s) that own this variant
+        
+        Uses NodeTypeVariant.props_node_type to determine which type holds the catalog.
         """
+        from ..models import NodeTypeVariant
+        
+        scope_type_ids = []
         target_names = None
         if scope:
-            type_ids = self.repository.get_node_type_ids_for_scope(scope)
-            target_names = self.repository.get_node_type_names_for_ids(type_ids)
+            scope_type_ids = self.repository.get_node_type_ids_for_scope(scope)
+            target_names = self.repository.get_node_type_names_for_ids(scope_type_ids)
 
-        node_type_ids = self.repository.get_node_type_ids_for_variant(variant_key, target_names)
+        # All node_type_ids that carry this variant_key (e.g. sdui_props + sdui_widget for 'text_label')
+        variant_node_type_ids = self.repository.get_node_type_ids_for_variant(variant_key, target_names)
 
-        common_attrs = self.repository.get_common_attribute_defs(node_type_ids)
+        # Get NodeTypeVariant configs to determine semantic vs catalog types
+        ntv_list = NodeTypeVariant.objects.filter(
+            node_type_id__in=variant_node_type_ids,
+            variant_key=variant_key
+        ).select_related('props_node_type')
+
+        # Separate into:
+        # - semantic_type_ids: types where the variant lives (sdui_widget, sdui_container, survey_question, field)
+        # - catalog_type_ids: types where the props live (sdui_props, or the semantic type itself if props_node_type=None)
+        semantic_type_ids = []
+        catalog_type_ids = []
+        for ntv in ntv_list:
+            semantic_type_ids.append(ntv.node_type_id)
+            if ntv.props_node_type_id:
+                catalog_type_ids.append(ntv.props_node_type_id)
+            else:
+                catalog_type_ids.append(ntv.node_type_id)
+
+        # Remove duplicates
+        semantic_type_ids = list(set(semantic_type_ids))
+        catalog_type_ids = list(set(catalog_type_ids))
+
+        # If no semantic type found (e.g. only sdui_props in scope), look one level up
+        if not semantic_type_ids:
+            semantic_type_ids = self.repository.get_parent_node_type_ids(catalog_type_ids, scope_type_ids)
+
+        # catalog source: prefer dedicated catalog types; fall back to all variant types
+        catalog_source_ids = catalog_type_ids if catalog_type_ids else variant_node_type_ids
+
+        common_attrs = self.repository.get_common_attribute_defs(semantic_type_ids)
         for a in common_attrs:
             a["id"] = str(a["id"])
 
-        catalog_attrs = self.repository.get_catalog_attribute_defs_list(node_type_ids)
+        catalog_attrs = self.repository.get_catalog_attribute_defs_list(catalog_source_ids)
         for a in catalog_attrs:
             a["id"] = str(a["id"])
 
-        variant_attrs = self.repository.get_variant_attribute_defs(node_type_ids, variant_key)
+        variant_attrs = self.repository.get_variant_attribute_defs(variant_node_type_ids, variant_key)
         for a in variant_attrs:
             a["id"] = str(a["id"])
 

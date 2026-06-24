@@ -258,17 +258,22 @@ class SchemaRepository:
             raise ValueError(ERR_VALIDATED_SCHEMA_MUST_BE_DICT)
         if not isinstance(schema_key, str) or len(schema_key) == 0 or len(schema_key) > 30:
             raise ValueError(ERR_SCHEMA_KEY_MUST_BE_NON_EMPTY_MAX_30)
-        if not isinstance(schema_version, str) or len(schema_version) == 0 or len(schema_version) > 20:
+        # Allow None or empty string for schema_version (will use "1" as fallback)
+        if schema_version is not None and schema_version != "" and (not isinstance(schema_version, str) or len(schema_version) == 0 or len(schema_version) > 20):
             raise ValueError(ERR_SCHEMA_VERSION_MUST_BE_NON_EMPTY_MAX_20)
         if not isinstance(schema_status, str) or schema_status not in ['draft', 'published', 'archived']:
             raise ValueError(ERR_SCHEMA_STATUS_MUST_BE_VALID)
         if not isinstance(overwrite, bool):
             raise ValueError(ERR_OVERWRITE_MUST_BE_BOOLEAN)
 
+        # Use "1" as fallback if schema_version is None or empty string
+        if schema_version is None or schema_version == "":
+            schema_version = "1"
+
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT s7.s7_import_schema(%s::jsonb, %s, %s, %s, %s)",
-                [json.dumps(validated_schema), schema_key, schema_version, schema_status, overwrite]
+                "SELECT s7.s7_import_schema(%s::jsonb, %s, %s, %s, %s, %s::uuid, %s::uuid)",
+                [json.dumps(validated_schema), schema_key, schema_version, schema_status, overwrite, str(project_id) if project_id else None, str(organization_id) if organization_id else None]
             )
             schema_id = cursor.fetchone()[0]
         return schema_id
@@ -509,7 +514,7 @@ class SchemaRepository:
         from ..models import Node
         return Node.objects.filter(parent=parent).order_by('-sort_order').first()
 
-    def create_node(self, parent, node_type, sort_order, name, version=None, project_id=None, organization_id=None):
+    def create_node(self, parent, node_type, sort_order, name, key=None, version=None, project_id=None, organization_id=None):
         """Create a new node"""
         from ..models import Node
         return Node.objects.create(
@@ -517,6 +522,7 @@ class SchemaRepository:
             node_type=node_type,
             sort_order=sort_order,
             name=name,
+            key=key,
             version=version,
             project_id=project_id,
             organization_id=organization_id,
@@ -612,6 +618,13 @@ class SchemaRepository:
         """Count children nodes by parent and node type"""
         from ..models import Node
         return Node.objects.filter(parent=parent, node_type=node_type).count()
+
+    def get_node_by_parent_type_key(self, parent, node_type, key):
+        """Get node by parent, node type, and key"""
+        from ..models import Node
+        # For collection_key-based compositions (singleton slots), check by key only
+        # to prevent multiple node types with the same slot key
+        return Node.objects.filter(parent=parent, key=key).first()
 
     def get_siblings_by_parent(self, parent):
         """Get sibling nodes by parent ordered by sort_order descending"""

@@ -30,6 +30,7 @@ from schemas.admin_api_views import (
     api_update_attribute_specific,
     api_delete_attribute_def,
     api_attributes_by_variant,
+    api_json_example,
 )
 
 
@@ -56,6 +57,7 @@ urlpatterns = [
     re_path(r'^admin/schemas/api/update-attribute-common/$', api_update_attribute_common, name="schemas_api_update_attribute_common"),
     re_path(r'^admin/schemas/api/update-attribute-specific/$', api_update_attribute_specific, name="schemas_api_update_attribute_specific"),
     re_path(r'^admin/schemas/api/delete-attribute-def/$', api_delete_attribute_def, name="schemas_api_delete_attribute_def"),
+    re_path(r'^admin/schemas/api/json-example/$', api_json_example, name="schemas_api_json_example"),
     # Admin URLs
     path('admin/', admin.site.urls),
     path('api/', include('schemas.urls')),

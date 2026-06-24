@@ -19,9 +19,26 @@
 
         <div class="form-row">
             <div>
-                <label for="id_schema_text">Schema JSON:</label>
-                <textarea name="schema_text" id="id_schema_text" rows="20" cols="80" required></textarea>
-                <p class="help">Paste your schema JSON here.</p>
+                <label>Schema JSON:</label>
+                <div style="margin-bottom: 8px;">
+                    <label style="font-weight: normal; margin-right: 16px;">
+                        <input type="radio" name="json_input_mode" id="mode_text" value="text" checked />
+                        Escribir / pegar JSON
+                    </label>
+                    <label style="font-weight: normal;">
+                        <input type="radio" name="json_input_mode" id="mode_file" value="file" />
+                        Cargar desde archivo
+                    </label>
+                </div>
+                <div id="json-text-input">
+                    <textarea name="schema_text" id="id_schema_text" rows="20" cols="80"></textarea>
+                    <p class="help">Pega o escribe el JSON del schema aquí.</p>
+                </div>
+                <div id="json-file-input" style="display: none;">
+                    <input type="file" id="id_schema_file" accept=".json,application/json" />
+                    <p class="help">Selecciona un archivo <code>.json</code>. Su contenido se cargará automáticamente.</p>
+                    <pre id="json-file-preview" style="display:none; background:#f5f5f5; padding:10px; border-radius:4px; border:1px solid #ddd; max-height:200px; overflow-y:auto; font-size:12px;"></pre>
+                </div>
             </div>
         </div>
 
@@ -31,10 +48,18 @@
                 <select name="schema_type" id="id_schema_type" required>
                     <option value="">---------</option>
                     {% for rt in root_types %}
-                    <option value="{{ rt.scope }}">{{ rt.label }}</option>
+                    <option value="{{ rt.scope }}" data-example-key="{{ rt.scope }}">{{ rt.label }}</option>
                     {% endfor %}
                 </select>
                 <p class="help">Select the root node type for this schema.</p>
+            </div>
+        </div>
+
+        <div class="form-row" id="json-example-row" style="display: none;">
+            <div>
+                <label>JSON Example:</label>
+                <pre id="json-example" style="background: #f5f5f5; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 200px; overflow-y: auto;"></pre>
+                <p class="help">Example structure for the selected schema type. Your JSON should have the root key matching the type.</p>
             </div>
         </div>
 
@@ -95,5 +120,9 @@
     </form>
 </div>
 
+<script>
+    // Pass the JSON example URL to the JavaScript
+    window.jsonExampleUrl = "{% url 'schemas_api_json_example' %}";
+</script>
 <script src="{% static 'schemas/js/import_schema.js' %}"></script>
 {% endblock %}

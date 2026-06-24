@@ -10,6 +10,10 @@
 <link rel="apple-touch-icon" sizes="180x180" href="{% static 'img/apple-touch-icon.png' %}">
 {% endblock %}
 
+{% block messages %}
+{{ block.super }}
+{% endblock %}
+
 {% block branding %}
 <div class="admin-logo">
     <img src="{% static 'img/s7-logo.png' %}" alt="Structure Seven" height="50">

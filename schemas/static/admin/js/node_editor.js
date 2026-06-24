@@ -15,15 +15,28 @@
     renderers: [],
     checkHandlers: [],
     saveHandlers: [],
+    // Register a renderer for a specific property pattern
     registerRenderer(patternCheck, renderFn) {
       this.renderers.push({ patternCheck, renderFn });
     },
+    // Register a check handler for a specific property pattern
     registerCheckHandler(patternCheck, handleFn) {
       this.checkHandlers.push({ patternCheck, handleFn });
     },
+    // Register a save handler for a specific property pattern
     registerSaveHandler(patternCheck, handleFn) {
       this.saveHandlers.push({ patternCheck, handleFn });
     },
+    // Find renderer for a single property
+    findRendererForProp(prop) {
+      for (const renderer of this.renderers) {
+        if (renderer.patternCheck([prop])) {
+          return renderer.renderFn;
+        }
+      }
+      return null;
+    },
+    // Find renderer for all properties (backward compatibility)
     findRenderer(props) {
       for (const renderer of this.renderers) {
         if (renderer.patternCheck(props)) {
@@ -400,81 +413,217 @@
 
   async function setCreateAllowed(allowed, parentNodeType = null) {
     const sel = document.getElementById('create_node_type');
+    const sectionRow = document.getElementById('section_key_row');
+    const sectionSel = document.getElementById('section_key_select');
+    const variantRow = document.getElementById('variant_row');
+    const variantSel = document.getElementById('variant_select');
 
-    sel.innerHTML = '';
-    allowed.forEach(a => {
-      const opt = document.createElement('option');
-      opt.value = a.node_type;
-      opt.textContent = `${a.label} (${a.node_type})`;
-      sel.appendChild(opt);
-    });
-    const has = allowed.length > 0;
-    sel.disabled = !has;
-    document.getElementById('create_key').disabled = !has;
-    document.getElementById('btn_create').disabled = !has;
+    // Check if parent is a screen node - need two-step selection
+    const isScreenParent = parentNodeType === 'screen';
 
-    const updateVariantRow = async () => {
-      const nodeType = sel.value;
-      const variantRow = document.getElementById('variant_row');
-      const variantSel = document.getElementById('variant_select');
-
-      // Skip API call if nodeType is empty
-      if (!nodeType) {
-        variantRow.classList.add('hidden');
-        variantSel.innerHTML = '';
-        document.getElementById('btn_create').disabled = allowed.length === 0;
-        return;
+    if (isScreenParent) {
+      // Show both slot selector and component type selector simultaneously
+      sectionRow.classList.remove('hidden');
+      variantRow.classList.remove('hidden');
+      sel.parentElement.classList.add('hidden');
+      
+      // Change slot selector label to "add node"
+      const slotLabel = sectionRow.querySelector('label');
+      if (slotLabel && slotLabel.childNodes[0]) {
+        slotLabel.childNodes[0].textContent = 'Add node: ';
+      }
+      
+      // Change variant selector label to "type"
+      const variantLabel = variantRow.querySelector('label');
+      if (variantLabel && variantLabel.childNodes[0]) {
+        variantLabel.childNodes[0].textContent = 'Type: ';
       }
 
-      // Data-driven: try to load variants from backend
-      try {
-        const variantsData = await requestJson(apiNodeTypeVariants(nodeType), { method: 'GET' });
-        const options = variantsData.options || [];
-        const hasVariants = options.length > 0;
+      // Extract unique slots from allowed children
+      const slots = [...new Set(allowed.map(a => a.collection_key).filter(k => k))];
+      
+      sectionSel.innerHTML = '';
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '— select slot —';
+      sectionSel.appendChild(emptyOpt);
 
-        variantRow.classList.toggle('hidden', !hasVariants);
+      slots.forEach(slot => {
+        const opt = document.createElement('option');
+        opt.value = slot;
+        opt.textContent = slot.charAt(0).toUpperCase() + slot.slice(1); // Capitalize
+        sectionSel.appendChild(opt);
+      });
+
+      sectionSel.disabled = slots.length === 0;
+      document.getElementById('create_key').disabled = true;
+      document.getElementById('btn_create').disabled = true;
+
+      // Store allowed children for later use when slot is selected
+      sectionSel._allowedChildren = allowed;
+
+      // Handle slot selection - update component type options
+      const handleSlotChange = async () => {
+        const selectedSlot = sectionSel.value;
+        
+        if (!selectedSlot) {
+          variantSel.innerHTML = '';
+          document.getElementById('create_key').disabled = true;
+          document.getElementById('btn_create').disabled = true;
+          return;
+        }
+
+        // Filter allowed children by selected slot
+        const slotChildren = allowed.filter(a => a.collection_key === selectedSlot);
+        
         variantSel.innerHTML = '';
+        const emptyVariantOpt = document.createElement('option');
+        emptyVariantOpt.value = '';
+        emptyVariantOpt.textContent = '— select type —';
+        variantSel.appendChild(emptyVariantOpt);
 
-        if (hasVariants) {
-          const emptyOpt = document.createElement('option');
-          emptyOpt.value = '';
-          emptyOpt.textContent = '— select type —';
-          variantSel.appendChild(emptyOpt);
-          options.forEach(opt => {
-            const o = document.createElement('option');
-            o.value = opt.value;
-            o.textContent = opt.label;
-            variantSel.appendChild(o);
-          });
-          document.getElementById('btn_create').disabled = true; // Require variant selection
+        // Show component types (sdui_container, sdui_widget) only
+        slotChildren.forEach(a => {
+          const opt = document.createElement('option');
+          opt.value = a.node_type;
+          opt.textContent = a.label;
+          opt.dataset.collectionKey = a.collectionKey;
+          variantSel.appendChild(opt);
+        });
+
+        variantSel.disabled = slotChildren.length === 0;
+        document.getElementById('create_key').disabled = slotChildren.length === 0;
+        document.getElementById('btn_create').disabled = true; // Require type selection
+      };
+
+      sectionSel.removeEventListener('change', sectionSel._slotChangeHandler);
+      sectionSel._slotChangeHandler = handleSlotChange;
+      sectionSel.addEventListener('change', sectionSel._slotChangeHandler);
+
+      // Enable create button when component type is selected
+      // For screen nodes, we don't load variants - the type is determined by the component
+      // Remove any existing variant loading handlers
+      variantSel.removeEventListener('change', variantSel._variantRowHandler);
+      variantSel.removeEventListener('change', variantSel._variantEnableHandler);
+      
+      variantSel._variantEnableHandler = () => {
+        const selectedType = variantSel.value;
+        document.getElementById('btn_create').disabled = !selectedType;
+        
+        // For screen nodes, don't load variants - just enable create button
+        // The type attribute will be set automatically by the backend
+      };
+      variantSel.addEventListener('change', variantSel._variantEnableHandler);
+
+    } else {
+      // Standard flow for non-screen parents
+      sectionRow.classList.add('hidden');
+      sel.parentElement.classList.remove('hidden');
+      variantRow.classList.add('hidden');
+      
+      // Show the first "Add node" label and restore original label
+      document.querySelector('.s7-panel-left .s7-actions:first-of-type').classList.remove('hidden');
+      const label = sel.parentElement.querySelector('label');
+      if (label && label.childNodes[0]) {
+        label.childNodes[0].textContent = 'Add node: ';
+      }
+      // Restore slot selector label
+      const slotLabel = sectionRow.querySelector('label');
+      if (slotLabel && slotLabel.childNodes[0]) {
+        slotLabel.childNodes[0].textContent = 'Add node';
+      }
+
+      sel.innerHTML = '';
+      allowed.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.node_type;
+        // If collection_key exists, show it in the label to distinguish slots
+        if (a.collection_key) {
+          opt.textContent = `${a.label} (${a.collection_key})`;
+          opt.dataset.collectionKey = a.collection_key;
         } else {
+          opt.textContent = `${a.label} (${a.node_type})`;
+          opt.dataset.collectionKey = '';
+        }
+        sel.appendChild(opt);
+      });
+      const has = allowed.length > 0;
+      sel.disabled = !has;
+      document.getElementById('create_key').disabled = !has;
+      document.getElementById('btn_create').disabled = !has;
+
+      const updateVariantRow = async () => {
+        const nodeType = sel.value;
+        
+        // Skip API call if nodeType is empty
+        if (!nodeType) {
+          variantRow.classList.add('hidden');
+          variantSel.innerHTML = '';
+          document.getElementById('btn_create').disabled = allowed.length === 0;
+          return;
+        }
+
+        // Check if selected option has collection_key (type is already determined)
+        const selectedOption = sel.options[sel.selectedIndex];
+        const hasCollectionKey = selectedOption && selectedOption.dataset.collectionKey;
+
+        // If collection_key is present, hide variant selector since type is already determined
+        if (hasCollectionKey) {
+          variantRow.classList.add('hidden');
+          variantSel.innerHTML = '';
+          document.getElementById('btn_create').disabled = allowed.length === 0;
+          return;
+        }
+
+        // Data-driven: try to load variants from backend
+        try {
+          const variantsData = await requestJson(apiNodeTypeVariants(nodeType), { method: 'GET' });
+          const options = variantsData.options || [];
+          const hasVariants = options.length > 0;
+
+          variantRow.classList.toggle('hidden', !hasVariants);
+          variantSel.innerHTML = '';
+
+          if (hasVariants) {
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '— select type —';
+            variantSel.appendChild(emptyOpt);
+            options.forEach(opt => {
+              const o = document.createElement('option');
+              o.value = opt.value;
+              o.textContent = opt.label;
+              variantSel.appendChild(o);
+            });
+            document.getElementById('btn_create').disabled = true; // Require variant selection
+          } else {
+            document.getElementById('btn_create').disabled = allowed.length === 0;
+          }
+        } catch (e) {
+          console.warn('Failed to load variants for node type:', nodeType, e);
+          variantRow.classList.add('hidden');
+          variantSel.innerHTML = '';
           document.getElementById('btn_create').disabled = allowed.length === 0;
         }
-      } catch (e) {
-        console.warn('Failed to load variants for node type:', nodeType, e);
-        variantRow.classList.add('hidden');
-        variantSel.innerHTML = '';
-        document.getElementById('btn_create').disabled = allowed.length === 0;
-      }
-    };
+      };
 
-    sel.removeEventListener('change', sel._variantRowHandler);
-    sel._variantRowHandler = updateVariantRow;
-    sel.addEventListener('change', sel._variantRowHandler);
+      sel.removeEventListener('change', sel._variantRowHandler);
+      sel._variantRowHandler = updateVariantRow;
+      sel.addEventListener('change', sel._variantRowHandler);
 
-    // Enable create button when variant is selected
-    const variantSel = document.getElementById('variant_select');
-    variantSel.removeEventListener('change', variantSel._variantEnableHandler);
-    variantSel._variantEnableHandler = () => {
-      const variantRow = document.getElementById('variant_row');
-      const hasVariants = !variantRow.classList.contains('hidden');
-      if (hasVariants) {
-        document.getElementById('btn_create').disabled = !variantSel.value;
-      }
-    };
-    variantSel.addEventListener('change', variantSel._variantEnableHandler);
+      // Enable create button when variant is selected
+      variantSel.removeEventListener('change', variantSel._variantEnableHandler);
+      variantSel._variantEnableHandler = () => {
+        const variantRow = document.getElementById('variant_row');
+        const hasVariants = !variantRow.classList.contains('hidden');
+        if (hasVariants) {
+          document.getElementById('btn_create').disabled = !variantSel.value;
+        }
+      };
+      variantSel.addEventListener('change', variantSel._variantEnableHandler);
 
-    await updateVariantRow();
+      await updateVariantRow();
+    }
   }
 
   async function selectNode(nodeId) {
@@ -547,7 +696,12 @@
         const jsonStr = el.value.trim();
         value = jsonStr ? JSON.parse(jsonStr) : null;
       } else if (el.type === 'number') {
-        value = el.value ? parseFloat(el.value) : null;
+        // Use parseInt for int type, parseFloat for float/number
+        if (el.dataset.numericType === 'int') {
+          value = el.value ? parseInt(el.value, 10) : null;
+        } else {
+          value = el.value ? parseFloat(el.value) : null;
+        }
       } else {
         value = el.value || null;
       }
@@ -577,6 +731,15 @@
   // Render a single property row with any data type (simple or complex)
   // This function is exposed to extensions for reusability
   function renderPropRow(p, tbody, checkHandler = checkPropsChanges) {
+    // Check if any registered extension wants to handle this specific property
+    if (window.s7Editors) {
+      const customRenderer = window.s7Editors.findRendererForProp(p);
+      if (customRenderer) {
+        customRenderer([p], tbody);
+        return;
+      }
+    }
+
     const tr = document.createElement('tr');
 
     const tdKey = document.createElement('td');
@@ -1340,17 +1503,17 @@
       }
     }
 
-    // Variant grouping: universal (NULL) vs type-specific
+    // Check for grouping: first by variant_key, then by group field
     const hasVariantGroups = props.some(p => p.variant_key !== null);
-    const variantLabels = { null: 'Common Properties' };
+    const hasCustomGroups = props.some(p => p.group && p.group !== '');
 
-    const hasGroups = hasVariantGroups;
+    const hasGroups = hasVariantGroups || hasCustomGroups;
     if (!hasGroups) {
       container.appendChild(buildPropsTable(props));
       return;
     }
 
-    // Group by variant (universal vs type-specific)
+    // Group by variant first (universal vs type-specific)
     const variantGroups = {};
     props.forEach(p => {
       const v = p.variant_key === null ? 'universal' : 'variant';
@@ -1364,25 +1527,65 @@
       const variantSection = document.createElement('div');
       variantSection.style.marginBottom = '16px';
 
-      if (v === 'universal' && hasVariantGroups) {
-        const variantHeading = document.createElement('div');
-        variantHeading.textContent = variantLabels.null;
-        variantHeading.style.cssText = 'font-weight:bold; font-size:0.9em; text-transform:uppercase; letter-spacing:0.05em; color:var(--body-quiet-color,#666); padding:8px 0 4px 0; border-bottom:1px solid var(--hairline-color,#ddd); margin-bottom:8px;';
-        variantSection.appendChild(variantHeading);
-      } else if (v === 'variant') {
-        // Get the variant_key from the first property in this group
-        const firstProp = variantGroups[v][0];
-        if (firstProp && firstProp.variant_key) {
+      // Add variant heading if there are variant groups
+      if (hasVariantGroups) {
+        if (v === 'universal') {
           const variantHeading = document.createElement('div');
-          // Capitalize first letter, lowercase rest
-          const variantLabel = firstProp.variant_key.charAt(0).toUpperCase() + firstProp.variant_key.slice(1).toLowerCase();
-          variantHeading.textContent = `${variantLabel} Properties`;
+          variantHeading.textContent = 'Common Properties';
           variantHeading.style.cssText = 'font-weight:bold; font-size:0.9em; text-transform:uppercase; letter-spacing:0.05em; color:var(--body-quiet-color,#666); padding:8px 0 4px 0; border-bottom:1px solid var(--hairline-color,#ddd); margin-bottom:8px;';
           variantSection.appendChild(variantHeading);
+        } else {
+          // Get the variant_key from the first property in this group
+          const firstProp = variantGroups[v][0];
+          if (firstProp && firstProp.variant_key) {
+            const variantHeading = document.createElement('div');
+            // Capitalize first letter, lowercase rest
+            const variantLabel = firstProp.variant_key.charAt(0).toUpperCase() + firstProp.variant_key.slice(1).toLowerCase();
+            variantHeading.textContent = `${variantLabel} Properties`;
+            variantHeading.style.cssText = 'font-weight:bold; font-size:0.9em; text-transform:uppercase; letter-spacing:0.05em; color:var(--body-quiet-color,#666); padding:8px 0 4px 0; border-bottom:1px solid var(--hairline-color,#ddd); margin-bottom:8px;';
+            variantSection.appendChild(variantHeading);
+          }
         }
       }
 
-      variantSection.appendChild(buildPropsTable(variantGroups[v]));
+      // Within each variant group, further group by the 'group' field
+      const variantProps = variantGroups[v];
+      const hasGroupsInVariant = variantProps.some(p => p.group && p.group !== '');
+
+      if (hasGroupsInVariant) {
+        // Group by the 'group' field
+        const customGroups = {};
+        variantProps.forEach(p => {
+          const g = p.group || 'general';
+          (customGroups[g] = customGroups[g] || []).push(p);
+        });
+
+        // Render each custom group
+        Object.keys(customGroups).sort().forEach(groupName => {
+          const groupProps = customGroups[groupName];
+          if (groupProps.length === 0) return;
+
+          const groupSection = document.createElement('div');
+          groupSection.style.marginBottom = '12px';
+
+          // Add group heading (skip for 'general' to avoid redundancy)
+          if (groupName !== 'general') {
+            const groupHeading = document.createElement('div');
+            // Format group name: capitalize first letter, replace underscores with spaces
+            const formattedName = groupName.charAt(0).toUpperCase() + groupName.slice(1).replace(/_/g, ' ');
+            groupHeading.textContent = formattedName;
+            groupHeading.style.cssText = 'font-weight:bold; font-size:0.85em; color:var(--body-quiet-color,#666); padding:4px 0; margin-bottom:4px;';
+            groupSection.appendChild(groupHeading);
+          }
+
+          groupSection.appendChild(buildPropsTable(groupProps));
+          variantSection.appendChild(groupSection);
+        });
+      } else {
+        // No custom groups, render all props in a single table
+        variantSection.appendChild(buildPropsTable(variantProps));
+      }
+
       container.appendChild(variantSection);
     });
   }
@@ -1482,9 +1685,40 @@
 
   async function createChild() {
     if (!currentSelectedNodeId) return;
-    const node_type = document.getElementById('create_node_type').value;
+    
+    const sectionRow = document.getElementById('section_key_row');
+    const sectionSel = document.getElementById('section_key_select');
+    const sel = document.getElementById('create_node_type');
+    const variantRow = document.getElementById('variant_row');
+    const variantSel = document.getElementById('variant_select');
     const nameInput = document.getElementById('create_key').value;
-    const variantKey = document.getElementById('variant_select').value || null;
+    
+    // Check if using screen-specific flow
+    const isScreenFlow = !sectionRow.classList.contains('hidden');
+    
+    let node_type, collection_key, variantKey;
+    
+    if (isScreenFlow) {
+      // Screen flow: slot from sectionSel, component type from variantSel
+      collection_key = sectionSel.value;
+      node_type = variantSel.value;
+      
+      if (!collection_key) {
+        alert('Please select a slot first');
+        return;
+      }
+      if (!node_type) {
+        alert('Please select a component type');
+        return;
+      }
+    } else {
+      // Standard flow
+      node_type = sel.value;
+      variantKey = variantSel.value || null;
+      const selectedOption = sel.options[sel.selectedIndex];
+      collection_key = selectedOption && selectedOption.dataset.collectionKey ? selectedOption.dataset.collectionKey : null;
+    }
+    
     const payload = { parent_id: currentSelectedNodeId, node_type };
     if (nameInput && nameInput.trim()) {
       payload.name = nameInput.trim();
@@ -1492,9 +1726,22 @@
     if (variantKey) {
       payload.variant_key = variantKey;
     }
+    if (collection_key) {
+      payload.collection_key = collection_key;
+    }
+    
     const res = await requestJson(apiCreate, { method: 'POST', body: JSON.stringify(payload) });
+    
+    // Reset form fields
     document.getElementById('create_key').value = '';
     document.getElementById('variant_select').value = '';
+    if (isScreenFlow) {
+      sectionSel.value = '';
+      variantSel.innerHTML = '';
+      document.getElementById('create_key').disabled = true;
+      document.getElementById('btn_create').disabled = true;
+    }
+    
     if (res && res.node_id) {
       await loadTree();
       await new Promise(resolve => setTimeout(resolve, 100));

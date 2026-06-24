@@ -7,6 +7,7 @@ from ..models import Node
 from ..repositories.schema_repository import SchemaRepository
 from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
+from .conditional_validator import validate_conditional_structure
 from ..constants import (
     ERR_VERSION_NOT_SET,
     ERR_STATUS_ATTRIBUTE_NOT_FOUND,
@@ -349,6 +350,14 @@ class SchemaService:
             if not isinstance(item, dict):
                 continue
 
+            # Validate conditional structures within the item
+            for item_key, item_value in item.items():
+                if isinstance(item_value, dict) and self._is_conditional_structure(item_value):
+                    try:
+                        validate_conditional_structure(item_value)
+                    except Exception as e:
+                        raise ValueError(f"Invalid conditional structure for '{item_key}' in item {idx} of '{collection_key}': {str(e)}")
+
             child_node_type = self._resolve_child_type_for_item(item, compositions)
             _, json_key_to_field_map = field_maps[child_node_type.id]
 
@@ -445,6 +454,13 @@ class SchemaService:
         """Process a single child node from a dict value (composition without collection_key)"""
         from schemas.models import Node, AttributeDef
 
+        # Validate conditional structure if value has conditional structure
+        if self._is_conditional_structure(value):
+            try:
+                validate_conditional_structure(value)
+            except Exception as e:
+                raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+
         # Generate unique name/key based on index
         if index is not None:
             name = f'{json_key}_{index}'
@@ -532,6 +548,13 @@ class SchemaService:
 
             if not data_type:
                 return
+
+            # Validate conditional structure if value has conditional structure
+            if self._is_conditional_structure(value):
+                try:
+                    validate_conditional_structure(value)
+                except Exception as e:
+                    raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
 
             # Decide whether to create as universal or variant-specific
             final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -837,6 +860,14 @@ class SchemaService:
                     attr_def = self._create_attribute_def(node_type, json_key, value, node_variant)
                 
                 if attr_def:
+                    # Validate conditional structures recursively in the value
+                    # Do this before the try-except to ensure validation errors propagate
+                    if isinstance(value, (list, dict)):
+                        try:
+                            self._validate_conditional_recursively(value, json_key)
+                        except Exception as e:
+                            raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+                    
                     # Set the attribute value using direct ORM to bypass s7 validation
                     try:
                         if value is None:
@@ -911,6 +942,13 @@ class SchemaService:
         if not data_type:
             return None
 
+        # Validate conditional structure if value has conditional structure
+        if self._is_conditional_structure(value):
+            try:
+                validate_conditional_structure(value)
+            except Exception as e:
+                raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+
         # Decide whether to create as universal or variant-specific
         final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
 
@@ -962,6 +1000,31 @@ class SchemaService:
 
         # No real universal version exists - create as variant-specific by default
         return requested_variant_key
+    
+    def _is_conditional_structure(self, value) -> bool:
+        """Check if a value has the structure of a conditional expression."""
+        if not isinstance(value, dict):
+            return False
+        return 'logic' in value and 'conditions' in value
+    
+    def _validate_conditional_recursively(self, value, path: str = ""):
+        """Recursively validate all conditional structures in a value."""
+        if isinstance(value, dict):
+            # Check if this dict itself is a conditional structure
+            if self._is_conditional_structure(value):
+                try:
+                    validate_conditional_structure(value)
+                except Exception as e:
+                    raise ValueError(f"Invalid conditional structure at '{path}': {str(e)}")
+            # Recursively validate nested values
+            for key, nested_value in value.items():
+                nested_path = f"{path}.{key}" if path else key
+                self._validate_conditional_recursively(nested_value, nested_path)
+        elif isinstance(value, list):
+            # Recursively validate list items
+            for idx, item in enumerate(value):
+                nested_path = f"{path}[{idx}]"
+                self._validate_conditional_recursively(item, nested_path)
     
     def _infer_data_type(self, value) -> str:
         """Infer DataType from value"""

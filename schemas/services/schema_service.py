@@ -555,6 +555,20 @@ class SchemaService:
                     validate_conditional_structure(value)
                 except Exception as e:
                     raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+            
+            # Validate conditional structure if AttributeDef has datatype 'conditional'
+            # This is important for when the AttributeDef already exists with conditional datatype
+            attr_def = AttributeDef.objects.filter(
+                node_type=node_type,
+                json_key=json_key,
+                variant_key=variant_key
+            ).first()
+            
+            if attr_def and attr_def.data_type.name == 'conditional':
+                try:
+                    validate_conditional_structure(value)
+                except Exception as e:
+                    raise ValueError(f"Invalid conditional structure for '{json_key}' (AttributeDef has conditional datatype): {str(e)}")
 
             # Decide whether to create as universal or variant-specific
             final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -1039,6 +1053,9 @@ class SchemaService:
         elif isinstance(value, list):
             return 'list_string'
         elif isinstance(value, dict):
+            # Check if this is a conditional structure
+            if self._is_conditional_structure(value):
+                return 'conditional'
             return 'json'
         else:
             return 'string'

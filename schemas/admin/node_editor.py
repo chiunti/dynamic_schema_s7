@@ -201,7 +201,7 @@ class NodeEditorMixin:
         allowed = []
         for c in compositions:
             max_c = c.max_children
-            
+
             # For collection_key-based compositions (singleton slots), check if key already exists
             if c.collection_key:
                 if c.collection_key in existing_keys:
@@ -210,7 +210,7 @@ class NodeEditorMixin:
             # For non-collection_key compositions, use count-based check
             elif max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
                 continue
-            
+
             allowed.append({
                 "node_type": c.child_type.name,
                 "label": c.child_type.label,
@@ -218,7 +218,28 @@ class NodeEditorMixin:
                 "min_children": c.min_children,
                 "max_children": max_c,
             })
-        return JsonResponse({"parent_id": node.id, "parent_type": node.node_type.name, "allowed": allowed})
+
+        # Check if any allowed child type should infer variant from parent
+        # (e.g., sdui_props inherits variant from parent's component type)
+        infer_variant_from_parent = []
+        for item in allowed:
+            child_type = NodeType.objects.filter(name=item["node_type"]).first()
+            if child_type:
+                # Check if this node type has NodeTypeVariants with discriminator_attr=None
+                # This pattern indicates the variant comes from parent
+                has_parent_inferred_variants = NodeTypeVariant.objects.filter(
+                    node_type=child_type,
+                    discriminator_attr__isnull=True
+                ).exists()
+                if has_parent_inferred_variants:
+                    infer_variant_from_parent.append(item["node_type"])
+
+        return JsonResponse({
+            "parent_id": node.id,
+            "parent_type": node.node_type.name,
+            "allowed": allowed,
+            "infer_variant_from_parent": infer_variant_from_parent
+        })
 
     def api_properties(self, request, node_id):
         node = Node.objects.select_related("node_type").filter(id=node_id).first()
@@ -393,6 +414,7 @@ class NodeEditorMixin:
             node_service = NodeService()
             node_service.update_node_properties(node, updates)
         except ValueError as e:
+            logging.error(f"Validation error saving properties for node {node_id}: {e}")
             return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:
             logging.error(ERR_UNEXPECTED_ERROR_IN_API_PROPERTIES.format(error=e), exc_info=True)
@@ -464,6 +486,15 @@ class NodeEditorMixin:
 
         # Use collection_key as the node key if available
         node_key = composition.collection_key if composition.collection_key else None
+
+        # For sdui_props nodes, infer variant_key from parent's type attribute
+        if node_type_name == 'sdui_props' and not variant_key:
+            parent_type_attr = NodeAttribute.objects.filter(
+                node=parent,
+                attribute_def__json_key='type'
+            ).select_related('attribute_def').first()
+            if parent_type_attr and parent_type_attr.value_string:
+                variant_key = parent_type_attr.value_string
 
         try:
             node_service = NodeService()

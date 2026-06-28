@@ -1,5 +1,3 @@
-import json
-
 from django.db import transaction
 
 from ..repositories.schema_repository import NodeRepository, SchemaRepository
@@ -82,89 +80,97 @@ class NodeService:
                         )
         
         with transaction.atomic():
-            for json_key, value in updates.items():
-                d = defs_by_key.get(json_key)
-                if not d:
-                    continue
-                
-                is_empty = value is None or value == "" or value == [] or value == {}
-                if is_empty:
-                    self.schema_repository.delete_node_attributes(node, d)
-                    continue
-                
-                domain_name = d.domain.domain_name if d.domain_id else None
-                
-                # Handle boolean null values
-                if d.data_type.name == 'bool' and value is None:
-                    self.node_repository.insert_node_attribute_bool_null(node.id, d.id)
-                    continue
-                
-                # natural_uuid is read-only (maps to PK) — never write
-                if d.data_type.name == 'natural_uuid':
-                    continue
+                for json_key, value in updates.items():
+                    d = defs_by_key.get(json_key)
+                    if not d:
+                        continue
+                    
+                    is_empty = value is None or value == "" or value == [] or value == {}
+                    if is_empty:
+                        self.schema_repository.delete_node_attributes(node, d)
+                        continue
+                    
+                    domain_name = d.domain.domain_name if d.domain_id else None
+                    
+                    # Handle boolean null values
+                    if d.data_type.name == 'bool' and value is None:
+                        self.node_repository.insert_node_attribute_bool_null(node.id, d.id)
+                        continue
+                    
+                    # natural_uuid is read-only (maps to PK) — never write
+                    if d.data_type.name == 'natural_uuid':
+                        continue
 
-                # natural_key maps to schema_nodes.key column — update directly
-                if d.data_type.name == 'natural_key':
-                    node.key = str(value).strip() if value else node.key
-                    node.save(update_fields=['key'])
-                    continue
+                    # natural_key maps to schema_nodes.key column — update directly
+                    if d.data_type.name == 'natural_key':
+                        node.key = str(value).strip() if value else node.key
+                        node.save(update_fields=['key'])
+                        continue
 
-                # natural_version maps to schema_nodes.version column — update directly
-                # Also propagates to the root if called on a metadata child
-                if d.data_type.name == 'natural_version':
-                    v = str(value).strip() if value else None
-                    if v:
-                        node.version = v
-                        node.save(update_fields=['version'])
-                        if node.parent_id is not None:
-                            self.schema_repository.update_node_version_by_parent(node.parent_id, v)
-                    continue
+                    # natural_version maps to schema_nodes.version column — update directly
+                    # Also propagates to the root if called on a metadata child
+                    if d.data_type.name == 'natural_version':
+                        v = str(value).strip() if value else None
+                        if v:
+                            node.version = v
+                            node.save(update_fields=['version'])
+                            if node.parent_id is not None:
+                                self.schema_repository.update_node_version_by_parent(node.parent_id, v)
+                        continue
 
-                # natural_order maps to schema_nodes.sort_order column — update directly
-                if d.data_type.name == 'natural_order':
-                    node.sort_order = int(value) if value is not None else 0
-                    node.save(update_fields=['sort_order'])
-                    continue
+                    # natural_order maps to schema_nodes.sort_order column — update directly
+                    if d.data_type.name == 'natural_order':
+                        node.sort_order = int(value) if value is not None else 0
+                        node.save(update_fields=['sort_order'])
+                        continue
 
-                # display_order maps to schema_nodes.sort_order column — update directly (1-based to 0-based)
-                if d.data_type.name == 'display_order':
-                    node.sort_order = (int(value) - 1) if value is not None else 0
-                    node.save(update_fields=['sort_order'])
-                    continue
+                    # display_order maps to schema_nodes.sort_order column — update directly (1-based to 0-based)
+                    if d.data_type.name == 'display_order':
+                        node.sort_order = (int(value) - 1) if value is not None else 0
+                        node.save(update_fields=['sort_order'])
+                        continue
 
-                # Write directly via ORM to avoid s7_ensure_domain_item adding domain items
-                if d.data_type.name in ('string', 'date', 'color', 'uuid', 'auto_uuid'):
-                    self.schema_repository.update_or_create_node_attribute(
-                        node, d,
-                        defaults={"value_string": str(value), "value_number": None, "value_bool": None, "value_json": None},
-                    )
-                elif d.data_type.name in ('number', 'int', 'float'):
-                    self.schema_repository.update_or_create_node_attribute(
-                        node, d,
-                        defaults={"value_string": None, "value_number": value, "value_bool": None, "value_json": None},
-                    )
-                elif d.data_type.name == 'bool':
-                    self.schema_repository.update_or_create_node_attribute(
-                        node, d,
-                        defaults={"value_string": None, "value_number": None, "value_bool": bool(value), "value_json": None},
-                    )
-                elif d.data_type.name == 'json':
-                    self.schema_repository.update_or_create_node_attribute(
-                        node, d,
-                        defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                    )
-                elif d.data_type.name in ('int_tuple', 'list_string', 'list_int', 'dict'):
-                    # All these types store as JSON in value_json
-                    self.schema_repository.update_or_create_node_attribute(
-                        node, d,
-                        defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                    )
-                elif d.data_type.name == 'domain_list':
-                    # domain_list stores array of domain item values as JSON
-                    self.schema_repository.update_or_create_node_attribute(
-                        node, d,
-                        defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                    )
+                    # Write directly via ORM to avoid s7_ensure_domain_item adding domain items
+                    if d.data_type.name in ('string', 'date', 'color', 'uuid', 'auto_uuid'):
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": str(value), "value_number": None, "value_bool": None, "value_json": None},
+                        )
+                    elif d.data_type.name in ('number', 'int', 'float'):
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": None, "value_number": value, "value_bool": None, "value_json": None},
+                        )
+                    elif d.data_type.name == 'bool':
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": None, "value_number": None, "value_bool": bool(value), "value_json": None},
+                        )
+                    elif d.data_type.name == 'json':
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
+                        )
+                    elif d.data_type.name == 'conditional':
+                        # Conditional datatype stores as JSON in value_json
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
+                        )
+                    elif d.data_type.name in ('int_tuple', 'list_string', 'list_int', 'dict'):
+                        # All these types store as JSON in value_json
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
+                        )
+                    elif d.data_type.name == 'domain_list':
+                        # domain_list stores array of domain item values as JSON
+                        self.schema_repository.update_or_create_node_attribute(
+                            node, d,
+                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
+                        )
+                    else:
+                        pass
     
     def create_node(self, parent_id, node_type_name, name, variant_key=None, key=None, collection_key=None):
         """Create a new node with automatic property assignment"""

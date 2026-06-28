@@ -100,130 +100,6 @@ SET search_path TO s7, public;
 
 
  # ------------------------------
- # build_node_conditions
- # ------------------------------
-FN_BUILD_NODE_CONDITIONS_SQL = r"""
-SET search_path TO s7, public;
-
-CREATE OR REPLACE FUNCTION s7.s7_build_node_conditions(
-  p_node_id   UUID,
-  OUT o_show_if    JSONB,
-  OUT o_enabled_if JSONB
-)
-AS $$
-BEGIN
-  WITH cg AS (
-         SELECT n.id
-         FROM s7.schema_nodes n
-         JOIN s7.schema_node_types nt ON nt.id = n.node_type_id
-         WHERE n.parent_id = p_node_id
-           AND nt.name IN ('condition_group', 'sdui_show_if')
-       ),
-       cg_attrs AS (
-         SELECT
-           na.node_id,
-           ad.name,
-           na.value_string,
-           na.value_json
-         FROM s7.schema_node_attributes na
-         JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
-         JOIN cg ON cg.id = na.node_id
-       ),
-       condition_groups AS (
-         SELECT
-           n.id,
-           -- Use stored 'usage' attribute when available, fall back to node.key
-           -- (sdui_show_if nodes store the slot in node.key, not as an attribute)
-           COALESCE(
-             MAX(CASE WHEN ca.name = 'usage' THEN ca.value_string END),
-             n.key
-           ) AS usage,
-           MAX(CASE WHEN ca.name = 'logic' THEN ca.value_string END) AS logic
-         FROM cg
-         JOIN s7.schema_nodes n ON n.id = cg.id
-         LEFT JOIN cg_attrs ca ON ca.node_id = n.id
-         GROUP BY n.id, n.key
-       ),
-       conditions AS (
-         SELECT
-           n.id,
-           n.parent_id,
-           MAX(CASE WHEN ad.name = 'left_kind'       THEN na.value_string END) AS left_kind,
-           MAX(CASE WHEN ad.name = 'left_field_key'  THEN na.value_string END) AS left_field_key,
-           MAX(CASE WHEN ad.name = 'op'              THEN na.value_string END) AS op,
-           MAX(CASE WHEN ad.name = 'right_kind'      THEN na.value_string END) AS right_kind,
-           MAX(CASE WHEN ad.name = 'right_field_key' THEN na.value_string END) AS right_field_key,
-           MAX(CASE WHEN ad.name = 'left_value'
-                    THEN s7_attribute_value_to_jsonb(na.value_string, na.value_number, na.value_bool, na.value_json)::text
-                    END)::jsonb AS left_value,
-           MAX(CASE WHEN ad.name = 'right_value'
-                    THEN s7_attribute_value_to_jsonb(na.value_string, na.value_number, na.value_bool, na.value_json)::text
-                    END)::jsonb AS right_value
-         FROM s7.schema_nodes n
-         JOIN s7.schema_node_types nt ON nt.id = n.node_type_id AND nt.name = 'condition'
-         JOIN s7.schema_node_attributes na ON na.node_id = n.id
-         JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
-         WHERE n.parent_id IN (SELECT id FROM cg)
-         GROUP BY n.id, n.parent_id
-       ),
-       condition_group_configs AS (
-         SELECT
-           cg.id,
-           cg.usage,
-           jsonb_build_object(
-             'logic', COALESCE(cg.logic, 'and'),
-             'conditions',
-               COALESCE(
-                 (
-                   SELECT jsonb_agg(
-                            jsonb_build_object(
-                              'left',  CASE
-                                          WHEN c.left_kind = 'field' THEN jsonb_build_object('field', c.left_field_key)
-                                          WHEN c.left_kind = 'value' THEN jsonb_build_object('value', COALESCE(c.left_value, 'null'::jsonb))
-                                          ELSE NULL::jsonb
-                                        END,
-                              'op', c.op,
-                              'right', CASE
-                                          WHEN c.right_kind = 'field' THEN jsonb_build_object('field', c.right_field_key)
-                                          WHEN c.right_kind = 'value' THEN jsonb_build_object('value', COALESCE(c.right_value, 'null'::jsonb))
-                                          ELSE NULL::jsonb
-                                        END
-                            )
-                            ORDER BY c.id
-                          )
-                   FROM conditions c
-                   WHERE c.parent_id = cg.id
-                 ),
-                 '[]'::jsonb
-               )
-           ) AS config_json
-         FROM condition_groups cg
-       ),
-       node_condition_configs AS (
-         SELECT
-           MAX(CASE WHEN usage = 'show_if'
-                    THEN config_json::text END)::jsonb    AS show_if_json,
-           MAX(CASE WHEN usage = 'enabled_if'
-                    THEN config_json::text END)::jsonb    AS enabled_if_json
-         FROM condition_group_configs
-       )
-  SELECT
-    ncc.show_if_json,
-    ncc.enabled_if_json
-  INTO o_show_if, o_enabled_if
-  FROM node_condition_configs ncc;
-
-  IF NOT FOUND THEN
-    o_show_if := NULL;
-    o_enabled_if := NULL;
-  END IF;
-END;
-$$ LANGUAGE plpgsql
-SET search_path TO s7, public;
-"""
-
-
- # ------------------------------
  # strip_empty_values
  # ------------------------------
 FN_STRIP_EMPTY_VALUES_SQL = r"""
@@ -286,8 +162,6 @@ DECLARE
   v_json_scope      TEXT;
   v_attrs           JSONB;
   v_natural_attrs   JSONB;
-  v_show_if         JSONB;
-  v_enabled_if      JSONB;
   v_children_json   JSONB;
   v_keyed_children  JSONB;
   v_result          JSONB;
@@ -353,21 +227,6 @@ BEGIN
     AND (dt.name LIKE 'natural_%' OR dt.name = 'display_order')
     AND ad.variant_key IS NULL;
 
-  BEGIN
-    SELECT * INTO v_show_if, v_enabled_if
-    FROM s7.s7_build_node_conditions(p_node_id);
-    
-    IF NOT FOUND THEN
-      v_show_if := NULL;
-      v_enabled_if := NULL;
-    END IF;
-  EXCEPTION
-    WHEN OTHERS THEN
-      v_show_if := NULL;
-      v_enabled_if := NULL;
-      RAISE WARNING 's7_build_node_conditions failed for node_id=%: %', p_node_id, SQLERRM;
-  END;
-
   -- Extract all children grouped by collection_key
   -- If max_children=1, extract as object (not array)
   -- For singleton slots (max_children=1): child.key must match collection_key exactly
@@ -409,9 +268,8 @@ BEGIN
   -- Also captures shorthand-dispatch children: nodes in singleton compositions
   -- (max_children=1) that were stored under a key != ntc.collection_key
   -- (e.g. appbar, fab, drawer stored as screen_section children).
-  -- Condition-group-like nodes (condition_group / sdui_show_if) are already
-  -- handled by s7_build_node_conditions and must be skipped here.
-  SELECT jsonb_object_agg(ch.key, s7_build_node_json(ch.id))
+  -- Use COALESCE to fallback to node_type name when key is NULL (e.g. sdui_props -> 'props')
+  SELECT jsonb_object_agg(COALESCE(ch.key, ch_nt.name), s7_build_node_json(ch.id))
   INTO v_keyed_children
   FROM s7.schema_nodes ch
   JOIN s7.schema_node_types ch_nt ON ch_nt.id = ch.node_type_id
@@ -420,7 +278,6 @@ BEGIN
   JOIN s7.schema_nodes parent ON parent.id = p_node_id
     AND ntc.parent_type_id = parent.node_type_id
   WHERE ch.parent_id = p_node_id
-    AND ch_nt.name NOT IN ('condition_group', 'sdui_show_if')
     AND (
       ntc.collection_key IS NULL
       OR (ntc.max_children = 1 AND ch.key <> ntc.collection_key)
@@ -434,8 +291,6 @@ BEGIN
     jsonb_strip_nulls(
       COALESCE(v_natural_attrs, '{}'::jsonb)
     || COALESCE(v_attrs, '{}'::jsonb)
-    || CASE WHEN v_show_if    IS NOT NULL THEN jsonb_build_object('show_if',     v_show_if)    ELSE '{}'::jsonb END
-    || CASE WHEN v_enabled_if IS NOT NULL THEN jsonb_build_object('enabled_if',  v_enabled_if) ELSE '{}'::jsonb END
     )
     || COALESCE(v_children_json, '{}'::jsonb)
     || COALESCE(v_natural_attrs, '{}'::jsonb)
@@ -1854,7 +1709,6 @@ class Migration(migrations.Migration):
         migrations.RunSQL(FN_PREVENT_NODE_CYCLES_SQL),
         migrations.RunSQL(FN_VALIDATE_VALUE_TYPE_SQL),
         migrations.RunSQL(FN_ATTRIBUTE_VALUE_TO_JSONB_SQL),
-        migrations.RunSQL(FN_BUILD_NODE_CONDITIONS_SQL),
         migrations.RunSQL(FN_STRIP_EMPTY_VALUES_SQL),
         migrations.RunSQL(FN_BUILD_NODE_JSON_SQL),
         migrations.RunSQL(FN_BUILD_SCHEMA_SQL),

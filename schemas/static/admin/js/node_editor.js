@@ -411,7 +411,7 @@
     document.getElementById('btn_create').disabled = true;
   }
 
-  async function setCreateAllowed(allowed, parentNodeType = null) {
+  async function setCreateAllowed(allowed, parentNodeType = null, inferVariantFromParent = []) {
     const sel = document.getElementById('create_node_type');
     const sectionRow = document.getElementById('section_key_row');
     const sectionSel = document.getElementById('section_key_select');
@@ -575,6 +575,14 @@
           return;
         }
 
+        // For node types that infer variant from parent, hide variant selector
+        if (inferVariantFromParent.includes(nodeType)) {
+          variantRow.classList.add('hidden');
+          variantSel.innerHTML = '';
+          document.getElementById('btn_create').disabled = allowed.length === 0;
+          return;
+        }
+
         // Data-driven: try to load variants from backend
         try {
           const variantsData = await requestJson(apiNodeTypeVariants(nodeType), { method: 'GET' });
@@ -644,7 +652,7 @@
       document.getElementById('btn_down').disabled = false;
 
       const allowed = await requestJson(apiAllowedChildren(nodeId), { method: 'GET' });
-      await setCreateAllowed(allowed.allowed || [], node.node_type);
+      await setCreateAllowed(allowed.allowed || [], node.node_type, allowed.infer_variant_from_parent || []);
 
       const propsData = await requestJson(apiProps(nodeId), { method: 'GET' });
 
@@ -1444,6 +1452,16 @@
       tr.appendChild(tdVal);
       tbody.appendChild(tr);
       return;
+    } else if (p.data_type === 'conditional') {
+      input = document.createElement('textarea');
+      input.value = current.value_json != null ? JSON.stringify(current.value_json) : '';
+      input.dataset.json = '1';
+      input.dataset.jsonKey = p.json_key;
+      input.style.fontFamily = 'monospace';
+      input.style.fontSize = '0.9em';
+      input.addEventListener('input', checkHandler);
+      input.addEventListener('change', checkHandler);
+      tdVal.appendChild(input);
     } else if (p.data_type === 'json' || p.data_type === 'list_string') {
       input = document.createElement('textarea');
       input.value = current.value_json != null ? JSON.stringify(current.value_json) : '';
@@ -1673,7 +1691,7 @@
         updates[jsonKey] = v;
     }
 
-    await requestJson(apiProps(currentSelectedNodeId), { method: 'PATCH', body: JSON.stringify({ properties: updates }) });
+    const response = await requestJson(apiProps(currentSelectedNodeId), { method: 'PATCH', body: JSON.stringify({ properties: updates }) });
     // Update original values after saving
     const propsData = await requestJson(apiProps(currentSelectedNodeId), { method: 'GET' });
     document.getElementById('props').dataset.originalProps = JSON.stringify(propsData.properties || []);

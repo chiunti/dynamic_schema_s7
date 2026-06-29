@@ -95,6 +95,15 @@ class AttributeDefRepository:
             qs = qs.filter(node_type_id__in=type_ids)
         return list(qs.values("id", "variant_key", "node_type__name"))
 
+    def get_variants_for_node_type(self, node_type_id: uuid.UUID) -> list[str]:
+        """Return variant keys for a specific node_type."""
+        return list(
+            NodeTypeVariant.objects
+            .filter(node_type_id=node_type_id)
+            .values_list("variant_key", flat=True)
+            .order_by("variant_key")
+        )
+
     def get_type_ids_with_catalog_attrs(self, type_ids: list[uuid.UUID]) -> list[uuid.UUID]:
         """Return the subset of type_ids that have at least one catalog attr (is_common=False, variant_key=None)."""
         return list(
@@ -319,3 +328,248 @@ class AttributeDefRepository:
                 variant_key=variant_key
             ).values('node_type_id', 'discriminator_attr', 'props_node_type_id')
         )
+
+    def get_attribute_defs_by_node_type_required(self, node_type: NodeType, variant_key: Optional[str] = None) -> list[AttributeDef]:
+        """
+        Get required attribute definitions for a node type, optionally filtered by variant.
+
+        Args:
+            node_type: NodeType instance
+            variant_key: Optional variant key to filter by
+
+        Returns:
+            List of required AttributeDef instances
+        """
+        qs = AttributeDef.objects.filter(node_type=node_type, is_required=True)
+        if variant_key:
+            qs = qs.filter(variant_key=variant_key)
+        return list(qs.select_related("data_type"))
+
+    def get_compositions_by_node_type(self, node_type: NodeType) -> list[dict]:
+        """
+        Get compositions for a given node type.
+
+        Args:
+            node_type: NodeType instance
+
+        Returns:
+            List of composition dicts
+        """
+        return list(
+            NodeTypeComposition.objects.filter(parent_type=node_type)
+            .values("id", "parent_type_id", "child_type_id", "collection_key", "min_children", "max_children")
+            .order_by("child_type__name")
+        )
+
+    def get_domain_items_by_domain_ids(self, domain_ids):
+        """
+        Get domain items by domain IDs.
+
+        Args:
+            domain_ids: List of domain IDs
+
+        Returns:
+            QuerySet of DomainItem instances ordered by domain_id and value
+        """
+        return DomainItem.objects.filter(domain_id__in=domain_ids).order_by("domain_id", "value")
+
+    def get_or_create_attribute_def(self, node_type, json_key, variant_key, defaults):
+        """
+        Get or create an AttributeDef.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+            variant_key: Variant key (can be None)
+            defaults: Dict of default values
+
+        Returns:
+            Tuple of (AttributeDef, created)
+        """
+        return AttributeDef.objects.get_or_create(
+            node_type=node_type,
+            json_key=json_key,
+            variant_key=variant_key,
+            defaults=defaults
+        )
+
+    def get_data_type_by_name(self, name):
+        """
+        Get DataType by name.
+
+        Args:
+            name: DataType name
+
+        Returns:
+            DataType instance or None
+        """
+        return DataType.objects.filter(name=name).first()
+
+    def get_attribute_def_with_domain(self, node_type, json_key):
+        """
+        Get AttributeDef with domain by node type and json_key.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+
+        Returns:
+            AttributeDef instance or None
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            json_key=json_key,
+            domain__isnull=False,
+        ).first()
+
+    def domain_item_exists(self, domain, value):
+        """
+        Check if a DomainItem exists for a domain and value.
+
+        Args:
+            domain: Domain instance
+            value: Value to check
+
+        Returns:
+            Boolean indicating if DomainItem exists
+        """
+        return DomainItem.objects.filter(domain=domain, value=value).exists()
+
+    def get_attribute_defs_by_node_type(self, node_type):
+        """
+        Get all AttributeDefs by node type (any variant).
+
+        Args:
+            node_type: NodeType instance
+
+        Returns:
+            QuerySet of AttributeDef instances
+        """
+        return AttributeDef.objects.filter(node_type=node_type)
+
+    def get_attribute_defs_by_node_type_variant_key(self, node_type, variant_key):
+        """
+        Get AttributeDefs by node type and variant key.
+
+        Args:
+            node_type: NodeType instance
+            variant_key: Variant key (can be None)
+
+        Returns:
+            QuerySet of AttributeDef instances
+        """
+        return AttributeDef.objects.filter(node_type=node_type, variant_key=variant_key)
+
+    def get_attribute_def_by_node_type_json_key_variant(self, node_type, json_key, variant_key):
+        """
+        Get AttributeDef by node type, json_key and variant key.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+            variant_key: Variant key (can be None)
+
+        Returns:
+            AttributeDef instance or None
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            json_key=json_key,
+            variant_key=variant_key
+        ).first()
+
+    def create_attribute_def(self, **kwargs):
+        """
+        Create an AttributeDef.
+
+        Args:
+            **kwargs: Keyword arguments for AttributeDef creation
+
+        Returns:
+            AttributeDef instance
+        """
+        return AttributeDef.objects.create(**kwargs)
+
+    def get_discriminator_attribute_def(self, node_type):
+        """
+        Get discriminator AttributeDef for a node type.
+
+        Args:
+            node_type: NodeType instance
+
+        Returns:
+            AttributeDef instance or None
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            variant_key__isnull=True,
+            is_required=True,
+            domain__isnull=False,
+        ).exclude(data_type__name__startswith='natural_').exclude(json_key='type').first()
+
+    def get_domain_items_by_domain(self, domain):
+        """
+        Get DomainItems by domain.
+
+        Args:
+            domain: Domain instance
+
+        Returns:
+            QuerySet of DomainItem instances
+        """
+        return DomainItem.objects.filter(domain=domain)
+
+    def attribute_def_exists_with_display_order(self, node_type, json_key):
+        """
+        Check if an AttributeDef exists with display_order data type.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+
+        Returns:
+            Boolean indicating if AttributeDef exists with display_order data type
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            json_key=json_key,
+            data_type__name='display_order',
+        ).exists()
+
+    def get_attribute_def_by_node_type_json_key_variant_common(self, node_type, json_key, variant_key, is_common):
+        """
+        Get AttributeDef by node type, json_key, variant key and is_common.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+            variant_key: Variant key (can be None)
+            is_common: Boolean for is_common
+
+        Returns:
+            AttributeDef instance or None
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            json_key=json_key,
+            variant_key=variant_key,
+            is_common=is_common
+        ).first()
+
+    def universal_attribute_def_exists(self, node_type, json_key):
+        """
+        Check if a universal AttributeDef exists (variant_key=None, is_common=True).
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+
+        Returns:
+            Boolean indicating if universal AttributeDef exists
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            json_key=json_key,
+            variant_key__isnull=True,
+            is_common=True
+        ).exists()

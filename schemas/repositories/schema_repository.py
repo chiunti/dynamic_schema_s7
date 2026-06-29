@@ -634,7 +634,7 @@ class SchemaRepository:
     def get_children_by_parent(self, parent_id):
         """Get children nodes by parent ID ordered by sort_order"""
         from ..models import Node
-        return Node.objects.filter(parent_id=parent_id).order_by("sort_order").only("id", "sort_order", "node_type")
+        return Node.objects.filter(parent_id=parent_id).order_by("sort_order").values("id", "name", "node_type__name")
 
     def get_compositions_by_parent_type(self, node_type, min_children_gt=0):
         """Get compositions by parent type with optional min_children filter"""
@@ -643,3 +643,426 @@ class SchemaRepository:
         if min_children_gt > 0:
             qs = qs.filter(min_children__gt=min_children_gt)
         return qs.order_by('child_type__name')
+
+    def normalize_positions(self, parent_id):
+        """
+        Normalize sort_order values for children of a parent node.
+
+        Args:
+            parent_id: UUID of the parent node
+        """
+        from ..models import Node
+        qs = Node.objects.filter(parent_id=parent_id).order_by("sort_order", "id").only("id", "sort_order")
+        updates = []
+        for idx, n in enumerate(qs):
+            if n.sort_order != idx:
+                n.sort_order = idx
+                updates.append(n)
+        if updates:
+            Node.objects.bulk_update(updates, ["sort_order"])
+
+    def get_max_sort_order(self, parent_id):
+        """
+        Get the maximum sort_order value for children of a parent node.
+
+        Args:
+            parent_id: UUID of the parent node
+
+        Returns:
+            Maximum sort_order value or None if no children exist
+        """
+        from ..models import Node
+        from django.db.models import Max
+        result = Node.objects.filter(parent=parent_id).aggregate(Max("sort_order"))
+        return result.get("sort_order__max")
+
+    def get_subtree_nodes_with_type(self, root_id):
+        """
+        Get all nodes in the subtree with their node_type information.
+
+        Args:
+            root_id: UUID of the root node
+
+        Returns:
+            List of dicts with node data including id, parent_id, node_type__name, sort_order, key
+        """
+        from ..models import Node
+        node_ids = self._get_subtree_ids(root_id)
+        return list(Node.objects.select_related("node_type").filter(
+            id__in=node_ids
+        ).values("id", "parent_id", "node_type__name", "sort_order", "key"))
+
+    def get_nodes_with_attrs(self, node_ids):
+        """
+        Get nodes that have attributes from a list of node IDs.
+
+        Args:
+            node_ids: List of node UUIDs
+
+        Returns:
+            Set of node IDs that have attributes
+        """
+        from ..models import NodeAttribute
+        return set(
+            NodeAttribute.objects.filter(
+                node_id__in=node_ids
+            ).values_list("node_id", flat=True)
+        )
+
+    def get_nodes_with_children(self, node_ids):
+        """
+        Get parent IDs from a list of node IDs that have children.
+
+        Args:
+            node_ids: List of node UUIDs
+
+        Returns:
+            Set of parent IDs that have children
+        """
+        from ..models import Node
+        return set(
+            Node.objects.filter(
+                parent_id__in=node_ids
+            ).values_list("parent_id", flat=True)
+        )
+
+    def _get_subtree_ids(self, root_id):
+        """
+        Return all node IDs in the subtree rooted at root_id (BFS).
+
+        Args:
+            root_id: UUID of the root node
+
+        Returns:
+            List of node IDs
+        """
+        from collections import deque
+        from ..models import Node
+        ids = []
+        queue = deque([root_id])
+        while queue:
+            current = queue.popleft()
+            ids.append(current)
+            children = Node.objects.filter(parent_id=current).values_list("id", flat=True)
+            queue.extend(children)
+        return ids
+
+    def get_root_node_by_key_version(self, key: str, version: str):
+        """
+        Get root node by key and version.
+
+        Args:
+            key: Schema key
+            version: Schema version
+
+        Returns:
+            Node instance or None
+        """
+        from ..models import Node
+        return Node.objects.filter(
+            node_type__is_root=True,
+            parent__isnull=True,
+            key=key,
+            version=version,
+        ).select_related('node_type').first()
+
+    def get_attribute_def_by_node_type_key(self, node_type, json_key: str):
+        """
+        Get attribute definition by node type and json_key.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key to search for
+
+        Returns:
+            AttributeDef instance or None
+        """
+        from ..models import AttributeDef
+        return AttributeDef.objects.filter(node_type=node_type, json_key=json_key).first()
+
+    def get_node_attribute_by_node_attr_def(self, node, attribute_def):
+        """
+        Get node attribute by node and attribute definition.
+
+        Args:
+            node: Node instance
+            attribute_def: AttributeDef instance
+
+        Returns:
+            NodeAttribute instance or None
+        """
+        from ..models import NodeAttribute
+        return NodeAttribute.objects.filter(node=node, attribute_def=attribute_def).first()
+
+    def get_root_nodes_by_node_type_name(self, node_type_name: str):
+        """
+        Get root nodes by node type name.
+
+        Args:
+            node_type_name: Name of the node type
+
+        Returns:
+            List of (key, version) tuples
+        """
+        from ..models import Node
+        return Node.objects.filter(
+            node_type__name=node_type_name,
+            parent__isnull=True,
+            key__isnull=False,
+            version__isnull=False,
+        ).values_list('key', 'version')
+
+    def get_children_ids_by_parent(self, parent_id):
+        """
+        Get child node IDs for a given parent node.
+
+        Args:
+            parent_id: UUID of the parent node
+
+        Returns:
+            List of child node IDs
+        """
+        from ..models import Node
+        return list(Node.objects.filter(parent_id=parent_id).values_list("id", flat=True))
+
+    def get_node_by_id(self, node_id):
+        """
+        Get node by ID.
+
+        Args:
+            node_id: UUID of the node
+
+        Returns:
+            Node instance or None
+        """
+        from ..models import Node
+        return Node.objects.get(id=node_id)
+
+    def get_node_by_parent_and_type(self, parent_id, node_type):
+        """
+        Get node by parent and node type.
+
+        Args:
+            parent_id: UUID of the parent node
+            node_type: NodeType instance
+
+        Returns:
+            Node instance or None
+        """
+        from ..models import Node
+        return Node.objects.filter(parent=parent_id, node_type=node_type).first()
+
+    def node_exists_by_parent_key(self, parent, key):
+        """
+        Check if a node with given parent and key exists.
+
+        Args:
+            parent: Parent Node instance
+            key: Key to check
+
+        Returns:
+            Boolean indicating if node exists
+        """
+        from ..models import Node
+        return Node.objects.filter(parent=parent, key=key).exists()
+
+    def count_children_by_parent_type(self, parent, node_type):
+        """
+        Count children of a parent by node type.
+
+        Args:
+            parent: Parent Node instance
+            node_type: NodeType instance
+
+        Returns:
+            Count of children
+        """
+        from ..models import Node
+        return Node.objects.filter(parent=parent, node_type=node_type).count()
+
+    def composition_exists(self, parent_type, child_type):
+        """
+        Check if a composition exists between parent and child types.
+
+        Args:
+            parent_type: Parent NodeType instance
+            child_type: Child NodeType instance
+
+        Returns:
+            Boolean indicating if composition exists
+        """
+        from ..models import NodeTypeComposition
+        return NodeTypeComposition.objects.filter(parent_type=parent_type, child_type=child_type).exists()
+
+    def get_children_counts_by_parent_type_ids(self, parent, child_type_ids):
+        """
+        Get count of children by node type IDs for a given parent.
+
+        Args:
+            parent: Parent Node instance
+            child_type_ids: List of child node type IDs
+
+        Returns:
+            Dict mapping node_type_id to count
+        """
+        from ..models import Node
+        from django.db.models import Count
+        return dict(
+            Node.objects.filter(parent=parent, node_type_id__in=child_type_ids)
+            .values_list("node_type_id")
+            .annotate(cnt=Count("id"))
+            .values_list("node_type_id", "cnt")
+        )
+
+    def get_children_keys_by_parent_type_ids(self, parent, child_type_ids):
+        """
+        Get keys of children by node type IDs for a given parent.
+
+        Args:
+            parent: Parent Node instance
+            child_type_ids: List of child node type IDs
+
+        Returns:
+            Set of keys
+        """
+        from ..models import Node
+        return set(
+            Node.objects.filter(parent=parent, node_type_id__in=child_type_ids, key__isnull=False)
+            .values_list("key", flat=True)
+        )
+
+    def get_node_by_parent_type(self, parent, child_type_id):
+        """
+        Get node by parent and child type ID.
+
+        Args:
+            parent: Parent Node instance
+            child_type_id: Child node type ID
+
+        Returns:
+            Node instance or None
+        """
+        from ..models import Node
+        return Node.objects.filter(parent=parent, node_type_id=child_type_id).first()
+
+    def bulk_update_nodes_sort_order(self, nodes):
+        """
+        Bulk update sort_order for multiple nodes.
+
+        Args:
+            nodes: List of Node instances with updated sort_order
+        """
+        from ..models import Node
+        Node.objects.bulk_update(nodes, ["sort_order"])
+
+    def update_or_create_node_attribute(self, node_id, attribute_def, defaults):
+        """
+        Update or create a NodeAttribute.
+
+        Args:
+            node_id: UUID of the node
+            attribute_def: AttributeDef instance
+            defaults: Dict of default values
+
+        Returns:
+            Tuple of (NodeAttribute, created)
+        """
+        from ..models import NodeAttribute
+        return NodeAttribute.objects.update_or_create(
+            node_id=node_id,
+            attribute_def=attribute_def,
+            defaults=defaults
+        )
+
+    def update_node_name(self, node_id: uuid.UUID, name: str):
+        """
+        Update node name.
+
+        Args:
+            node_id: Node UUID
+            name: New name
+
+        Returns:
+            Number of rows updated
+        """
+        from ..models import Node
+        return Node.objects.filter(id=node_id).update(name=name)
+
+    def update_node_parent(self, node_id: uuid.UUID, parent_id: uuid.UUID):
+        """
+        Update node parent.
+
+        Args:
+            node_id: Node UUID
+            parent_id: New parent UUID
+
+        Returns:
+            Number of rows updated
+        """
+        from ..models import Node
+        return Node.objects.filter(id=node_id).update(parent_id=parent_id)
+
+    def update_node_key(self, node_id: uuid.UUID, key: str):
+        """
+        Update node key.
+
+        Args:
+            node_id: Node UUID
+            key: New key
+
+        Returns:
+            Number of rows updated
+        """
+        from ..models import Node
+        return Node.objects.filter(id=node_id).update(key=key)
+
+    def update_node_version(self, node_id: uuid.UUID, version: str):
+        """
+        Update node version.
+
+        Args:
+            node_id: Node UUID
+            version: New version
+
+        Returns:
+            Number of rows updated
+        """
+        from ..models import Node
+        return Node.objects.filter(id=node_id).update(version=version)
+
+    def update_node_sort_order(self, node_id: uuid.UUID, sort_order: int):
+        """
+        Update node sort order.
+
+        Args:
+            node_id: Node UUID
+            sort_order: New sort order
+
+        Returns:
+            Number of rows updated
+        """
+        from ..models import Node
+        return Node.objects.filter(id=node_id).update(sort_order=sort_order)
+
+    def create_child_node(self, node_type, parent_id: uuid.UUID, key: str, **kwargs):
+        """
+        Create a child node.
+
+        Args:
+            node_type: NodeType instance
+            parent_id: Parent node UUID
+            key: Node key
+            **kwargs: Additional node fields
+
+        Returns:
+            Node instance
+        """
+        from ..models import Node
+        node = Node(
+            node_type=node_type,
+            parent_id=parent_id,
+            key=key,
+            **kwargs
+        )
+        node.save()
+        return node

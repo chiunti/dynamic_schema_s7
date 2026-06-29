@@ -74,3 +74,12 @@ class ProjectRepository:
     def has_schemas(self, project_id: uuid.UUID) -> bool:
         from ..models import Node
         return Node.objects.filter(project_id=project_id, parent__isnull=True).exists()
+
+    def get_all_projects_ordered(self):
+        """
+        Get all projects ordered by name.
+
+        Returns:
+            QuerySet of Project instances ordered by name
+        """
+        return Project.objects.all().order_by('name')

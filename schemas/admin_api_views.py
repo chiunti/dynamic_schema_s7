@@ -9,6 +9,8 @@ from django.http import HttpRequest, JsonResponse
 
 from .services.attribute_def_service import AttributeDefService
 from .repositories.node_type_repository import NodeTypeRepository
+from .repositories.attribute_def_repository import AttributeDefRepository
+from .repositories.composition_repository import CompositionRepository
 from .constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_INVALID_JSON,
@@ -145,8 +147,29 @@ def api_delete_attribute_def(request: HttpRequest) -> JsonResponse:
 
 def api_attributes_by_variant(request: HttpRequest, variant_key: str) -> JsonResponse:
     scope = request.GET.get("scope", "")
+    parent_node_id = request.GET.get("parent_node_id")
+    
     if request.method == "GET":
-        result = AttributeDefService().get_attributes_by_variant(variant_key, scope)
+        # If parent_node_id is provided, use it to infer variant_key for props nodes
+        # This allows the component properties editor to work when editing props child nodes
+        effective_variant_key = variant_key
+        if parent_node_id:
+            from .services.node_service import NodeService
+            from .repositories.schema_repository import SchemaRepository
+            
+            node_service = NodeService()
+            schema_repo = SchemaRepository()
+            
+            # Get the parent node
+            parent = schema_repo.get_node_by_id_with_node_type(parent_node_id)
+            if parent:
+                # Use NodeService to infer variant from parent
+                effective_variant_key = node_service.infer_variant_from_parent(parent)
+        
+        if not effective_variant_key:
+            return JsonResponse({"error": "variant_key is required or could not be inferred from parent_node_id"}, status=400)
+        
+        result = AttributeDefService().get_attributes_by_variant(effective_variant_key, scope)
         return JsonResponse(result)
 
     if request.method == "POST":
@@ -184,28 +207,29 @@ def api_json_example(request: HttpRequest) -> JsonResponse:
 
 def _generate_json_example(node_type):
     """Generate JSON example from NodeType definitions (only root level with required fields)"""
-    from schemas.models import AttributeDef
-    
+    attr_def_repo = AttributeDefRepository()
+    comp_repo = CompositionRepository()
+    from schemas.models import NodeTypeComposition
+
     example = {}
-    
+
     # Start with the root key (node_type name or json_scope without _root suffix)
     root_key = node_type.json_scope.replace('_root', '') if node_type.json_scope else node_type.name
     example[root_key] = {}
-    
+
     # Add only required attributes for this node type
-    attr_defs = AttributeDef.objects.filter(node_type=node_type, variant_key__isnull=True, is_required=True)
+    attr_defs = attr_def_repo.get_attribute_defs_by_node_type_required(node_type, variant_key=None)
     for attr_def in attr_defs:
         if attr_def.json_key in ['id', 'key', 'version']:
             continue  # Skip auto-generated fields
         example[root_key][attr_def.json_key] = _get_example_value(attr_def)
-    
+
     # Add empty array placeholders for collections (only structure, no content)
-    from schemas.models import NodeTypeComposition
-    compositions = NodeTypeComposition.objects.filter(parent_type=node_type)
+    compositions = comp_repo.get_compositions_by_node_type(node_type)
     for composition in compositions:
         if composition.collection_key:
             example[root_key][composition.collection_key] = []
-    
+
     return example
 
 

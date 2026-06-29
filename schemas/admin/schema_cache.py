@@ -8,13 +8,14 @@ from django.http import QueryDict
 
 from ..models import (
     SchemaCache,
-    NodeType,
     AttributeDef,
     Node,
     NodeAttribute,
     Project,
 )
 from ..repositories.attribute_def_repository import AttributeDefRepository
+from ..repositories.node_type_repository import NodeTypeRepository
+from ..repositories.project_repository import ProjectRepository
 
 
 class ProjectListFilter(admin.SimpleListFilter):
@@ -22,7 +23,8 @@ class ProjectListFilter(admin.SimpleListFilter):
     parameter_name = 'project'
 
     def lookups(self, request, model_admin):
-        projects = Project.objects.all().order_by('name')
+        project_repository = ProjectRepository()
+        projects = project_repository.get_all_projects_ordered()
         return [(str(p.id), p.name) for p in projects]
 
     def queryset(self, request, queryset):
@@ -36,6 +38,7 @@ class SchemaCacheAdmin(admin.ModelAdmin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.repository = AttributeDefRepository()
+        self.node_type_repository = NodeTypeRepository()
 
     change_list_template = "admin/schemas/schemacache/change_list.html"
     list_display = ("key", "schema_type", "project_display", "version", "generated_at")
@@ -75,17 +78,17 @@ class SchemaCacheAdmin(admin.ModelAdmin):
     def changelist_view(self, request, extra_context=None):
         """Override to add dynamic node type tabs for root types only"""
         extra_context = extra_context or {}
-        
-        node_types = NodeType.objects.filter(json_scope__endswith='_root')
-        
+
+        node_types = self.node_type_repository.get_node_types_by_scope_endswith('_root')
+
         tabs = [{'label': 'All', 'value': ''}]
         for nt in node_types:
             label = nt.name.replace('_', ' ').title()
             tabs.append({'label': label, 'value': nt.name})
-        
+
         extra_context['node_type_tabs'] = tabs
         extra_context['current_node_type'] = request.GET.get('node_type', '')
-        
+
         return super().changelist_view(request, extra_context=extra_context)
 
     def get_queryset(self, request):

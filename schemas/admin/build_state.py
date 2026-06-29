@@ -10,7 +10,6 @@ from django.contrib.admin.views.main import IncorrectLookupParameters
 
 from ..models import (
     BuildState,
-    NodeType,
     AttributeDef,
     Node,
     NodeAttribute,
@@ -18,6 +17,9 @@ from ..models import (
 )
 from ..services.schema_service import SchemaService
 from ..services.schema_validation_service import SchemaValidationService
+from ..repositories.schema_repository import SchemaRepository
+from ..repositories.project_repository import ProjectRepository
+from ..repositories.node_type_repository import NodeTypeRepository
 from ..constants import (
     ERR_INVALID_NODE_ID,
     ERR_NODE_NOT_FOUND,
@@ -33,7 +35,8 @@ class ProjectListFilter(admin.SimpleListFilter):
     parameter_name = 'project'
 
     def lookups(self, request, model_admin):
-        projects = Project.objects.all().order_by('name')
+        project_repository = ProjectRepository()
+        projects = project_repository.get_all_projects_ordered()
         return [(str(p.id), p.name) for p in projects]
 
     def queryset(self, request, queryset):
@@ -48,6 +51,8 @@ class BuildStateAdmin(admin.ModelAdmin):
         super().__init__(*args, **kwargs)
         self.validation_service = SchemaValidationService()
         self.schema_service = SchemaService()
+        self.schema_repository = SchemaRepository()
+        self.node_type_repository = NodeTypeRepository()
 
     change_list_template = "admin/schemas/buildstate/change_list.html"
     list_display = ("key", "schema_type", "project_display", "version", "current_build_display", "last_cached_build_display", "status", "action", "updated_at", "cached_at")
@@ -79,7 +84,7 @@ class BuildStateAdmin(admin.ModelAdmin):
         """Override to add dynamic node type tabs for root types only"""
         extra_context = extra_context or {}
 
-        node_types = NodeType.objects.filter(json_scope__endswith='_root')
+        node_types = self.node_type_repository.get_node_types_by_scope_endswith('_root')
 
         tabs = [{'label': 'All', 'value': ''}]
         for nt in node_types:
@@ -106,15 +111,10 @@ class BuildStateAdmin(admin.ModelAdmin):
         """Filter by node_type if selected in tab"""
         qs = super().get_queryset(request)
         node_type_name = getattr(self, '_node_type_filter', None)
-        
+
         if node_type_name:
             from django.db.models import Q
-            matching = list(Node.objects.filter(
-                node_type__name=node_type_name,
-                parent__isnull=True,
-                key__isnull=False,
-                version__isnull=False,
-            ).values_list('key', 'version'))
+            matching = list(self.schema_repository.get_root_nodes_by_node_type_name(node_type_name))
             if matching:
                 q = Q()
                 for k, v in matching:
@@ -122,7 +122,7 @@ class BuildStateAdmin(admin.ModelAdmin):
                 qs = qs.filter(q)
             else:
                 qs = qs.none()
-        
+
         return qs
 
     @admin.display(description="Project")
@@ -148,12 +148,7 @@ class BuildStateAdmin(admin.ModelAdmin):
     @admin.display(description="Type")
     def schema_type(self, obj):
         try:
-            node = Node.objects.filter(
-                node_type__is_root=True,
-                parent__isnull=True,
-                key=obj.key,
-                version=obj.version,
-            ).select_related('node_type').first()
+            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version)
             if node:
                 scope = node.node_type.json_scope or node.node_type.name
                 label = scope.replace('_root', '').replace('_', ' ').title()
@@ -165,16 +160,11 @@ class BuildStateAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status(self, obj):
         try:
-            node = Node.objects.filter(
-                node_type__is_root=True,
-                parent__isnull=True,
-                key=obj.key,
-                version=obj.version,
-            ).select_related('node_type').first()
+            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version)
             if node:
-                ad_status = AttributeDef.objects.filter(node_type=node.node_type, json_key='status').first()
+                ad_status = self.schema_repository.get_attribute_def_by_node_type_key(node.node_type, 'status')
                 if ad_status:
-                    status_attr = NodeAttribute.objects.filter(node=node, attribute_def=ad_status).first()
+                    status_attr = self.schema_repository.get_node_attribute_by_node_attr_def(node, ad_status)
                     if status_attr and status_attr.value_string:
                         status = status_attr.value_string
                         color = "green" if status == "published" else "orange" if status == "draft" else "gray"
@@ -187,19 +177,14 @@ class BuildStateAdmin(admin.ModelAdmin):
     def action(self, obj):
         node_status = None
         node_id = None
-        
+
         try:
-            node = Node.objects.filter(
-                node_type__is_root=True,
-                parent__isnull=True,
-                key=obj.key,
-                version=obj.version,
-            ).select_related('node_type').first()
+            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version)
             if node:
                 node_id = node.id
-                ad_status = AttributeDef.objects.filter(node_type=node.node_type, json_key='status').first()
+                ad_status = self.schema_repository.get_attribute_def_by_node_type_key(node.node_type, 'status')
                 if ad_status:
-                    status_attr = NodeAttribute.objects.filter(node=node, attribute_def=ad_status).first()
+                    status_attr = self.schema_repository.get_node_attribute_by_node_attr_def(node, ad_status)
                     if status_attr:
                         node_status = status_attr.value_string
         except Exception:
@@ -243,13 +228,13 @@ class BuildStateAdmin(admin.ModelAdmin):
         from uuid import UUID
         try:
             node_id = UUID(node_id) if isinstance(node_id, str) else node_id
-            node = Node.objects.filter(id=node_id).select_related('node_type').first()
+            node = self.schema_repository.get_node_by_id_with_node_type(node_id)
         except Exception:
             return JsonResponse({"error": ERR_INVALID_NODE_ID}, status=400)
-        
+
         if not node:
             return JsonResponse({"error": ERR_NODE_NOT_FOUND}, status=404)
-        
+
         # Validate no missing required properties before publishing
         warnings = self._collect_required_warnings(node.id)
         if warnings:
@@ -263,7 +248,7 @@ class BuildStateAdmin(admin.ModelAdmin):
                 "warnings": warnings,
                 "message": "Complete all required properties before publishing. " + "; ".join(warning_details)
             }, status=400)
-        
+
         if not node.node_type or not node.node_type.is_root:
             return JsonResponse({"error": ERR_NOT_A_ROOT_NODE}, status=400)
 

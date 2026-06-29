@@ -3,7 +3,7 @@ Utility functions for the schemas admin module.
 """
 from collections import deque
 
-from ..models import Node
+from ..repositories.schema_repository import SchemaRepository
 
 
 def build_node_line_map(json_text, root_id):
@@ -78,25 +78,15 @@ def build_node_line_map(json_text, root_id):
         return sorted(result, key=lambda x: x[0])
 
     # --- Load full subtree with parent/type/key info ---
-    all_node_rows = list(Node.objects.select_related("node_type").filter(
-        id__in=_get_subtree_ids(root_id)
-    ).values("id", "parent_id", "node_type__name", "sort_order", "key"))
+    repo = SchemaRepository()
+    all_node_rows = repo.get_subtree_nodes_with_type(root_id)
 
     # Identify empty nodes (no attributes and no children) - these won't appear in JSON
     # due to s7_strip_empty_values, so they should not be highlighted
     node_ids = [row["id"] for row in all_node_rows]
-    nodes_with_attrs = set(
-        Node.objects.filter(
-            id__in=node_ids,
-            nodeattribute__isnull=False
-        ).values_list("id", flat=True)
-    )
+    nodes_with_attrs = repo.get_nodes_with_attrs(node_ids)
     # Check for children by looking for nodes whose parent is in our node_ids
-    nodes_with_children = set(
-        Node.objects.filter(
-            parent_id__in=node_ids
-        ).values_list("parent_id", flat=True)
-    )
+    nodes_with_children = repo.get_nodes_with_children(node_ids)
     empty_node_ids = set(node_ids) - nodes_with_attrs - nodes_with_children
 
     # Fix: derive missing keys for structural nodes (no collection_key composition)
@@ -319,15 +309,3 @@ def build_node_line_map(json_text, root_id):
             queue.append(str(c["id"]))
 
     return node_line_map
-
-
-def _get_subtree_ids(root_id):
-    """Return all node IDs in the subtree rooted at root_id (BFS)."""
-    ids = []
-    queue = deque([root_id])
-    while queue:
-        current = queue.popleft()
-        ids.append(current)
-        children = Node.objects.filter(parent_id=current).values_list("id", flat=True)
-        queue.extend(children)
-    return ids

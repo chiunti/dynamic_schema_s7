@@ -22,6 +22,7 @@ from ..models import (
     ComponentPropertiesProxy,
 )
 from ..repositories.node_type_repository import NodeTypeRepository
+from ..repositories.composition_repository import CompositionRepository
 from ..services.composition_service import CompositionService
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
@@ -87,14 +88,13 @@ def _get_tree_node_type_ids(root_scope):
         return []
     visited = set()
     queue = [root.id]
+    comp_repo = CompositionRepository()
     while queue:
         current_id = queue.pop()
         if current_id in visited:
             continue
         visited.add(current_id)
-        children = NodeTypeComposition.objects.filter(
-            parent_type_id=current_id
-        ).values_list('child_type_id', flat=True)
+        children = comp_repo.get_child_type_ids_by_parent_type_id(current_id, NodeTypeComposition)
         queue.extend(children)
     return list(visited)
 
@@ -110,6 +110,8 @@ class CompositionAdminMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.composition_service = CompositionService()
+        self.node_type_repository = NodeTypeRepository()
+        self.composition_repository = CompositionRepository()
 
     def _active_scope(self, request):
         return getattr(self, '_scope_filter', None) or request.GET.get('scope', '')
@@ -196,15 +198,13 @@ class CompositionAdminMixin:
         type_ids = self._type_ids(scope if scope else None)
         node_types = [
             {**nt, "id": str(nt["id"])}
-            for nt in NodeType.objects.filter(id__in=type_ids)
-            .values("id", "name", "label", "is_root", "is_container", "json_scope")
-            .order_by("name")
+            for nt in self.node_type_repository.get_node_types_by_ids(type_ids)
         ]
         compositions = [
             {**c, "id": str(c["id"]), "parent_type_id": str(c["parent_type_id"]), "child_type_id": str(c["child_type_id"])}
-            for c in self.composition_model.objects.filter(parent_type_id__in=type_ids)
-            .values("id", "parent_type_id", "child_type_id", "collection_key", "min_children", "max_children")
-            .order_by("parent_type__name", "child_type__name")
+            for c in self.composition_repository.get_compositions_by_parent_type_ids(type_ids, self.composition_model).values(
+                "id", "parent_type_id", "child_type_id", "collection_key", "min_children", "max_children"
+            )
         ]
         return JsonResponse({"node_types": node_types, "compositions": compositions})
 

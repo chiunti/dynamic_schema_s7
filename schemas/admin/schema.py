@@ -20,6 +20,7 @@ from django.utils.html import format_html
 
 from ..models import Schema, Project
 from ..repositories.node_type_repository import NodeTypeRepository
+from ..repositories.project_repository import ProjectRepository
 from ..services.schema_service import SchemaService
 from ..services.node_service import NodeService
 from ..constants import (
@@ -101,8 +102,9 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             ]
             class SchemaAddForm(forms.ModelForm):
                 schema_type = forms.ChoiceField(choices=choices, label="Schema type", required=True)
+                project_repository = ProjectRepository()
                 project = forms.ModelChoiceField(
-                    queryset=Project.objects.all(),
+                    queryset=project_repository.get_all_projects_ordered(),
                     label="Project",
                     required=True,
                     help_text="Every schema must belong to a project"
@@ -113,9 +115,10 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             return SchemaAddForm
         else:
             # Edit form - include project field
+            project_repository = ProjectRepository()
             class SchemaEditForm(forms.ModelForm):
                 project = forms.ModelChoiceField(
-                    queryset=Project.objects.all(),
+                    queryset=project_repository.get_all_projects_ordered(),
                     label="Project",
                     required=True,
                     help_text="Every schema must belong to a project"
@@ -336,11 +339,12 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             for nt in NodeTypeRepository().get_all_root_node_types()
         ]
         if request.method == "GET":
+            project_repository = ProjectRepository()
             context = {
                 **self.admin_site.each_context(request),
                 "title": "Import Schema",
                 "root_types": root_types,
-                "projects": Project.objects.all(),
+                "projects": project_repository.get_all_projects_ordered(),
             }
             return render(request, "admin/schemas/schema/import_schema.html", context)
 

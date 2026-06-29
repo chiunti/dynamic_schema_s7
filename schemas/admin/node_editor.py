@@ -32,6 +32,12 @@ from ..models import (
 )
 from ..services.node_service import NodeService
 from ..services.schema_validation_service import SchemaValidationService
+from ..services.attribute_def_service import AttributeDefService
+from ..repositories.schema_repository import SchemaRepository
+from ..repositories.node_type_repository import NodeTypeRepository
+from ..repositories.attribute_def_repository import AttributeDefRepository
+from ..repositories.composition_repository import CompositionRepository
+from ..utils import normalize_variant_key
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_INVALID_JSON,
@@ -62,6 +68,12 @@ class NodeEditorMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.validation_service = SchemaValidationService()
+        self.node_service = NodeService()
+        self.attribute_def_service = AttributeDefService()
+        self.schema_repository = SchemaRepository()
+        self.node_type_repository = NodeTypeRepository()
+        self.attribute_def_repository = AttributeDefRepository()
+        self.composition_repository = CompositionRepository()
 
     def get_urls(self):
         urls = super().get_urls()
@@ -89,20 +101,14 @@ class NodeEditorMixin:
         return render(request, "admin/schemas/node/editor.html", context)
 
     def _normalize_positions(self, parent_id):
-        qs = Node.objects.filter(parent_id=parent_id).order_by("sort_order", "id").only("id", "sort_order")
-        updates = []
-        for idx, n in enumerate(qs):
-            if n.sort_order != idx:
-                n.sort_order = idx
-                updates.append(n)
-        if updates:
-            Node.objects.bulk_update(updates, ["sort_order"])
+        self.schema_repository.normalize_positions(parent_id)
 
     def _resolve_root_node_id(self, request):
         node_id = request.GET.get("node_id")
         if node_id:
             try:
-                return Node.objects.only("id").get(id=node_id).id
+                node = self.schema_repository.get_node_by_id(node_id)
+                return node.id if node else None
             except Node.DoesNotExist:
                 return None
 
@@ -111,12 +117,7 @@ class NodeEditorMixin:
         if not key or not version:
             return None
 
-        root_node = Node.objects.filter(
-            node_type__is_root=True,
-            parent__isnull=True,
-            key=key,
-            version=version,
-        ).first()
+        root_node = self.schema_repository.get_root_node_by_key_version(key, version)
         return root_node.id if root_node else None
 
     def _resolve_schema_root_id(self, request):
@@ -139,12 +140,12 @@ class NodeEditorMixin:
         return JsonResponse({"root_id": root_id, "nodes": nodes})
 
     def api_node(self, request, node_id):
-        node = Node.objects.select_related("node_type", "parent").filter(id=node_id).first()
+        node = self.schema_repository.get_node_by_id_with_parent(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
         if request.method == "GET":
-            children = list(Node.objects.filter(parent=node).select_related("node_type").order_by("sort_order").values("id", "name", "sort_order", "node_type__name"))
+            children = list(self.schema_repository.get_children_by_parent(node))
             return JsonResponse({
                 "id": node.id,
                 "name": node.name,
@@ -169,7 +170,7 @@ class NodeEditorMixin:
             node.name = str(payload.get("name") or "").strip()
             if not node.name:
                 return JsonResponse({"error": ERR_NAME_REQUIRED}, status=400)
-            node.save(update_fields=["name"])
+            self.schema_repository.update_node_name(node.id, node.name)
 
         return JsonResponse({"ok": True})
 
@@ -177,37 +178,50 @@ class NodeEditorMixin:
         if request.method != "GET":
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
-        node = Node.objects.select_related("node_type").filter(id=node_id).first()
+        node = self.schema_repository.get_node_by_id_with_node_type(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
-        compositions = NodeTypeComposition.objects.select_related("child_type").filter(parent_type=node.node_type).order_by("child_type__name")
+        compositions = self.composition_repository.get_compositions_by_parent_type(node.node_type)
 
         child_type_ids = [c.child_type_id for c in compositions]
-        existing_counts = dict(
-            Node.objects.filter(parent=node, node_type_id__in=child_type_ids)
-            .values_list("node_type_id")
-            .annotate(cnt=Count("id"))
-            .values_list("node_type_id", "cnt")
-        )
+        existing_counts = self.schema_repository.get_children_counts_by_parent_type_ids(node, child_type_ids)
 
         # For collection_key-based compositions, check if a child with that key already exists
         # Build a set of existing keys (regardless of node_type) for singleton slots
-        existing_keys = set(
-            Node.objects.filter(parent=node, node_type_id__in=child_type_ids, key__isnull=False)
-            .values_list("key", flat=True)
-        )
+        # Exclude keys that match collection_key of non-singleton compositions (e.g., 'children')
+        non_singleton_collection_keys = {
+            c.collection_key for c in compositions
+            if c.collection_key and c.max_children != 1
+        }
+        existing_keys = self.schema_repository.get_children_keys_by_parent_type_ids(node, child_type_ids) - non_singleton_collection_keys
+
+        # Also build a map of collection_key to existing node for compositions
+        # This handles the case where imported nodes have custom keys (e.g., 'home_body' instead of 'body')
+        collection_key_to_node = {}
+        for c in compositions:
+            if c.collection_key and c.max_children == 1:
+                # For singleton slots, check if there's a child of this type with this parent
+                existing_child = self.schema_repository.get_node_by_parent_type(node, c.child_type_id)
+                if existing_child:
+                    collection_key_to_node[c.collection_key] = existing_child
 
         allowed = []
         for c in compositions:
             max_c = c.max_children
 
-            # For collection_key-based compositions (singleton slots), check if key already exists
+            # For collection_key-based compositions:
+            # 1. Check if a child with that collection_key already exists (singleton)
+            # 2. If NOT, check max_children for that specific collection_key
             if c.collection_key:
-                if c.collection_key in existing_keys:
-                    # A child with this collection_key already exists (any node type)
+                # For singleton slots (max_children=1), check if slot is already occupied
+                if max_c == 1 and c.collection_key in collection_key_to_node:
+                    # A child with this collection_key already exists (singleton slot)
                     continue
-            # For non-collection_key compositions, use count-based check
+                # Check max_children for this specific collection_key
+                if max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
+                    continue
+            # For non-collection_key compositions: check max_children by node_type
             elif max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
                 continue
 
@@ -223,14 +237,11 @@ class NodeEditorMixin:
         # (e.g., sdui_props inherits variant from parent's component type)
         infer_variant_from_parent = []
         for item in allowed:
-            child_type = NodeType.objects.filter(name=item["node_type"]).first()
+            child_type = self.node_type_repository.get_node_type_by_name(item["node_type"])
             if child_type:
                 # Check if this node type has NodeTypeVariants with discriminator_attr=None
                 # This pattern indicates the variant comes from parent
-                has_parent_inferred_variants = NodeTypeVariant.objects.filter(
-                    node_type=child_type,
-                    discriminator_attr__isnull=True
-                ).exists()
+                has_parent_inferred_variants = self.node_type_repository.has_parent_inferred_variants(child_type)
                 if has_parent_inferred_variants:
                     infer_variant_from_parent.append(item["node_type"])
 
@@ -242,54 +253,52 @@ class NodeEditorMixin:
         })
 
     def api_properties(self, request, node_id):
-        node = Node.objects.select_related("node_type").filter(id=node_id).first()
+        import logging
+        logger = logging.getLogger(__name__)
+
+        node = self.schema_repository.get_node_by_id_with_node_type(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
-        all_defs = list(
-            AttributeDef.objects.select_related("data_type", "domain")
-            .filter(node_type=node.node_type)
-            .order_by("json_key")
-        )
-        existing = {na.attribute_def_id: na for na in NodeAttribute.objects.filter(node=node).select_related("attribute_def")}
+        all_defs = self.attribute_def_repository.get_attribute_defs_by_node_type(node.node_type)
+        node_attributes = self.schema_repository.get_node_attributes_by_node(node)
+        existing = {na.attribute_def_id: na for na in node_attributes}
 
-        # Resolve current variant from the 'type' attribute (if present).
-        # For sdui_props nodes, the variant is inherited from the parent's component type.
-        current_variant = None
-        if node.node_type.name == 'sdui_props' and node.parent:
-            # Read the parent's type attribute to determine the variant for props
-            parent = Node.objects.select_related("node_type").filter(id=node.parent_id).first()
-            if parent:
-                parent_type_attr = NodeAttribute.objects.filter(
-                    node=parent,
-                    attribute_def__json_key='type'
-                ).select_related('attribute_def').first()
-                if parent_type_attr and parent_type_attr.value_string:
-                    current_variant = parent_type_attr.value_string
-        else:
-            # Standard variant resolution: read 'type' from the current node
-            type_def = next((d for d in all_defs if d.json_key == "type" and d.variant_key is None), None)
-            if type_def:
-                type_attr = existing.get(type_def.id)
-                if type_attr and type_attr.value_string:
-                    current_variant = type_attr.value_string
-            if current_variant is None:
-                # Fallback: find any 'type' NodeAttribute regardless of variant_key scoping
-                for d in all_defs:
-                    if d.json_key == "type":
-                        type_attr = existing.get(d.id)
-                        if type_attr and type_attr.value_string:
-                            current_variant = type_attr.value_string
+        # Resolve current variant from the discriminator attribute (if present).
+        # For props nodes, the variant is inherited from the parent's component type.
+        current_variant = self.node_service.infer_variant_from_parent(node)
+
+        # If not inherited, read discriminator attribute from the current node
+        if current_variant is None:
+            discriminator = self.node_type_repository.get_discriminator_attr(node.node_type)
+            if discriminator:
+                type_def = next((d for d in all_defs if d.json_key == discriminator and d.variant_key is None), None)
+                if type_def:
+                    type_attr = existing.get(type_def.id)
+                    if type_attr and type_attr.value_string:
+                        current_variant = type_attr.value_string
+                if current_variant is None:
+                    # Fallback: find any discriminator NodeAttribute regardless of variant_key scoping
+                    for d in all_defs:
+                        if d.json_key == discriminator:
+                            type_attr = existing.get(d.id)
+                            if type_attr and type_attr.value_string:
+                                current_variant = type_attr.value_string
                             break
 
         # Filter by variant_key and is_common: show universal common (NULL + is_common=True) + current variant only.
+        # For variant-specific defs (variant_key=current_variant), is_common=False is allowed.
         # Catalog defs (variant_key=NULL + is_common=False) are templates and should not be shown.
         # If the node type has variant-scoped defs but no variant is selected yet,
         # show only the universal common defs so the user sets 'type' first.
         has_variant_defs = any(d.variant_key is not None for d in all_defs)
+        
+        # Normalize current_variant to snake_case for comparison
+        normalized_current_variant = normalize_variant_key(current_variant) if current_variant else None
+        
         if has_variant_defs:
-            if current_variant:
-                defs = [d for d in all_defs if (d.variant_key is None and d.is_common) or d.variant_key == current_variant]
+            if normalized_current_variant:
+                defs = [d for d in all_defs if (d.variant_key is None and d.is_common) or normalize_variant_key(d.variant_key) == normalized_current_variant]
             else:
                 defs = [d for d in all_defs if d.variant_key is None and d.is_common]
         else:
@@ -299,11 +308,8 @@ class NodeEditorMixin:
         # These are structural child nodes like layout, props, show_if, etc.
         # Check if there's a composition where child_type.name ends with _json_key
         # (e.g., sdui_layout ends with _layout, sdui_show_if ends with _show_if)
-        from schemas.models import NodeTypeComposition
         child_type_names = set(
-            NodeTypeComposition.objects
-            .filter(parent_type=node.node_type, collection_key__isnull=True)
-            .values_list('child_type__name', flat=True)
+            self.composition_repository.get_child_type_names_by_parent_no_collection_key(node.node_type)
         )
         
         filtered_defs = []
@@ -321,7 +327,7 @@ class NodeEditorMixin:
 
         if request.method == "GET":
             domain_ids = [d.domain_id for d in defs if d.domain_id]
-            domain_items = DomainItem.objects.filter(domain_id__in=domain_ids).order_by("domain_id", "value")
+            domain_items = self.attribute_def_repository.get_domain_items_by_domain_ids(domain_ids)
             items_by_domain = {}
             for di in domain_items:
                 items_by_domain.setdefault(di.domain_id, []).append({
@@ -385,11 +391,7 @@ class NodeEditorMixin:
             if has_variant_defs:
                 # Skip variant options for sdui_container nodes with collection_key (type is fixed to "container")
                 if not (node.node_type.name == 'sdui_container' and node.key):
-                    variants = list(
-                        NodeTypeVariant.objects.filter(node_type=node.node_type)
-                        .order_by("variant_key")
-                        .values_list("variant_key", flat=True)
-                    )
+                    variants = self.node_type_repository.get_variant_keys_by_node_type(node.node_type)
                     options = [{"value": v, "label": v} for v in variants]
                     response_data["variant_options"] = options
 
@@ -441,60 +443,57 @@ class NodeEditorMixin:
         if not parent_id or not node_type_name:
             return JsonResponse({"error": ERR_PARENT_ID_AND_NODE_TYPE_REQUIRED}, status=400)
 
-        parent = Node.objects.select_related("node_type").filter(id=parent_id).first()
+        parent = self.schema_repository.get_node_by_id_with_node_type(parent_id)
         if not parent:
             return JsonResponse({"error": ERR_PARENT_NOT_FOUND}, status=404)
 
-        child_type = NodeType.objects.filter(name=node_type_name).first()
+        child_type = self.node_type_repository.get_node_type_by_name(node_type_name)
         if not child_type:
             return JsonResponse({"error": ERR_NODE_TYPE_NOT_FOUND}, status=404)
 
         # Filter composition by collection_key if provided
         if collection_key:
-            composition = NodeTypeComposition.objects.filter(
-                parent_type=parent.node_type,
-                child_type=child_type,
-                collection_key=collection_key
-            ).first()
+            composition = self.composition_repository.get_composition_by_parent_child_collection_key(
+                parent.node_type, child_type, collection_key
+            )
         else:
-            composition = NodeTypeComposition.objects.filter(
-                parent_type=parent.node_type,
-                child_type=child_type
-            ).first()
-        
+            composition = self.schema_repository.get_composition_by_parent_child(parent.node_type, child_type)
+
         if not composition:
             return JsonResponse({"error": ERR_COMPOSITION_NOT_ALLOWED}, status=400)
 
         # For collection_key-based compositions, check if a child with that key already exists
-        if composition.collection_key:
-            existing = Node.objects.filter(parent=parent, key=composition.collection_key).exists()
+        # Only apply this check for singleton slots (max_children=1)
+        if composition.collection_key and composition.max_children == 1:
+            existing = self.schema_repository.node_exists_by_parent_key(parent, composition.collection_key)
             if existing:
                 return JsonResponse({"error": f"A child with key '{composition.collection_key}' already exists"}, status=400)
-        # For non-collection_key compositions, use count-based check
+        # For non-collection_key compositions or non-singleton compositions, use count-based check
         elif composition.max_children is not None:
-            current_children_count = Node.objects.filter(parent=parent, node_type=child_type).count()
+            current_children_count = self.schema_repository.count_children_by_parent_type(parent, child_type)
             if current_children_count >= composition.max_children:
                 return JsonResponse({"error": ERR_MAX_CHILDREN_REACHED}, status=400)
-        
+
         logging.info(f"Creating node: parent={parent_id}, node_type={node_type_name}, collection_key={collection_key}, composition.collection_key={composition.collection_key}")
 
-        max_pos = Node.objects.filter(parent=parent).aggregate(Max("sort_order")).get("sort_order__max")
+        max_pos = self.schema_repository.get_max_sort_order(parent.id)
         next_pos = 0 if max_pos is None else int(max_pos) + 1
         name = payload.get("name")
         if name is None or str(name).strip() == "":
             name = f"{node_type_name}_{next_pos}"
 
-        # Use collection_key as the node key if available
-        node_key = composition.collection_key if composition.collection_key else None
+        # Use collection_key as the node key only for singleton slots (max_children=1)
+        # For compositions that allow multiple children (max_children=None or >1), don't use collection_key as key
+        if composition.collection_key and composition.max_children == 1:
+            node_key = composition.collection_key
+        else:
+            node_key = None
 
-        # For sdui_props nodes, infer variant_key from parent's type attribute
-        if node_type_name == 'sdui_props' and not variant_key:
-            parent_type_attr = NodeAttribute.objects.filter(
-                node=parent,
-                attribute_def__json_key='type'
-            ).select_related('attribute_def').first()
-            if parent_type_attr and parent_type_attr.value_string:
-                variant_key = parent_type_attr.value_string
+        # For props nodes, infer variant_key from parent's type attribute
+        if not variant_key:
+            child_type = self.node_type_repository.get_node_type_by_name(node_type_name)
+            if child_type and self.node_type_repository.is_props_node_type(child_type):
+                variant_key = self.node_service.infer_variant_from_parent(parent)
 
         try:
             node_service = NodeService()
@@ -513,15 +512,11 @@ class NodeEditorMixin:
         if not node_type_name:
             return JsonResponse({"error": ERR_NODE_TYPE_REQUIRED}, status=400)
 
-        node_type = NodeType.objects.filter(name=node_type_name).first()
+        node_type = self.node_type_repository.get_node_type_by_name(node_type_name)
         if not node_type:
             return JsonResponse({"error": ERR_NODE_TYPE_NOT_FOUND}, status=404)
 
-        variants = list(
-            NodeTypeVariant.objects.filter(node_type=node_type)
-            .order_by("variant_key")
-            .values_list("variant_key", flat=True)
-        )
+        variants = self.attribute_def_service.get_variants_for_node_type(str(node_type.id))
         options = [{"value": v, "label": v} for v in variants]
         return JsonResponse({"options": options})
 
@@ -544,22 +539,21 @@ class NodeEditorMixin:
         if not node_id or not new_parent_id:
             return JsonResponse({"error": ERR_NODE_ID_AND_NEW_PARENT_ID_REQUIRED}, status=400)
 
-        node = Node.objects.select_related("parent", "node_type").filter(id=node_id).first()
+        node = self.schema_repository.get_node_by_id_with_parent(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
-        new_parent = Node.objects.select_related("node_type").filter(id=new_parent_id).first()
+        new_parent = self.schema_repository.get_node_by_id_with_node_type(new_parent_id)
         if not new_parent:
             return JsonResponse({"error": ERR_PARENT_NOT_FOUND}, status=404)
 
-        allowed = NodeTypeComposition.objects.filter(parent_type=new_parent.node_type, child_type=node.node_type).exists()
+        allowed = self.schema_repository.composition_exists(new_parent.node_type, node.node_type)
         if not allowed:
             return JsonResponse({"error": ERR_COMPOSITION_NOT_ALLOWED}, status=400)
 
         old_parent_id = node.parent_id
         with transaction.atomic():
-            node.parent = new_parent
-            node.save(update_fields=["parent"])
+            self.schema_repository.update_node_parent(node.id, new_parent.id)
             self._normalize_positions(old_parent_id)
             self._normalize_positions(new_parent.id)
 
@@ -569,13 +563,13 @@ class NodeEditorMixin:
                 except (TypeError, ValueError):
                     pos = None
                 if pos is not None:
-                    siblings = list(Node.objects.filter(parent=new_parent).order_by("sort_order", "id").only("id", "sort_order"))
+                    siblings = list(self.schema_repository.get_children_by_parent(new_parent))
                     pos = max(0, min(pos, max(0, len(siblings) - 1)))
                     ordered = [n for n in siblings if n.id != node.id]
-                    ordered.insert(pos, Node.objects.only("id", "sort_order").get(id=node.id))
+                    ordered.insert(pos, self.schema_repository.get_node_by_id(node_id))
                     for idx, n in enumerate(ordered):
                         n.sort_order = idx
-                    Node.objects.bulk_update(ordered, ["sort_order"])
+                    self.schema_repository.bulk_update_nodes_sort_order(ordered)
 
         return JsonResponse({"ok": True})
 
@@ -596,14 +590,14 @@ class NodeEditorMixin:
         if not node_id or direction not in {"up", "down"}:
             return JsonResponse({"error": ERR_NODE_ID_AND_DIRECTION_REQUIRED}, status=400)
 
-        node = Node.objects.filter(id=node_id).only("id", "parent_id", "sort_order").first()
+        node = self.schema_repository.get_node_by_id_with_parent(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
         parent_id = node.parent_id
         with transaction.atomic():
             self._normalize_positions(parent_id)
-            siblings = list(Node.objects.filter(parent_id=parent_id).order_by("sort_order", "id").only("id", "sort_order"))
+            siblings = list(self.schema_repository.get_children_by_parent(node))
             ids = [n.id for n in siblings]
             try:
                 idx = ids.index(node.id)
@@ -612,10 +606,10 @@ class NodeEditorMixin:
 
             if direction == "up" and idx > 0:
                 siblings[idx - 1].sort_order, siblings[idx].sort_order = siblings[idx].sort_order, siblings[idx - 1].sort_order
-                Node.objects.bulk_update([siblings[idx - 1], siblings[idx]], ["sort_order"])
+                self.schema_repository.bulk_update_nodes_sort_order([siblings[idx - 1], siblings[idx]])
             elif direction == "down" and idx < len(siblings) - 1:
                 siblings[idx + 1].sort_order, siblings[idx].sort_order = siblings[idx].sort_order, siblings[idx + 1].sort_order
-                Node.objects.bulk_update([siblings[idx + 1], siblings[idx]], ["sort_order"])
+                self.schema_repository.bulk_update_nodes_sort_order([siblings[idx + 1], siblings[idx]])
 
             self._normalize_positions(parent_id)
 

@@ -563,18 +563,6 @@
           return;
         }
 
-        // Check if selected option has collection_key (type is already determined)
-        const selectedOption = sel.options[sel.selectedIndex];
-        const hasCollectionKey = selectedOption && selectedOption.dataset.collectionKey;
-
-        // If collection_key is present, hide variant selector since type is already determined
-        if (hasCollectionKey) {
-          variantRow.classList.add('hidden');
-          variantSel.innerHTML = '';
-          document.getElementById('btn_create').disabled = allowed.length === 0;
-          return;
-        }
-
         // For node types that infer variant from parent, hide variant selector
         if (inferVariantFromParent.includes(nodeType)) {
           variantRow.classList.add('hidden');
@@ -618,6 +606,9 @@
       sel.removeEventListener('change', sel._variantRowHandler);
       sel._variantRowHandler = updateVariantRow;
       sel.addEventListener('change', sel._variantRowHandler);
+      
+      // Also trigger on input change for better responsiveness
+      sel.addEventListener('input', sel._variantRowHandler);
 
       // Enable create button when variant is selected
       variantSel.removeEventListener('change', variantSel._variantEnableHandler);

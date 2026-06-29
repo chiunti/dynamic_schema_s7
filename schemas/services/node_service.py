@@ -1,6 +1,9 @@
 from django.db import transaction
 
 from ..repositories.schema_repository import NodeRepository, SchemaRepository
+from ..repositories.composition_repository import CompositionRepository
+from ..repositories.node_type_repository import NodeTypeRepository
+from ..utils import normalize_variant_key
 from ..constants import (
     ERR_PROPERTIES_REQUIRED,
     ERR_PARENT_NOT_FOUND,
@@ -20,10 +23,67 @@ class NodeService:
     def __init__(self):
         self.node_repository = NodeRepository()
         self.schema_repository = SchemaRepository()
+        self.composition_repository = CompositionRepository()
+        self.node_type_repository = NodeTypeRepository()
     
     def get_node_tree(self, root_id):
         """Get recursive tree of nodes"""
         return self.node_repository.get_node_tree(root_id)
+    
+    def infer_variant_from_parent(self, node) -> str:
+        """
+        Infer variant_key from parent's discriminator attribute for props nodes.
+        
+        For node types that are props_node_type (e.g., sdui_props), the variant_key
+        is inherited from the parent's discriminator attribute (e.g., 'type' for sdui_widget).
+        
+        Args:
+            node: Node instance
+
+        Returns:
+            Variant key string or None if not applicable
+        """
+        # Check if this node_type is a props_node_type
+        if not self.node_type_repository.is_props_node_type(node.node_type):
+            return None
+        
+        # Props nodes must have a parent
+        if not node.parent:
+            return None
+        
+        # Get the parent node
+        parent = self.schema_repository.get_node_by_id_with_node_type(node.parent_id)
+        if not parent:
+            return None
+
+        # Get the NodeTypeVariant configuration to find the discriminator attribute
+        ntv = self.node_type_repository.get_node_type_variant_by_props_node_type(node.node_type)
+        if not ntv:
+            # This should not happen in a properly configured system
+            # All props node types should have NodeTypeVariant configured
+            import logging
+            logging.warning(f"No NodeTypeVariant found for props node type {node.node_type.name}")
+            return None
+
+        discriminator = ntv.discriminator_attr
+        if not discriminator:
+            import logging
+            logging.warning(f"NodeTypeVariant for {node.node_type.name} has no discriminator_attr configured")
+            return None
+
+        # Get the parent's discriminator attribute definition
+        parent_type_attr_def = self.schema_repository.get_attribute_def(parent.node_type, discriminator)
+        if not parent_type_attr_def:
+            return None
+        
+        # Get the parent's discriminator attribute value
+        parent_type_attr = self.schema_repository.get_node_attribute_by_node_attr_def(parent, parent_type_attr_def)
+        if not parent_type_attr:
+            return None
+        
+        # Normalize to camelCase to match SDUI_PROPS_DEFS variant_keys
+        from ..utils import snake_to_camel
+        return snake_to_camel(parent_type_attr.value_string)
     
     def update_node_properties(self, node, updates):
         """Update node properties with validation"""
@@ -36,20 +96,57 @@ class NodeService:
         if not isinstance(updates, dict):
             raise ValueError(ERR_PROPERTIES_REQUIRED)
         
-        # Handle 'type' attribute separately if it exists for this node type
-        type_def = self.schema_repository.get_attribute_def(node.node_type, 'type')
-        if type_def and 'type' in updates:
-            type_value = updates.pop('type')
-            if type_value:
-                self.schema_repository.set_node_attribute_from_json(
-                    node.id, 
-                    node.node_type.name, 
-                    type_def.json_key, 
-                    type_value,
-                    type_def.domain.domain_name if type_def.domain_id else None
-                )
+        # Resolve current variant from the discriminator attribute (if present).
+        # For props nodes, the variant is inherited from the parent's component type.
+        current_variant = self.infer_variant_from_parent(node)
+
+        # If not inherited, read discriminator attribute from the current node
+        if current_variant is None:
+            discriminator = self.node_type_repository.get_discriminator_attr(node.node_type)
+            if discriminator:
+                type_def = next((d for d in defs if d.json_key == discriminator and d.variant_key is None), None)
+                if type_def:
+                    type_attr = existing.get(type_def.id)
+                    if type_attr and type_attr.value_string:
+                        current_variant = type_attr.value_string
+                if current_variant is None:
+                    # Fallback: find any discriminator NodeAttribute regardless of variant_key scoping
+                    for d in defs:
+                        if d.json_key == discriminator:
+                            type_attr = existing.get(d.id)
+                            if type_attr and type_attr.value_string:
+                                current_variant = type_attr.value_string
+                            break
+        
+        # Filter by variant_key and is_common: show universal common (NULL + is_common=True) + current variant only.
+        # For variant-specific defs (variant_key=current_variant), is_common=False is allowed.
+        # Catalog defs (variant_key=NULL + is_common=False) are templates and should not be shown.
+        has_variant_defs = any(d.variant_key is not None for d in defs)
+        if has_variant_defs:
+            normalized_current_variant = normalize_variant_key(current_variant) if current_variant else None
+            if normalized_current_variant:
+                defs = [d for d in defs if (d.variant_key is None and d.is_common) or normalize_variant_key(d.variant_key) == normalized_current_variant]
             else:
-                self.schema_repository.delete_node_attributes(node, type_def)
+                defs = [d for d in defs if d.variant_key is None and d.is_common]
+        else:
+            defs = defs
+        
+        # Handle discriminator attribute separately if it exists for this node type
+        discriminator = self.node_type_repository.get_discriminator_attr(node.node_type)
+        if discriminator and discriminator in updates:
+            discriminator_def = self.schema_repository.get_attribute_def(node.node_type, discriminator)
+            if discriminator_def:
+                discriminator_value = updates.pop(discriminator)
+                if discriminator_value:
+                    self.schema_repository.set_node_attribute_from_json(
+                        node.id,
+                        node.node_type.name,
+                        discriminator_def.json_key,
+                        discriminator_value,
+                        discriminator_def.domain.domain_name if discriminator_def.domain_id else None
+                    )
+            else:
+                self.schema_repository.delete_node_attributes(node, discriminator_def)
         
         defs_by_key = {d.json_key: d for d in defs}
         
@@ -104,7 +201,7 @@ class NodeService:
                     # natural_key maps to schema_nodes.key column — update directly
                     if d.data_type.name == 'natural_key':
                         node.key = str(value).strip() if value else node.key
-                        node.save(update_fields=['key'])
+                        self.schema_repository.update_node_key(node.id, node.key)
                         continue
 
                     # natural_version maps to schema_nodes.version column — update directly
@@ -113,7 +210,7 @@ class NodeService:
                         v = str(value).strip() if value else None
                         if v:
                             node.version = v
-                            node.save(update_fields=['version'])
+                            self.schema_repository.update_node_version(node.id, v)
                             if node.parent_id is not None:
                                 self.schema_repository.update_node_version_by_parent(node.parent_id, v)
                         continue
@@ -121,52 +218,52 @@ class NodeService:
                     # natural_order maps to schema_nodes.sort_order column — update directly
                     if d.data_type.name == 'natural_order':
                         node.sort_order = int(value) if value is not None else 0
-                        node.save(update_fields=['sort_order'])
+                        self.schema_repository.update_node_sort_order(node.id, node.sort_order)
                         continue
 
                     # display_order maps to schema_nodes.sort_order column — update directly (1-based to 0-based)
                     if d.data_type.name == 'display_order':
                         node.sort_order = (int(value) - 1) if value is not None else 0
-                        node.save(update_fields=['sort_order'])
+                        self.schema_repository.update_node_sort_order(node.id, node.sort_order)
                         continue
 
                     # Write directly via ORM to avoid s7_ensure_domain_item adding domain items
                     if d.data_type.name in ('string', 'date', 'color', 'uuid', 'auto_uuid'):
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": str(value), "value_number": None, "value_bool": None, "value_json": None},
                         )
                     elif d.data_type.name in ('number', 'int', 'float'):
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": None, "value_number": value, "value_bool": None, "value_json": None},
                         )
                     elif d.data_type.name == 'bool':
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": None, "value_number": None, "value_bool": bool(value), "value_json": None},
                         )
                     elif d.data_type.name == 'json':
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
                         )
                     elif d.data_type.name == 'conditional':
                         # Conditional datatype stores as JSON in value_json
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
                         )
                     elif d.data_type.name in ('int_tuple', 'list_string', 'list_int', 'dict'):
                         # All these types store as JSON in value_json
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
                         )
                     elif d.data_type.name == 'domain_list':
                         # domain_list stores array of domain item values as JSON
                         self.schema_repository.update_or_create_node_attribute(
-                            node, d,
+                            node.id, d,
                             defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
                         )
                     else:
@@ -184,12 +281,9 @@ class NodeService:
 
         # Filter composition by collection_key if provided
         if collection_key:
-            from schemas.models import NodeTypeComposition
-            composition = NodeTypeComposition.objects.filter(
-                parent_type=parent.node_type,
-                child_type=child_type,
-                collection_key=collection_key
-            ).first()
+            composition = self.composition_repository.get_composition_by_parent_child_collection_key(
+                parent.node_type, child_type, collection_key
+            )
         else:
             composition = self.schema_repository.get_composition_by_parent_child(parent.node_type, child_type)
         
@@ -197,11 +291,12 @@ class NodeService:
             raise ValueError(ERR_COMPOSITION_NOT_ALLOWED)
         
         # For collection_key-based compositions, check if a child with that key already exists
-        if composition.collection_key:
+        # Only apply this check for singleton slots (max_children=1)
+        if composition.collection_key and composition.max_children == 1:
             existing = self.schema_repository.get_node_by_parent_type_key(parent, child_type, composition.collection_key)
             if existing:
                 raise ValueError(f"A child with key '{composition.collection_key}' already exists")
-        # For non-collection_key compositions, use count-based check
+        # For non-collection_key compositions or non-singleton compositions, use count-based check
         elif composition.max_children is not None:
             current_children_count = self.schema_repository.count_children_by_parent_and_type(parent, child_type)
             if current_children_count >= composition.max_children:
@@ -210,10 +305,10 @@ class NodeService:
         # Calculate next position
         siblings = self.schema_repository.get_siblings_by_parent(parent)
         next_pos = (siblings.first().sort_order + 1) if siblings.exists() else 0
-        
-        # Use provided key, or collection_key if available, or None
-        node_key = key if key is not None else (composition.collection_key if composition.collection_key else None)
-        
+
+        # Use provided key, or collection_key if available, or use default_json_key from NodeType, or use name as key
+        node_key = key if key is not None else (composition.collection_key if composition.collection_key else (child_type.default_json_key if child_type.default_json_key else str(name)))
+
         node = self.schema_repository.create_node(
             parent=parent,
             node_type=child_type,
@@ -232,27 +327,34 @@ class NodeService:
         # Assign discriminator attribute when variant_value is provided
         # For screen nodes, collection_key is the slot (body, appbar, etc.), not the component type
         # Special handling for sdui_container and sdui_widget when created with collection_key
-        if composition.collection_key:
-            # For screen slots: sdui_container should have type="container", sdui_widget should have type=null
+        if composition.collection_key and not variant_key:
+            # For screen slots: use NodeTypeVariant to determine the default type
+            # Only apply this when no explicit variant_key is provided
             if child_type.name == 'sdui_container':
-                type_def = self.schema_repository.get_attribute_def(child_type, 'type')
-                if type_def:
-                    self.schema_repository.set_node_attribute_from_json(
-                        node.id,
-                        child_type.name,
-                        type_def.json_key,
-                        'container',
-                        type_def.domain.domain_name if type_def.domain_id else None
-                    )
-            # For sdui_widget, type should remain null (not set)
+                # Try to find a NodeTypeVariant for sdui_container with variant_key matching collection_key
+                ntv = self.node_type_repository.get_node_type_variant_by_node_type_and_variant_key(
+                    child_type,
+                    composition.collection_key
+                )
+                if ntv and ntv.discriminator_attr:
+                    discriminator_attr = ntv.discriminator_attr
+                    attr_def = self.schema_repository.get_attribute_def(child_type, discriminator_attr)
+                    if attr_def:
+                        self.schema_repository.set_node_attribute_from_json(
+                            node.id,
+                            child_type.name,
+                            attr_def.json_key,
+                            composition.collection_key,
+                            attr_def.domain.domain_name if attr_def.domain_id else None
+                        )
+            # For sdui_widget, type should remain null (not set) when no variant_key is provided
         elif variant_value:
             # For types that use discriminator attributes (e.g., field with 'type')
             # Try to find the discriminator attribute from NodeTypeVariant
-            from schemas.models import NodeTypeVariant
-            ntv = NodeTypeVariant.objects.filter(
-                node_type=child_type,
-                variant_key=variant_value
-            ).first()
+            ntv = self.node_type_repository.get_node_type_variant_by_node_type_and_variant_key(
+                child_type,
+                variant_value
+            )
             
             if ntv and ntv.discriminator_attr:
                 discriminator_attr = ntv.discriminator_attr
@@ -266,16 +368,10 @@ class NodeService:
                         attr_def.domain.domain_name if attr_def.domain_id else None
                     )
             else:
-                # Fallback to 'type' attribute for backward compatibility
-                type_def = self.schema_repository.get_attribute_def(child_type, 'type')
-                if type_def:
-                    self.schema_repository.set_node_attribute_from_json(
-                        node.id,
-                        child_type.name,
-                        type_def.json_key,
-                        variant_value,
-                        type_def.domain.domain_name if type_def.domain_id else None
-                    )
+                # No NodeTypeVariant configured - this should not happen in a properly configured system
+                import logging
+                logging.warning(f"No NodeTypeVariant found for node_type {child_type.name} with variant_key {variant_value}")
+                # Do not set any attribute - the system should be configured with NodeTypeVariant
 
         # Assign automatic properties for root nodes — delegate to SchemaService
         if child_type.is_root and node.parent_id is None:

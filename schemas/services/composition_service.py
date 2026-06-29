@@ -48,21 +48,31 @@ class CompositionService:
         if not comp:
             raise ValueError(ERR_COMPOSITION_NOT_FOUND)
 
+        collection_key = None
+        min_children = None
+        max_children = None
+
         if "collection_key" in payload:
-            comp.collection_key = str(payload["collection_key"]).strip()
+            collection_key = str(payload["collection_key"]).strip()
         if "min_children" in payload:
             try:
                 val = int(payload["min_children"])
-                comp.min_children = val if val >= 0 else None
+                min_children = val if val >= 0 else None
             except (TypeError, ValueError):
-                comp.min_children = None
+                min_children = None
         if "max_children" in payload:
             try:
                 val = int(payload["max_children"])
-                comp.max_children = val if val >= 0 else None
+                max_children = val if val >= 0 else None
             except (TypeError, ValueError):
-                comp.max_children = None
-        comp.save()
+                max_children = None
+
+        self.composition_repository.update_composition(
+            comp_id,
+            collection_key=collection_key,
+            min_children=min_children,
+            max_children=max_children
+        )
         return True
 
     @transaction.atomic

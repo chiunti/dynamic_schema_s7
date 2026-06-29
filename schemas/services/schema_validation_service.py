@@ -5,11 +5,16 @@ Service for schema validation logic.
 import uuid
 from typing import List, Dict, Any
 
-from ..models import Node, NodeAttribute, AttributeDef
+from ..repositories.schema_repository import SchemaRepository
+from ..repositories.attribute_def_repository import AttributeDefRepository
 
 
 class SchemaValidationService:
     """Service for schema validation operations."""
+
+    def __init__(self):
+        self.schema_repository = SchemaRepository()
+        self.attribute_def_repository = AttributeDefRepository()
 
     def collect_required_warnings(self, root_node_id: uuid.UUID) -> List[Dict[str, Any]]:
         """
@@ -32,36 +37,21 @@ class SchemaValidationService:
                 continue
             visited.add(nid)
 
-            node = Node.objects.select_related("node_type").filter(id=nid).first()
+            node = self.schema_repository.get_node_by_id_with_node_type(nid)
             if not node:
                 continue
 
-            all_defs = list(
-                AttributeDef.objects.select_related("data_type").filter(
-                    node_type=node.node_type, is_required=True
-                )
-            )
+            all_defs = self.attribute_def_repository.get_attribute_defs_by_node_type_required(node.node_type)
             existing_def_ids = set(
-                NodeAttribute.objects.filter(node=node).values_list(
-                    "attribute_def_id", flat=True
-                )
+                na.attribute_def_id
+                for na in self.schema_repository.get_node_attributes_by_node(node)
             )
 
             # Determine active variant
-            type_def = next(
-                (
-                    d
-                    for d in AttributeDef.objects.filter(
-                        node_type=node.node_type, json_key="type", variant_key=None
-                    )
-                ),
-                None,
-            )
+            type_def = self.schema_repository.get_attribute_def(node.node_type, 'type')
             current_variant = None
             if type_def and type_def.id in existing_def_ids:
-                type_attr = NodeAttribute.objects.filter(
-                    node=node, attribute_def=type_def
-                ).first()
+                type_attr = self.schema_repository.get_node_attribute_by_node_attr_def(node, type_def)
                 if type_attr:
                     current_variant = type_attr.value_string
 
@@ -85,7 +75,7 @@ class SchemaValidationService:
                     "missing": missing,
                 })
 
-            for child_id in Node.objects.filter(parent_id=nid).values_list("id", flat=True):
+            for child_id in self.schema_repository.get_children_ids_by_parent(nid):
                 stack.append(child_id)
 
         return warnings

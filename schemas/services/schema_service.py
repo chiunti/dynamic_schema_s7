@@ -5,6 +5,10 @@ from django.db import DatabaseError, transaction
 
 from ..models import Node
 from ..repositories.schema_repository import SchemaRepository
+from ..repositories.attribute_def_repository import AttributeDefRepository
+from ..repositories.composition_repository import CompositionRepository
+from ..repositories.data_type_repository import DataTypeRepository
+from ..repositories.node_type_repository import NodeTypeRepository
 from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
@@ -39,6 +43,10 @@ class SchemaService:
     
     def __init__(self):
         self.repository = SchemaRepository()
+        self.attribute_def_repository = AttributeDefRepository()
+        self.composition_repository = CompositionRepository()
+        self.data_type_repository = DataTypeRepository()
+        self.node_type_repository = NodeTypeRepository()
     
     def import_schema(
         self,
@@ -89,60 +97,58 @@ class SchemaService:
     
     def _sync_version_from_metadata(self, schema_id: uuid.UUID, validated_schema: dict, form_version: Optional[str], form_version_is_explicit: bool) -> dict:
         """Sync Node.version from child nodes that have natural_version attributes.
-        
+
         This allows schemas to define their version in a child node (e.g., metadata.version)
         instead of the root level. The logic is schema-driven:
         1. Find child compositions of the root node type
         2. Check if any child type has a 'version' attribute with natural_version datatype
         3. If the JSON has that child with a version value, update Node.version
-        
+
         Priority:
         - If user specified version in form: use form version (warn if JSON differs)
         - If form is empty/default: use JSON version
-        
+
         Args:
             schema_id: Root node ID
             validated_schema: The complete JSON schema
             form_version: Version from the import form (may be None)
             form_version_is_explicit: True if user explicitly specified version in form
-            
+
         Returns:
             dict with warning information if versions mismatched, empty dict otherwise
         """
-        from schemas.models import Node, NodeTypeComposition, AttributeDef, DataType
+        from schemas.models import NodeTypeComposition
         import logging
-        
+
         logger = logging.getLogger(__name__)
-        
-        root_node = Node.objects.get(id=schema_id)
+
+        root_node = self.repository.get_node_by_id(schema_id)
         root_type = root_node.node_type
-        
+
         # Get all child compositions of the root node type
-        compositions = NodeTypeComposition.objects.filter(parent_type=root_type)
-        
+        compositions = self.composition_repository.get_compositions_by_parent_type(root_type)
+
         for comp in compositions:
             child_type = comp.child_type
-            
+
             # Check if this child type has a 'version' attribute with natural_version datatype
-            version_attr = AttributeDef.objects.filter(
-                node_type=child_type,
-                json_key='version',
-                data_type__name='natural_version'
-            ).first()
-            
+            version_attr = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(child_type, 'version', None)
+            if version_attr and version_attr.data_type.name != 'natural_version':
+                version_attr = None
+
             if not version_attr:
                 continue
-            
+
             # Get the collection_key to find the child in the JSON
             collection_key = comp.collection_key
-            
+
             # Extract the root object from the JSON
             root_key = next(iter(validated_schema.keys())) if validated_schema else None
             if not root_key:
                 continue
-            
+
             root_obj = validated_schema[root_key] if isinstance(validated_schema[root_key], dict) else {}
-            
+
             # Find the child in the JSON by collection_key
             child_obj = None
             if collection_key and collection_key in root_obj:
@@ -150,19 +156,19 @@ class SchemaService:
             elif isinstance(root_obj, dict):
                 # Try to find the child by type name as fallback
                 child_obj = root_obj.get(child_type.name)
-            
+
             if not child_obj or not isinstance(child_obj, dict):
                 continue
-            
+
             # Extract version from the child object
             json_version = child_obj.get('version')
-            
+
             if not json_version:
                 continue
-            
+
             # Get the actual form version (may be empty string if not specified)
             actual_form_version = form_version if form_version else "1"
-            
+
             # Priority: form version > JSON version
             if json_version != actual_form_version:
                 # If user didn't explicitly specify a version, use JSON version without warning
@@ -170,14 +176,11 @@ class SchemaService:
                     # User didn't specify a version, use JSON version
                     self.repository.update_node_fields(schema_id, version=json_version)
                     # Find and update the metadata child node as well
-                    metadata_node = Node.objects.filter(
-                        parent=schema_id,
-                        node_type=child_type
-                    ).first()
+                    metadata_node = self.repository.get_node_by_parent_and_type(schema_id, child_type)
                     if metadata_node:
                         self.repository.update_node_fields(metadata_node.id, version=json_version)
                     return {}  # No warning, this is expected behavior
-                
+
                 # User specified a version in the form that differs from JSON
                 # Log warning but respect user's choice
                 warning_msg = (
@@ -186,24 +189,21 @@ class SchemaService:
                     f"Using form version as specified by user."
                 )
                 logger.warning(warning_msg)
-                
+
                 # Update both root and metadata node to form version for consistency
                 self.repository.update_node_fields(schema_id, version=actual_form_version)
                 # Find and update the metadata child node as well
-                metadata_node = Node.objects.filter(
-                    parent=schema_id,
-                    node_type=child_type
-                ).first()
+                metadata_node = self.repository.get_node_by_parent_and_type(schema_id, child_type)
                 if metadata_node:
                     self.repository.update_node_fields(metadata_node.id, version=actual_form_version)
-                
+
                 return {
                     'type': 'version_mismatch',
                     'message': warning_msg,
                     'form_version': actual_form_version,
                     'json_version': json_version
                 }
-            
+
             # Form version matches JSON version or form was empty/default
             # Sync from JSON to ensure consistency
             self.repository.update_node_fields(schema_id, version=json_version)
@@ -211,73 +211,61 @@ class SchemaService:
     
     def _set_schema_metadata(self, schema_id: uuid.UUID, schema_key: str, schema_status: str):
         """Set key and status as attributes on the root node"""
-        from schemas.models import Node, AttributeDef, DataType, NodeAttribute
-        from schemas.repositories.node_type_repository import NodeTypeRepository
-        
-        root_node = Node.objects.get(id=schema_id)
+        from schemas.models import AttributeDef, DataType, NodeAttribute
+
+        root_node = self.repository.get_node_by_id(schema_id)
         root_node_type = root_node.node_type
-        
+
         # Get AttributeDefs for key and status
-        key_attr_def = AttributeDef.objects.filter(
-            node_type=root_node_type,
-            json_key='key',
-            variant_key__isnull=True
-        ).first()
-        
-        status_attr_def = AttributeDef.objects.filter(
-            node_type=root_node_type,
-            json_key='status',
-            variant_key__isnull=True
-        ).first()
-        
+        key_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(root_node_type, 'key', None)
+        status_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(root_node_type, 'status', None)
+
         # Set key attribute — create AttributeDef dynamically if the node type lacks one
         if not key_attr_def:
-            string_type = DataType.objects.filter(name='string').first()
+            string_type = self.attribute_def_repository.get_default_data_type('string')
             if string_type:
-                key_attr_def, _ = AttributeDef.objects.get_or_create(
-                    node_type=root_node_type,
-                    json_key='key',
-                    variant_key=None,
-                    defaults={
+                key_attr_def, _ = self.attribute_def_repository.get_or_create_attribute_def(
+                    root_node_type,
+                    'key',
+                    None,
+                    {
                         'name': 'key',
                         'is_required': False,
                         'is_common': True,
                         'data_type': string_type,
-                    },
+                    }
                 )
         if key_attr_def:
-            NodeAttribute.objects.update_or_create(
-                node_id=schema_id,
-                attribute_def=key_attr_def,
-                defaults={'value_string': schema_key}
+            self.repository.update_or_create_node_attribute(
+                schema_id,
+                key_attr_def,
+                {'value_string': schema_key}
             )
-        
+
         # Set status attribute
         if status_attr_def:
-            NodeAttribute.objects.update_or_create(
-                node_id=schema_id,
-                attribute_def=status_attr_def,
-                defaults={'value_string': schema_status}
+            self.repository.update_or_create_node_attribute(
+                schema_id,
+                status_attr_def,
+                {'value_string': schema_status}
             )
     
     def _process_schema_structure(self, schema: dict, root_id: uuid.UUID, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID]):
         """Process the complete schema JSON structure and create child nodes recursively.
-        
+
         Delegates the entire root object to _process_node_attributes, which contains
         the unified dispatch logic for all cases (scalars, collections, shorthand sections,
         and composition-inferred child nodes).
         """
-        from schemas.models import Node
-        
         root_key = next(iter(schema.keys())) if schema else None
         if not root_key:
             return
-        
+
         root_obj = schema[root_key] if isinstance(schema[root_key], dict) else {}
-        
-        root_node = Node.objects.get(id=root_id)
+
+        root_node = self.repository.get_node_by_id(root_id)
         root_node_type = root_node.node_type
-        
+
         self._process_node_attributes(root_id, root_node_type, root_obj, project_id, organization_id)
     
     def _resolve_child_type_for_item(self, item: dict, compositions):
@@ -299,15 +287,14 @@ class SchemaService:
         item_type_value = item.get('type')
         if item_type_value:
             for comp in compositions:
-                type_attr = AttributeDef.objects.filter(
-                    node_type=comp.child_type,
-                    json_key='type',
-                    domain__isnull=False,
-                ).first()
-                if type_attr and DomainItem.objects.filter(
-                    domain=type_attr.domain,
-                    value=item_type_value,
-                ).exists():
+                type_attr = self.attribute_def_repository.get_attribute_def_with_domain(
+                    comp.child_type,
+                    'type'
+                )
+                if type_attr and self.attribute_def_repository.domain_item_exists(
+                    type_attr.domain,
+                    item_type_value
+                ):
                     return comp.child_type
 
         return compositions[0].child_type
@@ -319,18 +306,18 @@ class SchemaService:
 
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
-            NodeTypeComposition.objects.filter(
-                parent_type=parent_node_type,
-                collection_key=collection_key,
-            ).select_related('child_type')
+            self.composition_repository.get_compositions_by_parent_type_select_related(parent_node_type)
         )
+        # Filter by collection_key if provided
+        if collection_key:
+            compositions = [c for c in compositions if c.collection_key == collection_key]
 
         if not compositions:
             # No composition rule — try to infer from collection key
             singular_key = collection_key.rstrip('s')
-            fallback_type = NodeTypeRepository().get_node_type_by_name(singular_key)
+            fallback_type = self.node_type_repository.get_node_type_by_name(singular_key)
             if not fallback_type:
-                fallback_type = NodeType.objects.filter(is_container=True).first()
+                fallback_type = self.node_type_repository.get_container_node_type()
             if not fallback_type:
                 return
             compositions = [type('_Comp', (), {'child_type': fallback_type})()]
@@ -340,7 +327,7 @@ class SchemaService:
         for comp in compositions:
             ct = comp.child_type
             if ct.id not in field_maps:
-                attr_defs = AttributeDef.objects.filter(node_type=ct, variant_key__isnull=True)
+                attr_defs = self.attribute_def_repository.get_attribute_defs_by_node_type_variant_key(ct, None)
                 field_maps[ct.id] = (ct, self._build_json_key_to_field_map(attr_defs))
 
         # Get max_children from composition to determine if this is a singleton slot
@@ -385,14 +372,16 @@ class SchemaService:
                     node_fields['key'] = f"{collection_key}_{idx}"
                     node_fields['name'] = f"{collection_key}_{idx}"
 
-            child_node = Node(
-                node_type=child_node_type,
-                parent_id=parent_id,
+            # Extract key from node_fields to avoid duplicate argument
+            node_key = node_fields.pop('key')
+            child_node = self.repository.create_child_node(
+                child_node_type,
+                parent_id,
+                node_key,
                 project_id=project_id,
                 organization_id=organization_id,
                 **node_fields
             )
-            child_node.save()
 
             # Process attributes for this node (recursion into children is handled inside)
             self._process_node_attributes(child_node.id, child_node_type, item, project_id, organization_id)
@@ -470,8 +459,7 @@ class SchemaService:
             key = json_key
 
         # Build map of natural attributes to node fields
-        from schemas.models import AttributeDef
-        attr_defs = AttributeDef.objects.filter(node_type=child_type)
+        attr_defs = self.attribute_def_repository.get_attribute_defs_by_node_type(child_type)
         json_key_map = self._build_json_key_to_field_map(attr_defs)
         
         # Map JSON properties to Node fields (including natural attributes like version)
@@ -487,22 +475,23 @@ class SchemaService:
         node_fields['sort_order'] = sort_order
 
         # Create child node
-        child_node = Node(
-            node_type=child_type,
-            parent_id=parent_id,
+        node_key = node_fields.pop('key')
+        child_node = self.repository.create_child_node(
+            child_type,
+            parent_id,
+            node_key,
             project_id=project_id,
             organization_id=organization_id,
             **node_fields
         )
-        child_node.save()
 
         # Generic: if child_type has an AttributeDef with json_key 'usage', set it to the parent json_key
         # This allows mapping show_if -> condition_group with usage='show_if' without hardcoding
-        usage_attr_def = AttributeDef.objects.filter(
-            node_type=child_type,
-            json_key='usage',
-            variant_key__isnull=True
-        ).first()
+        usage_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+            child_type,
+            'usage',
+            None
+        )
         if usage_attr_def:
             self._set_node_attribute(child_node.id, 'usage', json_key, child_type, inherited_variant)
 
@@ -510,8 +499,7 @@ class SchemaService:
         # For props nodes, pass inherited_variant to _process_node_attributes
         # so it can resolve variant-scoped AttributeDefs (keyed by parent component type)
         # Check if this child_type is the props_node_type according to NodeTypeVariant
-        from schemas.models import NodeTypeVariant
-        parent_ntv = NodeTypeVariant.objects.filter(props_node_type=child_type).first()
+        parent_ntv = self.node_type_repository.get_node_type_variant_by_props_node_type(child_type)
         if parent_ntv and inherited_variant:
             discriminator = parent_ntv.discriminator_attr
             if discriminator and discriminator not in value:
@@ -542,9 +530,9 @@ class SchemaService:
             else:
                 data_type_name = 'string'
 
-            data_type = DataType.objects.filter(name=data_type_name).first()
+            data_type = self.data_type_repository.get_data_type_by_name(data_type_name)
             if not data_type:
-                data_type = DataType.objects.filter(name='string').first()
+                data_type = self.data_type_repository.get_string_data_type()
 
             if not data_type:
                 return
@@ -558,12 +546,12 @@ class SchemaService:
             
             # Validate conditional structure if AttributeDef has datatype 'conditional'
             # This is important for when the AttributeDef already exists with conditional datatype
-            attr_def = AttributeDef.objects.filter(
-                node_type=node_type,
-                json_key=json_key,
-                variant_key=variant_key
-            ).first()
-            
+            attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                node_type,
+                json_key,
+                variant_key
+            )
+
             if attr_def and attr_def.data_type.name == 'conditional':
                 try:
                     validate_conditional_structure(value)
@@ -574,16 +562,16 @@ class SchemaService:
             final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
 
             # Check if an AttributeDef already exists with the determined variant_key
-            attr_def = AttributeDef.objects.filter(
-                node_type=node_type,
-                json_key=json_key,
+            attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                node_type,
+                json_key,
                 variant_key=final_variant_key
             ).first()
 
             if not attr_def:
                 # Create AttributeDef with the determined variant_key
                 is_common = (final_variant_key is None)
-                attr_def = AttributeDef.objects.create(
+                attr_def = self.attribute_def_repository.create_attribute_def(
                     name=json_key,
                     json_key=json_key,
                     is_required=False,
@@ -598,30 +586,30 @@ class SchemaService:
                 if value is None:
                     return
                 elif isinstance(value, bool):
-                    NodeAttribute.objects.update_or_create(
-                        node_id=node_id,
-                        attribute_def=attr_def,
-                        defaults={'value_bool': value}
+                    self.repository.update_or_create_node_attribute(
+                        node_id,
+                        attr_def,
+                        {'value_bool': value}
                     )
                 elif isinstance(value, str):
-                    NodeAttribute.objects.update_or_create(
-                        node_id=node_id,
-                        attribute_def=attr_def,
-                        defaults={'value_string': value}
+                    self.repository.update_or_create_node_attribute(
+                        node_id,
+                        attr_def,
+                        {'value_string': value}
                     )
                 elif isinstance(value, (int, float)):
                     from decimal import Decimal
                     decimal_value = Decimal(str(value))
-                    NodeAttribute.objects.update_or_create(
-                        node_id=node_id,
-                        attribute_def=attr_def,
-                        defaults={'value_number': decimal_value}
+                    self.repository.update_or_create_node_attribute(
+                        node_id,
+                        attr_def,
+                        {'value_number': decimal_value}
                     )
                 elif isinstance(value, (list, dict)):
-                    NodeAttribute.objects.update_or_create(
-                        node_id=node_id,
-                        attribute_def=attr_def,
-                        defaults={'value_json': value}
+                    self.repository.update_or_create_node_attribute(
+                        node_id,
+                        attr_def,
+                        {'value_json': value}
                     )
         finally:
             # Re-enable triggers
@@ -647,8 +635,8 @@ class SchemaService:
         
         # Get Node model field names (these are not attributes)
         node_field_names = {f.name for f in Node._meta.get_fields()}
-        
-        compositions = NodeTypeComposition.objects.filter(parent_type=node_type).select_related('child_type')
+
+        compositions = self.composition_repository.get_compositions_by_parent_type_select_related(node_type)
         
         # Case 1 — collection keys (list or singleton dict values)
         collection_keys = {comp.collection_key for comp in compositions if comp.collection_key}
@@ -664,15 +652,10 @@ class SchemaService:
         for comp in compositions:
             if not comp.collection_key:
                 continue
-            discriminator = AttributeDef.objects.filter(
-                node_type=comp.child_type,
-                variant_key__isnull=True,
-                is_required=True,
-                domain__isnull=False,
-            ).exclude(data_type__name__startswith='natural_').exclude(json_key='type').first()
+            discriminator = self.attribute_def_repository.get_discriminator_attribute_def(comp.child_type)
             if not discriminator:
                 continue
-            for di in DomainItem.objects.filter(domain=discriminator.domain):
+            for di in self.attribute_def_repository.get_domain_items_by_domain(discriminator.domain):
                 shorthand_map[di.value] = (comp.child_type, discriminator.json_key)
         
         # Case 3 — structural inference for compositions without collection_key
@@ -686,8 +669,9 @@ class SchemaService:
             child_name = comp.child_type.name
             canonical = child_name
             child_attr_keys = {
-                ad.json_key for ad in AttributeDef.objects.filter(
-                    node_type=comp.child_type, variant_key__isnull=True
+                ad.json_key for ad in self.attribute_def_repository.get_attribute_defs_by_node_type_variant_key(
+                    comp.child_type,
+                    None
                 )
             }
             # Match if json_key equals canonical name OR if ≥2 attribute keys overlap
@@ -715,8 +699,7 @@ class SchemaService:
         
         try:
             # Determine the node's variant using the discriminator from NodeTypeVariant
-            from schemas.models import NodeTypeVariant
-            ntv = NodeTypeVariant.objects.filter(node_type=node_type).first()
+            ntv = self.node_type_repository.get_node_type_variant_by_node_type(node_type)
             discriminator = ntv.discriminator_attr if ntv else 'type'
             
             # If this node_type is a props_node_type (discriminator_attr=None), use inherited_variant
@@ -737,26 +720,28 @@ class SchemaService:
                 # when no display_order AttributeDef is present on this node type.
                 if json_key in node_field_names and json_key != 'sort_order':
                     continue
-                # Skip natural type attributes (natural_version, natural_key, etc.) 
+                # Skip natural type attributes (natural_version, natural_key, etc.)
                 # These are mapped to node columns and handled separately
-                attr_def = AttributeDef.objects.filter(node_type=node_type, json_key=json_key).first()
+                attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                    node_type,
+                    json_key,
+                    None
+                )
                 if attr_def and attr_def.data_type.name.startswith('natural_'):
                     continue
                 if json_key == 'sort_order':
                     # If a display_order AttributeDef exists, skip: the value is driven by
                     # node.sort_order (loop index) and reconstructed as sort_order+1 in SQL.
-                    has_display_order = AttributeDef.objects.filter(
-                        node_type=node_type,
-                        json_key='sort_order',
-                        data_type__name='display_order',
-                    ).exists()
+                    has_display_order = self.attribute_def_repository.attribute_def_exists_with_display_order(
+                        node_type,
+                        'sort_order'
+                    )
                     if has_display_order:
                         continue
-                
+
                 # Skip the discriminator attribute if it's the one we inherited
                 # Check if this node_type is a props_node_type for some parent variant
-                from schemas.models import NodeTypeVariant
-                parent_ntv = NodeTypeVariant.objects.filter(props_node_type=node_type).first()
+                parent_ntv = self.node_type_repository.get_node_type_variant_by_props_node_type(node_type)
                 if parent_ntv and json_key == parent_ntv.discriminator_attr:
                     continue
                 
@@ -785,16 +770,15 @@ class SchemaService:
                 if json_key in shorthand_map and isinstance(value, dict):
                     child_type, discriminator_json_key = shorthand_map[json_key]
                     name = value.get('id') or json_key
-                    child_node = Node(
-                        node_type=child_type,
-                        parent_id=node_id,
+                    child_node = self.repository.create_child_node(
+                        child_type,
+                        node_id,
+                        json_key,
                         project_id=project_id,
                         organization_id=organization_id,
                         sort_order=child_sort_order,
                         name=name,
-                        key=json_key,
                     )
-                    child_node.save()
                     child_sort_order += 1
                     item_with_discriminator = dict(value)
                     item_with_discriminator.setdefault(discriminator_json_key, json_key)
@@ -823,28 +807,28 @@ class SchemaService:
                     kind_key = list(value.keys())[0]
                     kind_value = value[kind_key]
                     # Check if there are AttributeDefs that match the pattern {json_key}_kind and {json_key}_{kind_key}_key or {json_key}_{kind_key}
-                    kind_attr_def = AttributeDef.objects.filter(
-                        node_type=node_type,
-                        json_key=f'{json_key}_kind',
-                        variant_key__isnull=True
-                    ).first()
+                    kind_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                        node_type,
+                        f'{json_key}_kind',
+                        None
+                    )
                     if kind_attr_def:
                         # This is a nested object that should be expanded
                         # Set the kind attribute
                         self._set_node_attribute(node_id, f'{json_key}_kind', kind_key, node_type, node_variant)
                         # Set the value attribute based on the kind
                         # Try both patterns: {json_key}_{kind_key}_key (for field) and {json_key}_{kind_key} (for value)
-                        value_attr_def = AttributeDef.objects.filter(
-                            node_type=node_type,
-                            json_key=f'{json_key}_{kind_key}_key',
-                            variant_key__isnull=True
-                        ).first()
+                        value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                            node_type,
+                            f'{json_key}_{kind_key}_key',
+                            None
+                        )
                         if not value_attr_def:
-                            value_attr_def = AttributeDef.objects.filter(
-                                node_type=node_type,
-                                json_key=f'{json_key}_{kind_key}',
-                                variant_key__isnull=True
-                            ).first()
+                            value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                                node_type,
+                                f'{json_key}_{kind_key}',
+                                None
+                            )
                         if value_attr_def:
                             self._set_node_attribute(node_id, value_attr_def.json_key, kind_value, node_type, node_variant)
                         continue
@@ -853,21 +837,21 @@ class SchemaService:
                 # First, try the variant-specific one (based on 'type' attribute)
                 attr_def = None
                 if node_variant:
-                    attr_def = AttributeDef.objects.filter(
-                        node_type=node_type,
-                        json_key=json_key,
-                        variant_key=node_variant
-                    ).first()
+                    attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                        node_type,
+                        json_key,
+                        node_variant
+                    )
 
                 # If not found, try the generic one (variant_key=None, is_common=True only)
                 # Catalog entries (is_common=False) are templates, not real properties
                 if not attr_def:
-                    attr_def = AttributeDef.objects.filter(
-                        node_type=node_type,
-                        json_key=json_key,
-                        variant_key__isnull=True,
-                        is_common=True
-                    ).first()
+                    attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant_common(
+                        node_type,
+                        json_key,
+                        None,
+                        True
+                    )
 
                 # If not found, create AttributeDef dynamically
                 if not attr_def:
@@ -889,31 +873,31 @@ class SchemaService:
                             continue
                         elif isinstance(value, bool):
                             # Boolean value - use direct insert (must check before int since bool is subclass of int)
-                            NodeAttribute.objects.update_or_create(
-                                node_id=node_id,
-                                attribute_def=attr_def,
-                                defaults={'value_bool': value}
+                            self.repository.update_or_create_node_attribute(
+                                node_id,
+                                attr_def,
+                                {'value_bool': value}
                             )
                         elif isinstance(value, str):
                             # String value - use direct insert
-                            NodeAttribute.objects.update_or_create(
-                                node_id=node_id,
-                                attribute_def=attr_def,
-                                defaults={'value_string': value}
+                            self.repository.update_or_create_node_attribute(
+                                node_id,
+                                attr_def,
+                                {'value_string': value}
                             )
                         elif isinstance(value, (int, float)):
                             # Convert to Decimal
                             from decimal import Decimal
                             decimal_value = Decimal(str(value))
-                            NodeAttribute.objects.update_or_create(
-                                node_id=node_id,
-                                attribute_def=attr_def,
-                                defaults={'value_number': decimal_value}
+                            self.repository.update_or_create_node_attribute(
+                                node_id,
+                                attr_def,
+                                {'value_number': decimal_value}
                             )
                         elif isinstance(value, (list, dict)):
                             # JSON value - use direct insert with value_json
-                            NodeAttribute.objects.update_or_create(
-                                node_id=node_id,
+                            self.repository.update_or_create_node_attribute(
+                                node_id,
                                 attribute_def=attr_def,
                                 defaults={'value_json': value}
                             )
@@ -935,23 +919,23 @@ class SchemaService:
         1. A universal version already exists (is_common=True, variant_key=None)
         2. A catalog template exists (is_common=False, variant_key=None) - then convert to universal
         """
-        from schemas.models import AttributeDef, DataType, NodeTypeComposition
+        from schemas.models import AttributeDef, DataType
 
         # Check if json_key corresponds to a collection_key in NodeTypeComposition
-        composition_exists = NodeTypeComposition.objects.filter(
-            parent_type=node_type,
-            collection_key=json_key
-        ).exists()
+        composition_exists = self.composition_repository.composition_exists_by_collection_key(
+            node_type,
+            json_key
+        )
         if composition_exists:
             return None
 
         # Determine data type from value
         data_type_name = self._infer_data_type(value)
-        data_type = DataType.objects.filter(name=data_type_name).first()
+        data_type = self.data_type_repository.get_data_type_by_name(data_type_name)
 
         if not data_type:
             # Fallback to string type
-            data_type = DataType.objects.filter(name='string').first()
+            data_type = self.data_type_repository.get_string_data_type()
 
         if not data_type:
             return None
@@ -967,18 +951,18 @@ class SchemaService:
         final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
 
         # Check if an AttributeDef already exists with the determined variant_key
-        existing = AttributeDef.objects.filter(
-            node_type=node_type,
-            json_key=json_key,
-            variant_key=final_variant_key
-        ).first()
+        existing = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+            node_type,
+            json_key,
+            final_variant_key
+        )
 
         if existing:
             return existing
 
         # Create AttributeDef with the determined variant_key
         is_common = (final_variant_key is None)
-        attr_def = AttributeDef.objects.create(
+        attr_def = self.attribute_def_repository.create_attribute_def(
             name=json_key,
             json_key=json_key,
             is_required=False,
@@ -999,15 +983,11 @@ class SchemaService:
            New properties are variant-specific by default to match seed behavior.
            Catalog entries (is_common=False) are just templates, not real properties.
         """
-        from schemas.models import AttributeDef
-
         # Check if a real universal version already exists
-        real_universal_exists = AttributeDef.objects.filter(
-            node_type=node_type,
-            json_key=json_key,
-            variant_key__isnull=True,
-            is_common=True
-        ).exists()
+        real_universal_exists = self.attribute_def_repository.universal_attribute_def_exists(
+            node_type,
+            json_key
+        )
 
         if real_universal_exists:
             return None

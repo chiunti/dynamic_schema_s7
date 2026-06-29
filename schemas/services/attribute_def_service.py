@@ -4,6 +4,7 @@ Business logic for AttributeDef, component type, and variant property management
 
 from ..models import DomainItem
 from ..repositories.attribute_def_repository import AttributeDefRepository
+from ..repositories.node_type_repository import NodeTypeRepository
 from ..constants import (
     ERR_SCOPE_REQUIRED,
     ERR_SCOPE_NOT_FOUND,
@@ -23,6 +24,7 @@ class AttributeDefService:
 
     def __init__(self):
         self.repository = AttributeDefRepository()
+        self.node_type_repository = NodeTypeRepository()
 
     def get_component_types_for_scope(self, scope: str) -> dict:
         """
@@ -113,6 +115,10 @@ class AttributeDefService:
         """Return all NodeTypeVariants reachable from a given root scope."""
         variants = self.repository.get_all_variants(scope)
         return {"variants": variants}
+
+    def get_variants_for_node_type(self, node_type_id: str) -> list[str]:
+        """Return variant keys for a specific node_type."""
+        return self.repository.get_variants_for_node_type(node_type_id)
 
     def create_attribute_def(
         self,
@@ -215,13 +221,14 @@ class AttributeDefService:
             target_names = self.repository.get_node_type_names_for_ids(scope_type_ids)
 
         # All node_type_ids that carry this variant_key (e.g. sdui_props + sdui_widget for 'text_label')
+        # If scope is provided, filter by target_names; otherwise get all variant types
         variant_node_type_ids = self.repository.get_node_type_ids_for_variant(variant_key, target_names)
 
         # Get NodeTypeVariant configs to determine semantic vs catalog types
-        ntv_list = NodeTypeVariant.objects.filter(
-            node_type_id__in=variant_node_type_ids,
-            variant_key=variant_key
-        ).select_related('props_node_type')
+        ntv_list = self.node_type_repository.get_node_type_variants_by_node_type_ids_and_variant_key(
+            variant_node_type_ids,
+            variant_key
+        )
 
         # Separate into:
         # - semantic_type_ids: types where the variant lives (sdui_widget, sdui_container, survey_question, field)
@@ -245,6 +252,17 @@ class AttributeDefService:
 
         # catalog source: prefer dedicated catalog types; fall back to all variant types
         catalog_source_ids = catalog_type_ids if catalog_type_ids else variant_node_type_ids
+
+        # Special case: if scope is provided and catalog_type_ids contains sdui_props,
+        # ensure sdui_props is included even if it's not in the scope (it has json_scope='sdui_sub')
+        # This is needed because sdui_props is where SDUI component properties are stored
+        if scope and catalog_type_ids:
+            from ..models import NodeType
+            sdui_props_nt = NodeType.objects.filter(name='sdui_props').first()
+            if sdui_props_nt and sdui_props_nt.id in catalog_type_ids:
+                # Ensure sdui_props is in catalog_source_ids
+                if sdui_props_nt.id not in catalog_source_ids:
+                    catalog_source_ids.append(sdui_props_nt.id)
 
         common_attrs = self.repository.get_common_attribute_defs(semantic_type_ids)
         for a in common_attrs:

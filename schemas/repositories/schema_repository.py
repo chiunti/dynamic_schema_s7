@@ -585,6 +585,36 @@ class SchemaRepository:
         from ..models import NodeAttribute
         NodeAttribute.objects.filter(node=node, attribute_def=attribute_def).delete()
 
+    def delete_node_attributes_by_attr_defs(
+        self,
+        node: 'Node',
+        attribute_def_ids: list[uuid.UUID]
+    ) -> int:
+        """
+        Delete node attributes for a given node and a list of attribute def IDs.
+
+        Args:
+            node: Node instance
+            attribute_def_ids: List of AttributeDef IDs to delete
+
+        Returns:
+            Number of deleted attributes
+        """
+        if not isinstance(attribute_def_ids, list):
+            raise TypeError("attribute_def_ids must be a list")
+
+        # Validate all are UUIDs
+        for attr_id in attribute_def_ids:
+            if not isinstance(attr_id, uuid.UUID):
+                raise TypeError(f"attribute_def_ids must contain UUIDs, got {type(attr_id)}")
+
+        from ..models import NodeAttribute
+        result = NodeAttribute.objects.filter(
+            node=node,
+            attribute_def_id__in=attribute_def_ids
+        ).delete()
+        return result[0]  # delete() returns (count, {model: count})
+
     def update_or_create_node_attribute(self, node, attribute_def, defaults):
         """Update or create node attribute with given defaults"""
         from ..models import NodeAttribute

@@ -86,15 +86,129 @@ class NodeService:
             return None
         
         return parent_type_attr.value_string
-    
+
+    def _extract_discriminator_value(
+        self,
+        defs: list,
+        existing: dict,
+        discriminator: str
+    ) -> str | None:
+        """
+        Extract the discriminator value from a node's attributes.
+
+        First tries to find the discriminator AttributeDef with variant_key=None (common).
+        If not found, falls back to any AttributeDef with the discriminator json_key.
+
+        Args:
+            defs: List of AttributeDefs for the node type
+            existing: Dict mapping attribute_def_id to NodeAttribute
+            discriminator: The discriminator attribute name (e.g., 'type')
+
+        Returns:
+            The discriminator value, or None if not found
+        """
+        # Try to find discriminator AttributeDef with variant_key=None (common)
+        type_def = next((d for d in defs if d.json_key == discriminator and d.variant_key is None), None)
+        if type_def:
+            type_attr = existing.get(type_def.id)
+            if type_attr and type_attr.value_string:
+                return type_attr.value_string
+
+        # Fallback: find any discriminator NodeAttribute regardless of variant_key scoping
+        for d in defs:
+            if d.json_key == discriminator:
+                type_attr = existing.get(d.id)
+                if type_attr and type_attr.value_string:
+                    return type_attr.value_string
+                break
+
+        return None
+
+    def _cleanup_obsolete_attributes(
+        self,
+        node: 'Node',
+        variant_value: str
+    ) -> int:
+        """
+        Clean up obsolete node attributes for a given variant.
+
+        Deletes all NodeAttributes whose AttributeDef is not valid for the given variant.
+        Valid AttributeDefs are:
+        - Common properties (variant_key is None and is_common=True)
+        - Properties specific to the variant (variant_key == variant_value)
+
+        Args:
+            node: Node instance
+            variant_value: The variant value to keep attributes for
+
+        Returns:
+            Number of deleted attributes
+        """
+        # Get all AttributeDefs for this node type
+        all_defs = self.schema_repository.get_attribute_defs_by_node_type(node.node_type)
+
+        # Determine valid AttributeDefs for the variant
+        valid_attr_def_ids = {
+            d.id for d in all_defs
+            if (d.variant_key is None and d.is_common) or d.variant_key == variant_value
+        }
+
+        # Get all existing NodeAttributes for this node
+        existing_attrs = self.schema_repository.get_node_attributes_by_node(node)
+
+        # Find obsolete NodeAttributes (those whose AttributeDef is not in valid_attr_def_ids)
+        obsolete_attr_def_ids = {
+            na.attribute_def_id for na in existing_attrs
+            if na.attribute_def_id not in valid_attr_def_ids
+        }
+
+        # Delete obsolete NodeAttributes
+        if obsolete_attr_def_ids:
+            return self.schema_repository.delete_node_attributes_by_attr_defs(node, list(obsolete_attr_def_ids))
+        return 0
+
+    def _get_effective_variant_for_cleanup(
+        self,
+        node: 'Node',
+        discriminator: str | None,
+        current_variant: str | None
+    ) -> str | None:
+        """
+        Determine which variant value should be used when cleaning up obsolete attributes.
+
+        This method handles two distinct scenarios:
+        1. Nodes with a discriminator attribute: The variant will be determined later
+           from the update payload, so we return None here to defer cleanup.
+        2. Props nodes (no discriminator): The variant is always inherited from the
+           parent node's discriminator value, so we infer it from the parent.
+
+        Args:
+            node: The Node instance being updated
+            discriminator: The discriminator attribute name for this node type,
+                          or None if the node type uses parent-inferred variants
+            current_variant: The currently active variant value (may be None)
+
+        Returns:
+            The variant key to use for attribute cleanup, or None if cleanup
+            should be deferred until after discriminator updates are applied
+        """
+        if discriminator is not None:
+            # Will be set from updates later
+            return None
+        elif node.parent:
+            return self.infer_variant_from_parent(node)
+        return None
+
     def update_node_properties(self, node, updates):
         """Update node properties with validation"""
+        import logging
+        logger = logging.getLogger(__name__)
         defs = self.schema_repository.get_attribute_defs_by_node_type(node.node_type)
         existing = {
             na.attribute_def_id: na
             for na in self.schema_repository.get_node_attributes_by_node(node)
         }
-        
+
         if not isinstance(updates, dict):
             raise ValueError(ERR_PROPERTIES_REQUIRED)
         
@@ -106,19 +220,7 @@ class NodeService:
         if current_variant is None:
             discriminator = self.node_type_repository.get_discriminator_attr(node.node_type)
             if discriminator:
-                type_def = next((d for d in defs if d.json_key == discriminator and d.variant_key is None), None)
-                if type_def:
-                    type_attr = existing.get(type_def.id)
-                    if type_attr and type_attr.value_string:
-                        current_variant = type_attr.value_string
-                if current_variant is None:
-                    # Fallback: find any discriminator NodeAttribute regardless of variant_key scoping
-                    for d in defs:
-                        if d.json_key == discriminator:
-                            type_attr = existing.get(d.id)
-                            if type_attr and type_attr.value_string:
-                                current_variant = type_attr.value_string
-                            break
+                current_variant = self._extract_discriminator_value(defs, existing, discriminator)
         
         # Filter by variant_key and is_common: show universal common (NULL + is_common=True) + current variant only.
         # For variant-specific defs (variant_key=current_variant), is_common=False is allowed.
@@ -129,25 +231,25 @@ class NodeService:
                 defs = [d for d in defs if (d.variant_key is None and d.is_common) or d.variant_key == current_variant]
             else:
                 defs = [d for d in defs if d.variant_key is None and d.is_common]
-        else:
-            defs = defs
-        
+
         # Handle discriminator attribute separately if it exists for this node type
         discriminator = self.node_type_repository.get_discriminator_attr(node.node_type)
+        previous_variant = current_variant  # Store variant value before update
+        new_discriminator_value = None  # Track the new discriminator value
+
         if discriminator and discriminator in updates:
             discriminator_def = self.schema_repository.get_attribute_def(node.node_type, discriminator)
             if discriminator_def:
-                discriminator_value = updates.pop(discriminator)
-                if discriminator_value:
-                    self.schema_repository.set_node_attribute_from_json(
-                        node.id,
-                        node.node_type.name,
-                        discriminator_def.json_key,
-                        discriminator_value,
-                        discriminator_def.domain.domain_name if discriminator_def.domain_id else None
-                    )
+                new_discriminator_value = updates.pop(discriminator)
             else:
-                self.schema_repository.delete_node_attributes(node, discriminator_def)
+                # discriminator_def is None, cannot delete - log warning
+                logger.warning(f"Discriminator attribute '{discriminator}' not found for node type {node.node_type.name}")
+
+        # For props nodes (no discriminator), always use parent's current variant
+        # to clean up obsolete properties from previous parent variants
+        # Note: previous_variant comes from parent inference for props nodes
+        if discriminator is None and previous_variant is not None:
+            new_discriminator_value = self._get_effective_variant_for_cleanup(node, discriminator, previous_variant)
         
         defs_by_key = {d.json_key: d for d in defs}
         
@@ -178,7 +280,51 @@ class NodeService:
                         )
         
         with transaction.atomic():
-                for json_key, value in updates.items():
+            # Update discriminator attribute if it was in updates
+            if discriminator and new_discriminator_value and discriminator_def:
+                self.schema_repository.set_node_attribute_from_json(
+                    node.id,
+                    node.node_type.name,
+                    discriminator_def.json_key,
+                    new_discriminator_value,
+                    discriminator_def.domain.domain_name if discriminator_def.domain_id else None
+                )
+
+            # If discriminator changed (or for props nodes, always clean up based on parent's current variant)
+            # This must happen BEFORE processing other property updates
+            should_cleanup = False
+            if discriminator is not None:
+                # For nodes with discriminator: clean up only if discriminator changed
+                should_cleanup = new_discriminator_value != previous_variant
+            else:
+                # For props nodes (no discriminator): always clean up if we have parent variant
+                should_cleanup = new_discriminator_value is not None
+
+            if should_cleanup:
+                # Clean up obsolete attributes for the current node
+                deleted_count = self._cleanup_obsolete_attributes(node, new_discriminator_value)
+                if deleted_count > 0:
+                    logger.info(
+                        f"Cleaning up {deleted_count} obsolete attributes for node {node.id} "
+                        f"(variant changed from {previous_variant} to {new_discriminator_value})"
+                    )
+
+                # If this node has a discriminator that changed, also clean up props nodes children
+                if discriminator is not None and new_discriminator_value != previous_variant:
+                    children = self.schema_repository.get_children_by_parent_full(node.id)
+                    for child in children:
+                        # Check if child is a props node (inherits variant from parent)
+                        child_discriminator = self.node_type_repository.get_discriminator_attr(child.node_type)
+                        if child_discriminator is None:
+                            # This is a props node - clean it up
+                            child_deleted_count = self._cleanup_obsolete_attributes(child, new_discriminator_value)
+                            if child_deleted_count > 0:
+                                logger.info(
+                                    f"Cleaning up {child_deleted_count} obsolete attributes from props node child {child.id}"
+                                )
+
+            # Process all other property updates
+            for json_key, value in updates.items():
                     d = defs_by_key.get(json_key)
                     if not d:
                         continue

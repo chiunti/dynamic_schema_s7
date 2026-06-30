@@ -1101,6 +1101,9 @@ class SchemaService:
                 "archived",
                 status_def.domain.domain_name if status_def.domain_id else None
             )
+            # Delete schema cache to prevent public access after archiving
+            if node.key and node.version:
+                self.delete_schema_cache(node.key, node.version)
         except DatabaseError as e:
             raise RuntimeError(ERR_DATABASE_ERROR_ARCHIVE.format(error=e)) from e
         except ValueError as e:
@@ -1144,6 +1147,9 @@ class SchemaService:
                 "draft",
                 status_def.domain.domain_name if status_def.domain_id else None
             )
+            # Delete schema cache to prevent public access after moving to draft
+            if node.key and node.version:
+                self.delete_schema_cache(node.key, node.version)
         except DatabaseError as e:
             raise RuntimeError(ERR_DATABASE_ERROR_DRAFT.format(error=e)) from e
         except ValueError as e:

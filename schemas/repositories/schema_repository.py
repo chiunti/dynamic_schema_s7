@@ -449,6 +449,7 @@ class SchemaRepository:
         
         # Build query using shared published view
         # node_type is passed to the view which filters by node_type_name
+        # Additional status check for defense in depth
         query = """
             SELECT sc.schema_json
             FROM s7.schema_cache sc
@@ -458,6 +459,7 @@ class SchemaRepository:
             WHERE sc.key = %s
               AND sc.version = %s
               AND v.node_type_name = %s
+              AND v.status = 'published'
         """
 
         with connection.cursor() as cursor:
@@ -635,6 +637,11 @@ class SchemaRepository:
         """Get children nodes by parent ID ordered by sort_order"""
         from ..models import Node
         return Node.objects.filter(parent_id=parent_id).order_by("sort_order").values("id", "name", "node_type__name")
+
+    def get_children_by_parent_full(self, parent_id):
+        """Get children nodes by parent ID as full Node objects ordered by sort_order"""
+        from ..models import Node
+        return Node.objects.filter(parent_id=parent_id).order_by("sort_order")
 
     def get_compositions_by_parent_type(self, node_type, min_children_gt=0):
         """Get compositions by parent type with optional min_children filter"""

@@ -1,9 +1,10 @@
 from django.db import transaction
 
+from ..models import Node
 from ..repositories.schema_repository import NodeRepository, SchemaRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.node_type_repository import NodeTypeRepository
-from ..utils import normalize_variant_key
+from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..constants import (
     ERR_PROPERTIES_REQUIRED,
     ERR_PARENT_NOT_FOUND,
@@ -15,6 +16,7 @@ from ..constants import (
     ERR_MIN_CHILDREN_VIOLATION,
 )
 from .schema_service import SchemaService
+from .attribute_def_service import AttributeDefService
 
 
 class NodeService:
@@ -25,6 +27,8 @@ class NodeService:
         self.schema_repository = SchemaRepository()
         self.composition_repository = CompositionRepository()
         self.node_type_repository = NodeTypeRepository()
+        self.attribute_def_repository = AttributeDefRepository()
+        self.attribute_def_service = AttributeDefService()
     
     def get_node_tree(self, root_id):
         """Get recursive tree of nodes"""
@@ -81,9 +85,7 @@ class NodeService:
         if not parent_type_attr:
             return None
         
-        # Normalize to camelCase to match SDUI_PROPS_DEFS variant_keys
-        from ..utils import snake_to_camel
-        return snake_to_camel(parent_type_attr.value_string)
+        return parent_type_attr.value_string
     
     def update_node_properties(self, node, updates):
         """Update node properties with validation"""
@@ -123,9 +125,8 @@ class NodeService:
         # Catalog defs (variant_key=NULL + is_common=False) are templates and should not be shown.
         has_variant_defs = any(d.variant_key is not None for d in defs)
         if has_variant_defs:
-            normalized_current_variant = normalize_variant_key(current_variant) if current_variant else None
-            if normalized_current_variant:
-                defs = [d for d in defs if (d.variant_key is None and d.is_common) or normalize_variant_key(d.variant_key) == normalized_current_variant]
+            if current_variant:
+                defs = [d for d in defs if (d.variant_key is None and d.is_common) or d.variant_key == current_variant]
             else:
                 defs = [d for d in defs if d.variant_key is None and d.is_common]
         else:
@@ -436,3 +437,271 @@ class NodeService:
         if jsonb_result is None:
             raise ValueError(ERR_NOT_FOUND)
         return jsonb_result
+
+    def get_allowed_children_with_variant_info(self, parent_node: Node) -> dict:
+        """
+        Get allowed children for a parent node with variant inference information.
+
+        This method orchestrates the business logic for determining which child node types
+        are allowed for a given parent, including validation of max_children constraints
+        and identification of node types that inherit their variant from the parent.
+
+        Args:
+            parent_node: The parent Node instance
+
+        Returns:
+            Dictionary with keys:
+                - allowed: List of allowed child node types with metadata
+                - infer_variant_from_parent: List of node type names that inherit variant from parent
+        """
+        compositions = self.composition_repository.get_compositions_by_parent_type(parent_node.node_type)
+        child_type_ids = [c.child_type_id for c in compositions]
+        existing_counts = self.schema_repository.get_children_counts_by_parent_type_ids(parent_node, child_type_ids)
+
+        # For collection_key-based compositions, check if a child with that key already exists
+        # Build a set of existing keys (regardless of node_type) for singleton slots
+        # Exclude keys that match collection_key of non-singleton compositions (e.g., 'children')
+        non_singleton_collection_keys = {
+            c.collection_key for c in compositions
+            if c.collection_key and c.max_children != 1
+        }
+        existing_keys = self.schema_repository.get_children_keys_by_parent_type_ids(parent_node, child_type_ids) - non_singleton_collection_keys
+
+        # Also build a map of collection_key to existing node for compositions
+        # This handles the case where imported nodes have custom keys (e.g., 'home_body' instead of 'body')
+        collection_key_to_node = {}
+        for c in compositions:
+            if c.collection_key and c.max_children == 1:
+                # For singleton slots, check if there's a child of this type with this parent
+                existing_child = self.schema_repository.get_node_by_parent_type(parent_node, c.child_type_id)
+                if existing_child:
+                    collection_key_to_node[c.collection_key] = existing_child
+
+        # Build allowed list with validation
+        allowed = []
+        for c in compositions:
+            max_c = c.max_children
+
+            # For collection_key-based compositions:
+            # 1. Check if a child with that collection_key already exists (singleton)
+            # 2. If NOT, check max_children for that specific collection_key
+            if c.collection_key:
+                # For singleton slots (max_children=1), check if slot is already occupied
+                if max_c == 1 and c.collection_key in collection_key_to_node:
+                    # A child with this collection_key already exists (singleton slot)
+                    continue
+                # Check max_children for this specific collection_key
+                if max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
+                    continue
+            # For non-collection_key compositions: check max_children by node_type
+            elif max_c is not None and existing_counts.get(c.child_type_id, 0) >= max_c:
+                continue
+
+            allowed.append({
+                "node_type": c.child_type.name,
+                "label": c.child_type.label,
+                "collection_key": c.collection_key,
+                "min_children": c.min_children,
+                "max_children": max_c,
+            })
+
+        # Check if any allowed child type should infer variant from parent
+        # (e.g., sdui_props inherits variant from parent's component type)
+        infer_variant_from_parent = []
+        for item in allowed:
+            child_type = self.node_type_repository.get_node_type_by_name(item["node_type"])
+            if child_type:
+                # Check if this node type is a props_node_type (variant inherited from parent via props_node_type)
+                is_props_type = self.node_type_repository.is_props_node_type(child_type)
+                if is_props_type:
+                    infer_variant_from_parent.append(item["node_type"])
+
+        return {
+            "parent_id": parent_node.id,
+            "parent_type": parent_node.node_type.name,
+            "allowed": allowed,
+            "infer_variant_from_parent": infer_variant_from_parent
+        }
+
+    def get_node_properties_with_variant_filtering(self, node: Node) -> dict:
+        """
+        Get node properties with variant-based filtering and variant options.
+
+        This method orchestrates the business logic for retrieving and filtering
+        node attributes based on the current variant, including resolving the
+        variant from the parent (for props nodes) or from the node's discriminator
+        attribute.
+
+        Args:
+            node: The Node instance
+
+        Returns:
+            Dictionary with keys:
+                - properties: List of attribute definitions with current values
+                - variant_options: List of variant options (if applicable)
+                - current_variant: The current variant key
+        """
+        all_defs = self.attribute_def_repository.get_attribute_defs_by_node_type(node.node_type)
+        node_attributes = self.schema_repository.get_node_attributes_by_node(node)
+        existing = {na.attribute_def_id: na for na in node_attributes}
+
+        # Resolve current variant from the discriminator attribute (if present).
+        # For props nodes, the variant is inherited from the parent's component type.
+        current_variant = self.infer_variant_from_parent(node)
+
+        # If not inherited, read discriminator attribute from the current node
+        if current_variant is None:
+            discriminator = self.node_type_repository.get_discriminator_attr(node.node_type)
+            if discriminator:
+                type_def = next((d for d in all_defs if d.json_key == discriminator and d.variant_key is None), None)
+                if type_def:
+                    type_attr = existing.get(type_def.id)
+                    if type_attr and type_attr.value_string:
+                        current_variant = type_attr.value_string
+                if current_variant is None:
+                    # Fallback: find any discriminator NodeAttribute regardless of variant_key scoping
+                    for d in all_defs:
+                        if d.json_key == discriminator:
+                            type_attr = existing.get(d.id)
+                            if type_attr and type_attr.value_string:
+                                current_variant = type_attr.value_string
+                            break
+
+        # Filter by variant_key and is_common: show universal common (NULL + is_common=True) + current variant only.
+        # For variant-specific defs (variant_key=current_variant), is_common=False is allowed.
+        # Catalog defs (variant_key=NULL + is_common=False) are templates and should not be shown.
+        # If the node type has variant-scoped defs but no variant is selected yet,
+        # show only the universal common defs so the user sets 'type' first.
+        has_variant_defs = any(d.variant_key is not None for d in all_defs)
+        
+        if has_variant_defs:
+            if current_variant:
+                defs = [d for d in all_defs if (d.variant_key is None and d.is_common) or d.variant_key == current_variant]
+            else:
+                defs = [d for d in all_defs if d.variant_key is None and d.is_common]
+        else:
+            defs = all_defs
+
+        # Filter out json_keys that correspond to child nodes (without collection_key)
+        # These are structural child nodes like layout, props, show_if, etc.
+        # Check if there's a composition where child_type.name ends with _json_key
+        # (e.g., sdui_layout ends with _layout, sdui_show_if ends with _show_if)
+        child_type_names = set(
+            self.composition_repository.get_child_type_names_by_parent_no_collection_key(node.node_type)
+        )
+        
+        filtered_defs = []
+        for d in defs:
+            json_key = d.json_key
+            # Check if child_type.name ends with _json_key (suffix match with underscore)
+            is_child_node = any(
+                child_name == json_key  # Exact match
+                or child_name.endswith('_' + json_key)  # Suffix match (e.g., sdui_layout -> layout)
+                for child_name in child_type_names
+            )
+            if not is_child_node:
+                filtered_defs.append(d)
+        defs = filtered_defs
+
+        # Load domain items for all domains used by the filtered defs
+        domain_ids = [d.domain_id for d in defs if d.domain_id]
+        domain_items = self.attribute_def_repository.get_domain_items_by_domain_ids(domain_ids)
+        items_by_domain = {}
+        for di in domain_items:
+            items_by_domain.setdefault(di.domain_id, []).append({
+                "value": di.value,
+                "label": di.label,
+            })
+
+        # Build properties list with special handling for natural_* data types
+        props = []
+        for d in defs:
+            na = existing.get(d.id)
+            dt_name = d.data_type.name
+
+            if dt_name == 'natural_uuid':
+                prop_value = {"value_string": str(node.id), "value_number": None, "value_bool": None, "value_json": None}
+                prop_has_value = True
+            elif dt_name == 'natural_key':
+                prop_value = {"value_string": node.key, "value_number": None, "value_bool": None, "value_json": None}
+                prop_has_value = bool(node.key)
+            elif dt_name == 'natural_version':
+                prop_value = {"value_string": node.version, "value_number": None, "value_bool": None, "value_json": None}
+                prop_has_value = bool(node.version)
+            elif dt_name == 'natural_order':
+                prop_value = {"value_string": str(node.sort_order), "value_number": None, "value_bool": None, "value_json": None}
+                prop_has_value = True
+            elif dt_name == 'display_order':
+                prop_value = {"value_string": str(node.sort_order + 1), "value_number": None, "value_bool": None, "value_json": None}
+                prop_has_value = True
+            else:
+                prop_value = {
+                    "value_string": na.value_string if na else None,
+                    "value_number": float(na.value_number) if (na and na.value_number is not None) else None,
+                    "value_bool": na.value_bool if na else None,
+                    "value_json": na.value_json if na else None,
+                }
+                prop_has_value = bool(na)
+
+            props.append({
+                "attribute_def_id": d.id,
+                "json_key": d.json_key,
+                "label": d.name,
+                "data_type": dt_name,
+                "is_required": d.is_required,
+                "variant_key": d.variant_key,
+                "domain": d.domain.domain_name if d.domain_id else None,
+                "domain_items": items_by_domain.get(d.domain_id, []) if d.domain_id else [],
+                "value": prop_value,
+                "has_value": prop_has_value,
+                "group": d.group,
+            })
+
+        response_data = {
+            "node_id": node.id,
+            "node_type": node.node_type.name,
+            "current_variant": current_variant,
+            "properties": props,
+        }
+
+        # Populate type selector options for nodes that have variants
+        # For sdui_container with collection_key, type is already "container" - don't show variants
+        # For sdui_widget with collection_key, type is null - allow variant selection
+        # For props nodes (e.g., sdui_props), variant is inherited from parent - don't show selector
+        if has_variant_defs:
+            # Skip variant options for sdui_container nodes with collection_key (type is fixed to "container")
+            # Skip variant options for props nodes (variant inherited from parent via props_node_type)
+            if not (node.node_type.name == 'sdui_container' and node.key):
+                is_props_type = self.node_type_repository.is_props_node_type(node.node_type)
+                if not is_props_type:
+                    variants = self.node_type_repository.get_variant_keys_by_node_type(node.node_type)
+                    options = [{"value": v, "label": v} for v in variants]
+                    response_data["variant_options"] = options
+
+        return response_data
+
+    def get_node_type_variants_with_props_check(self, node_type_name: str) -> dict:
+        """
+        Get variant options for a given node type, with special handling for props nodes.
+
+        For props nodes (variant inherited from parent), returns empty options since
+        the variant should be inferred from the parent node.
+
+        Args:
+            node_type_name: The name of the node type
+
+        Returns:
+            Dictionary with key "options" containing list of variant options
+        """
+        node_type = self.node_type_repository.get_node_type_by_name(node_type_name)
+        if not node_type:
+            raise ValueError(ERR_NODE_TYPE_NOT_FOUND)
+
+        # For props nodes (variant inherited from parent), return empty options
+        is_props_type = self.node_type_repository.is_props_node_type(node_type)
+        if is_props_type:
+            return {"options": []}
+
+        variants = self.attribute_def_service.get_variants_for_node_type(str(node_type.id))
+        options = [{"value": v, "label": v} for v in variants]
+        return {"options": options}

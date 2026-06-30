@@ -567,7 +567,7 @@
         if (inferVariantFromParent.includes(nodeType)) {
           variantRow.classList.add('hidden');
           variantSel.innerHTML = '';
-          document.getElementById('btn_create').disabled = allowed.length === 0;
+          document.getElementById('btn_create').disabled = false; // Enable button since variant is inherited
           return;
         }
 
@@ -593,13 +593,14 @@
             });
             document.getElementById('btn_create').disabled = true; // Require variant selection
           } else {
-            document.getElementById('btn_create').disabled = allowed.length === 0;
+            // No variants (or inherited from parent), enable button
+            document.getElementById('btn_create').disabled = false;
           }
         } catch (e) {
           console.warn('Failed to load variants for node type:', nodeType, e);
           variantRow.classList.add('hidden');
           variantSel.innerHTML = '';
-          document.getElementById('btn_create').disabled = allowed.length === 0;
+          document.getElementById('btn_create').disabled = false;
         }
       };
 

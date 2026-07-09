@@ -76,9 +76,11 @@ This system is **domain-agnostic** and can create any type of data structure:
 
 ### Type-Safe Attributes
 - Strong typing via `DataType` definitions
+- Explicit storage column mapping via `primary_storage_type` (`string`, `number`, `bool`, `json`)
 - Optional `Domain` constraints for enumerated values
 - Variant-specific attributes (e.g., different properties for text vs. number fields)
 - Universal attributes that apply to all variants
+- Pluggable validator system per `DataType` (e.g., `conditional` structure validation)
 
 ### Cache Layer
 - Pre-computed JSON schemas cached in `FormSchemaCache`
@@ -182,7 +184,7 @@ The name "Structure Seven" (S7) refers to the **seven core components** that for
 
 | # | Component | Purpose | Table |
 |---|-----------|---------|-------|
-| 1 | **DataType** | Defines data types (string, number, boolean, json, etc.) | `schema_data_types` |
+| 1 | **DataType** | Defines data types (string, number, boolean, json, etc.) with storage mapping and optional editor extension | `schema_data_types` |
 | 2 | **NodeType** | Defines entity types/templates (containers, leaves) | `schema_node_types` |
 | 3 | **NodeTypeVariant** | Defines variants of node types (e.g., text_field, number_field) | `schema_node_type_variants` |
 | 4 | **Domain** | Defines enumerated value sets for constraints (with DomainItem values) | `schema_domains` |
@@ -195,6 +197,11 @@ The name "Structure Seven" (S7) refers to the **seven core components** that for
 - `NodeAttribute` - EAV values linking Nodes to AttributeDefs
 - `BuildState` - Schema build tracking
 - `SchemaCache` - Pre-computed JSON schemas
+
+**Service layer plugins** (`schemas/services/datatype_plugins.py`):
+- `get_storage_type(data_type)` - Resolves effective storage column; reads `primary_storage_type`, falls back to name-based inference for legacy types
+- `get_storage_defaults(data_type, value)` - Builds the `value_*` defaults dict for `update_or_create` operations
+- `validate_datatype_value(data_type, value)` - Dispatches to the registered validator for the datatype (e.g., `conditional` → `conditional_validator`)
 
 These seven components work together to enable the EAV pattern: **DataType** and **Domain** provide type safety, **NodeType** and **NodeTypeVariant** define structure, **NodeTypeComposition** defines hierarchy, **AttributeDef** defines properties, and **Node** holds the actual data instances.
 
@@ -514,15 +521,37 @@ cd schemas/static/admin/js/
 
 The node editor supports a plugin-based extension system for custom property editors. Extensions are automatically loaded from `schemas/static/admin/js/extensions_editor/` and registered with the `window.s7Editors` API.
 
+**Associating an extension to a DataType:**
+
+The preferred way to link an editor extension to a DataType is via the `editor_extension` field on the `DataType` model. Set it to the filename (without `.js`) of the extension in `extensions_editor/`:
+
+```python
+# Example: DataType with a custom editor
+DataType.objects.update_or_create(
+    name='url',
+    defaults={
+        'description': 'URL string',
+        'primary_storage_type': 'string',
+        'editor_extension': 'url_editor',  # loads extensions_editor/url_editor.js
+    },
+)
+```
+
+The node editor reads `editor_extension` from the datatype metadata returned by the API and activates the matching renderer automatically — no manual `registerRenderer` pattern check needed for datatype-specific editors.
+
 **Built-in Extensions:**
 
-- **geo_editor.js** - Geographic coordinates editor with lat/lng inputs
-- **url_editor.js** - URL input with validation and open-in-new-tab button
-- **uuid_editor.js** - UUID editor with generate and copy-to-clipboard buttons
+| File | DataType | Description |
+|------|----------|-------------|
+| **geo_editor.js** | — | Geographic coordinates editor with lat/lng inputs |
+| **url_editor.js** | `url` | URL input with validation and open-in-new-tab button |
+| **uuid_editor.js** | `uuid` | UUID editor with generate and copy-to-clipboard buttons |
+| **options_editor.js** | `options_field` | Array editor for label/value option pairs |
+| **conditional_editor.js** | `conditional` | Inline UI for conditional logic structures |
 
 **Creating Custom Extensions:**
 
-Extensions register pattern detectors and custom renderers:
+For pattern-based detection (multiple datatypes sharing an editor), extensions register pattern detectors and custom renderers:
 
 ```javascript
 // Pattern detection function

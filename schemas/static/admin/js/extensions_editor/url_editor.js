@@ -9,9 +9,15 @@
  * This extension is registered for individual properties, not for all properties.
  */
 
-// Detect if a single property is a URL field
+// Detect if a single property is a URL field.
+// Prefer editor_extension; fall back to data_type name during transition.
 function isUrlPattern(props) {
-  return props.length === 1 && props[0].data_type === 'url';
+  if (props.length !== 1) return false;
+  const prop = props[0];
+  if (prop.editor_extension) {
+    return prop.editor_extension === 'url_editor';
+  }
+  return prop.data_type === 'url';
 }
 
 function renderUrlEditor(props, tbody) {

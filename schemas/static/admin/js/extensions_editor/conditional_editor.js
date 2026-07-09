@@ -17,9 +17,15 @@
  */
 
 
-// Detect if a single property is a conditional field
+// Detect if a single property is a conditional field.
+// Prefer editor_extension; fall back to data_type name during transition.
 function isConditionalPattern(props) {
-  return props.length === 1 && props[0].data_type === 'conditional';
+  if (props.length !== 1) return false;
+  const prop = props[0];
+  if (prop.editor_extension) {
+    return prop.editor_extension === 'conditional_editor';
+  }
+  return prop.data_type === 'conditional';
 }
 
 function renderConditionalEditor(props, tbody) {
@@ -215,6 +221,14 @@ function renderConditionalRow(p, tbody) {
   // Allowed operators
   const ALLOWED_OPERATORS = ['==', '!=', '>', '>=', '<', '<=', 'in', 'not_in'];
 
+  // Helper to display a value operand in a text input.
+  // Strings are shown without quotes; booleans/numbers/null/objects use JSON.stringify.
+  const formatValueOperand = (value) => {
+    if (value === undefined) return '';
+    if (typeof value === 'string') return value;
+    return JSON.stringify(value);
+  };
+
   // Function to render a single condition row
   const renderConditionRow = (index, condition = {}) => {
     const conditionDiv = document.createElement('div');
@@ -228,13 +242,17 @@ function renderConditionalRow(p, tbody) {
 
     const left = condition.left || {};
     const leftKind = left.field ? 'field' : (left.value !== undefined ? 'value' : 'field');
-    const leftValue = left.field || left.value || '';
+    const leftValue = leftKind === 'field'
+      ? (left.field || '')
+      : formatValueOperand(left.value);
 
     const op = condition.op || '==';
 
     const right = condition.right || {};
     const rightKind = right.field ? 'field' : (right.value !== undefined ? 'value' : 'value');
-    const rightValue = right.field || right.value || '';
+    const rightValue = rightKind === 'field'
+      ? (right.field || '')
+      : formatValueOperand(right.value);
 
     // Left operand row
     const leftRow = document.createElement('div');

@@ -53,9 +53,10 @@ CREATE OR REPLACE FUNCTION s7_validate_value_type()
 RETURNS TRIGGER AS $$
 DECLARE
   v_type_name TEXT;
+  v_storage_type TEXT;
 BEGIN
-  SELECT dt.name
-  INTO v_type_name
+  SELECT dt.name, dt.primary_storage_type
+  INTO v_type_name, v_storage_type
   FROM schema_attribute_defs ad
   JOIN schema_data_types dt ON dt.id = ad.data_type_id
   WHERE ad.id = NEW.attribute_def_id;
@@ -70,26 +71,37 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF v_type_name IN ('string', 'date', 'color', 'internal') THEN
+  -- Backfill: if primary_storage_type is empty, infer from the datatype name.
+  IF v_storage_type IS NULL OR v_storage_type = '' THEN
+    IF v_type_name IN ('string', 'date', 'color', 'internal', 'uuid', 'url', 'auto_uuid') THEN
+      v_storage_type := 'string';
+    ELSIF v_type_name IN ('number', 'int', 'float', 'integer', 'decimal') THEN
+      v_storage_type := 'number';
+    ELSIF v_type_name IN ('bool', 'boolean') THEN
+      v_storage_type := 'bool';
+    ELSE
+      v_storage_type := 'json';
+    END IF;
+  END IF;
+
+  IF v_storage_type = 'string' THEN
     IF NEW.value_string IS NULL THEN
       RAISE EXCEPTION 'Expected value_string for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;
-  ELSIF v_type_name IN ('number', 'int', 'float', 'integer', 'decimal') THEN
+  ELSIF v_storage_type = 'number' THEN
     IF NEW.value_number IS NULL THEN
       RAISE EXCEPTION 'Expected value_number for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;
-  ELSIF v_type_name IN ('bool', 'boolean') THEN
+  ELSIF v_storage_type = 'bool' THEN
     IF NEW.value_bool IS NULL THEN
       RAISE EXCEPTION 'Expected value_bool for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;
-  ELSIF v_type_name IN ('json', 'list_string', 'int_tuple', 'dict', 'list_int', 'conditional') THEN
+  ELSIF v_storage_type = 'json' THEN
     IF NEW.value_json IS NULL THEN
       RAISE EXCEPTION 'Expected value_json for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;
   ELSE
-    IF NEW.value_json IS NULL THEN
-      RAISE EXCEPTION 'Expected value_json for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
-    END IF;
+    RAISE EXCEPTION 'Unsupported primary_storage_type=% for data_type=% (attribute_def_id=%)', v_storage_type, v_type_name, NEW.attribute_def_id;
   END IF;
 
   RETURN NEW;
@@ -705,6 +717,7 @@ DECLARE
   v_attribute_def_id UUID;
   v_type_name        TEXT;
   v_defined_type_name TEXT;
+  v_storage_type     TEXT;
   v_value_jsonb      JSONB;
   v_value_string     TEXT;
 BEGIN
@@ -714,8 +727,9 @@ BEGIN
   v_type_name := s7_infer_data_type_name_from_json(v_value_jsonb);
   v_attribute_def_id := s7_ensure_attribute_def(p_node_type_name, p_json_key, v_type_name, p_domain_name, p_variant_key);
 
-  -- Get the defined data type from attribute_def to respect the schema definition
-  SELECT dt.name INTO v_defined_type_name
+  -- Get the defined data type and storage type from attribute_def
+  SELECT dt.name, dt.primary_storage_type
+  INTO v_defined_type_name, v_storage_type
   FROM schema_attribute_defs ad
   JOIN schema_data_types dt ON dt.id = ad.data_type_id
   WHERE ad.id = v_attribute_def_id;
@@ -806,8 +820,9 @@ BEGIN
   v_type_name := s7_infer_data_type_name_from_json(v_value_jsonb);
   v_attribute_def_id := s7_ensure_attribute_def(p_node_type_name, p_json_key, v_type_name, p_domain_name, p_variant_key);
 
-  -- Get the defined data type from attribute_def to respect the schema definition
-  SELECT dt.name INTO v_defined_type_name
+  -- Get the defined data type and storage type from attribute_def
+  SELECT dt.name, dt.primary_storage_type
+  INTO v_defined_type_name, v_storage_type
   FROM schema_attribute_defs ad
   JOIN schema_data_types dt ON dt.id = ad.data_type_id
   WHERE ad.id = v_attribute_def_id;
@@ -828,14 +843,27 @@ BEGIN
       v_value_jsonb := to_jsonb(gen_random_uuid()::text);
     END IF;
     -- Treat auto_uuid as string for storage
-    v_type_name := 'string';
+    v_storage_type := 'string';
   END IF;
 
-  IF p_domain_name IS NOT NULL AND v_type_name = 'string' THEN
+  -- Backfill: if primary_storage_type is empty, infer from the datatype name.
+  IF v_storage_type IS NULL OR v_storage_type = '' THEN
+    IF v_type_name IN ('string', 'date', 'color', 'internal', 'uuid', 'url') THEN
+      v_storage_type := 'string';
+    ELSIF v_type_name IN ('number', 'int', 'float', 'integer', 'decimal') THEN
+      v_storage_type := 'number';
+    ELSIF v_type_name IN ('bool', 'boolean') THEN
+      v_storage_type := 'bool';
+    ELSE
+      v_storage_type := 'json';
+    END IF;
+  END IF;
+
+  IF p_domain_name IS NOT NULL AND v_storage_type = 'string' THEN
     PERFORM s7_ensure_domain_item(p_domain_name, v_value_jsonb #>> '{}', v_value_jsonb #>> '{}');
   END IF;
 
-  IF v_type_name IN ('string', 'date', 'color') THEN
+  IF v_storage_type = 'string' THEN
     INSERT INTO schema_node_attributes (node_id, attribute_def_id, value_string)
     VALUES (p_node_id, v_attribute_def_id, v_value_jsonb #>> '{}')
     ON CONFLICT ON CONSTRAINT uq_snode_attrs_node_attr
@@ -843,7 +871,7 @@ BEGIN
                   value_number = NULL,
                   value_bool   = NULL,
                   value_json   = NULL;
-  ELSIF v_type_name IN ('number', 'int', 'float') THEN
+  ELSIF v_storage_type = 'number' THEN
     INSERT INTO schema_node_attributes (node_id, attribute_def_id, value_number)
     VALUES (p_node_id, v_attribute_def_id, (v_value_jsonb #>> '{}')::numeric)
     ON CONFLICT ON CONSTRAINT uq_snode_attrs_node_attr
@@ -851,7 +879,7 @@ BEGIN
                   value_number = EXCLUDED.value_number,
                   value_bool   = NULL,
                   value_json   = NULL;
-  ELSIF v_type_name = 'bool' THEN
+  ELSIF v_storage_type = 'bool' THEN
     INSERT INTO schema_node_attributes (node_id, attribute_def_id, value_bool)
     VALUES (p_node_id, v_attribute_def_id, (v_value_jsonb #>> '{}')::boolean)
     ON CONFLICT ON CONSTRAINT uq_snode_attrs_node_attr
@@ -859,7 +887,7 @@ BEGIN
                   value_number = NULL,
                   value_bool   = EXCLUDED.value_bool,
                   value_json   = NULL;
-  ELSE
+  ELSIF v_storage_type = 'json' THEN
     INSERT INTO schema_node_attributes (node_id, attribute_def_id, value_json)
     VALUES (p_node_id, v_attribute_def_id, v_value_jsonb)
     ON CONFLICT ON CONSTRAINT uq_snode_attrs_node_attr
@@ -867,6 +895,8 @@ BEGIN
                   value_number = NULL,
                   value_bool   = NULL,
                   value_json   = EXCLUDED.value_json;
+  ELSE
+    RAISE EXCEPTION 'Unsupported primary_storage_type=% for data_type=% (attribute_def_id=%)', v_storage_type, v_type_name, v_attribute_def_id;
   END IF;
 END;
 $$ LANGUAGE plpgsql

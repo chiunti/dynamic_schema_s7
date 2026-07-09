@@ -9,9 +9,15 @@
  * This extension is registered for individual properties, not for all properties.
  */
 
-// Detect if a single property is an options field
+// Detect if a single property is an options field.
+// Prefer editor_extension; fall back to data_type name during transition.
 function isOptionsPattern(props) {
-  return props.length === 1 && props[0].data_type === 'options_field';
+  if (props.length !== 1) return false;
+  const prop = props[0];
+  if (prop.editor_extension) {
+    return prop.editor_extension === 'options_editor';
+  }
+  return prop.data_type === 'options_field';
 }
 
 function renderOptionsEditor(props, tbody) {

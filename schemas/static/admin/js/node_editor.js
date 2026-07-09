@@ -27,8 +27,16 @@
     registerSaveHandler(patternCheck, handleFn) {
       this.saveHandlers.push({ patternCheck, handleFn });
     },
-    // Find renderer for a single property
+    // Find renderer for a single property.
+    // First try editor_extension based registration; fall back to data_type based checks.
     findRendererForProp(prop) {
+      if (prop.editor_extension) {
+        for (const renderer of this.renderers) {
+          if (renderer.patternCheck([{ editor_extension: prop.editor_extension }])) {
+            return renderer.renderFn;
+          }
+        }
+      }
       for (const renderer of this.renderers) {
         if (renderer.patternCheck([prop])) {
           return renderer.renderFn;

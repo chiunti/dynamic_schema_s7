@@ -8,8 +8,11 @@
  * Pattern is detected by data_type === 'geo_point'.
  */
 
-// Detect if props contain geo_point properties
+// Detect if props contain geo_point properties.
+// Prefer editor_extension; fall back to data_type name during transition.
 function isGeoPointPattern(props) {
+  const hasExtension = props.some(p => p.editor_extension === 'geo_editor');
+  if (hasExtension) return true;
   return props.some(p => p.data_type === 'geo_point');
 }
 

@@ -9,8 +9,11 @@
  * Pattern is detected by data_type === 'uuid'.
  */
 
-// Detect if props contain UUID properties
+// Detect if props contain UUID properties.
+// Prefer editor_extension; fall back to data_type name during transition.
 function isUuidPattern(props) {
+  const hasExtension = props.some(p => p.editor_extension === 'uuid_editor');
+  if (hasExtension) return true;
   return props.some(p => p.data_type === 'uuid');
 }
 

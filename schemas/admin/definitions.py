@@ -52,10 +52,24 @@ class DomainItemAdmin(admin.ModelAdmin):
     search_fields = ("value", "label", "domain__domain_name")
 
 
+COLUMN_MAPPING_DATATYPES = {
+    'natural_uuid', 'natural_key', 'natural_version', 'natural_order', 'display_order'
+}
+
+
 @admin.register(DataType)
 class DataTypeAdmin(admin.ModelAdmin):
-    list_display = ("name", "description")
+    list_display = ("name", "storage_type_display", "editor_extension", "description")
+    list_filter = ("primary_storage_type",)
     search_fields = ("name", "description")
+
+    @admin.display(description="Primary storage type", ordering="primary_storage_type")
+    def storage_type_display(self, obj):
+        if obj.primary_storage_type:
+            return obj.primary_storage_type
+        if obj.name in COLUMN_MAPPING_DATATYPES:
+            return "column mapping"
+        return "—"
 
 
 class NodeTypeCompositionInline(admin.TabularInline):

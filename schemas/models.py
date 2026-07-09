@@ -205,6 +205,24 @@ class DataType(models.Model):
     )
     name = models.CharField(max_length=255, unique=True)
     description = models.CharField(max_length=255, null=True, blank=True)
+    primary_storage_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('string', 'string'),
+            ('number', 'number'),
+            ('bool', 'bool'),
+            ('json', 'json'),
+        ],
+        default='json',
+        blank=True,
+        help_text='Determines which value_* column is used for storage.',
+    )
+    editor_extension = models.CharField(
+        max_length=100,
+        blank=True,
+        default='',
+        help_text='Name of the .js file in extensions_editor/ (without extension) used to render this datatype.',
+    )
 
     class Meta:
         db_table = "schema_data_types"

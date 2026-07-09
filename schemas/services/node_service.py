@@ -17,6 +17,7 @@ from ..constants import (
 )
 from .schema_service import SchemaService
 from .attribute_def_service import AttributeDefService
+from .datatype_plugins import validate_datatype_value, get_storage_defaults
 
 
 class NodeService:
@@ -374,48 +375,13 @@ class NodeService:
                         self.schema_repository.update_node_sort_order(node.id, node.sort_order)
                         continue
 
-                    # Write directly via ORM to avoid s7_ensure_domain_item adding domain items
-                    if d.data_type.name in ('string', 'date', 'color', 'uuid', 'auto_uuid'):
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": str(value), "value_number": None, "value_bool": None, "value_json": None},
-                        )
-                    elif d.data_type.name in ('number', 'int', 'float'):
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": None, "value_number": value, "value_bool": None, "value_json": None},
-                        )
-                    elif d.data_type.name == 'bool':
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": None, "value_number": None, "value_bool": bool(value), "value_json": None},
-                        )
-                    elif d.data_type.name == 'json':
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                        )
-                    elif d.data_type.name == 'conditional':
-                        from .conditional_validator import validate_conditional_value
-                        validate_conditional_value(value)
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                        )
-                    elif d.data_type.name in ('int_tuple', 'list_string', 'list_int', 'dict'):
-                        # All these types store as JSON in value_json
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                        )
-                    elif d.data_type.name == 'domain_list':
-                        # domain_list stores array of domain item values as JSON
-                        self.schema_repository.update_or_create_node_attribute(
-                            node.id, d,
-                            defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
-                        )
-                    else:
-                        pass
+                    # Validate datatype-specific constraints through the plugin registry
+                    validate_datatype_value(d.data_type, value)
+
+                    # Write directly via ORM to avoid s7_ensure_domain_item adding domain items.
+                    # Storage column is determined by DataType.primary_storage_type.
+                    defaults = get_storage_defaults(d.data_type, value)
+                    self.schema_repository.update_or_create_node_attribute(node.id, d, defaults=defaults)
     
     def create_node(self, parent_id, node_type_name, name, variant_key=None, key=None, collection_key=None):
         """Create a new node with automatic property assignment"""
@@ -795,6 +761,7 @@ class NodeService:
                 "json_key": d.json_key,
                 "label": d.name,
                 "data_type": dt_name,
+                "editor_extension": d.data_type.editor_extension,
                 "is_required": d.is_required,
                 "variant_key": d.variant_key,
                 "domain": d.domain.domain_name if d.domain_id else None,

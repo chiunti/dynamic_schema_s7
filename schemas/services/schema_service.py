@@ -12,6 +12,7 @@ from ..repositories.node_type_repository import NodeTypeRepository
 from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
+from .datatype_plugins import validate_datatype_value, get_storage_defaults
 from ..constants import (
     ERR_VERSION_NOT_SET,
     ERR_STATUS_ATTRIBUTE_NOT_FOUND,
@@ -510,7 +511,6 @@ class SchemaService:
     
     def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None):
         """Set a node attribute value, creating AttributeDef if needed"""
-        from schemas.models import AttributeDef, DataType, NodeAttribute
         from schemas.repositories.schema_repository import SchemaRepository
 
         # Disable triggers to bypass s7 validation
@@ -518,7 +518,7 @@ class SchemaService:
         repository.disable_triggers()
 
         try:
-            # Determine data type
+            # Determine data type from the value shape
             if isinstance(value, bool):
                 data_type_name = 'bool'
             elif isinstance(value, (int, float)):
@@ -537,26 +537,13 @@ class SchemaService:
             if not data_type:
                 return
 
-            # Validate conditional structure if value has conditional structure
+            # Validate conditional structure if value has conditional shape, so we can
+            # create a conditional AttributeDef when appropriate.
             if self._is_conditional_structure(value):
                 try:
                     validate_conditional_structure(value)
                 except Exception as e:
                     raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
-            
-            # Validate conditional structure if AttributeDef has datatype 'conditional'
-            # This is important for when the AttributeDef already exists with conditional datatype
-            attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
-                node_type,
-                json_key,
-                variant_key
-            )
-
-            if attr_def and attr_def.data_type.name == 'conditional' and not isinstance(value, bool):
-                try:
-                    validate_conditional_structure(value)
-                except Exception as e:
-                    raise ValueError(f"Invalid conditional structure for '{json_key}' (AttributeDef has conditional datatype): {str(e)}")
 
             # Decide whether to create as universal or variant-specific
             final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -580,45 +567,14 @@ class SchemaService:
                     node_type=node_type,
                     variant_key=final_variant_key,
                 )
-            
-            if attr_def:
-                # Set the attribute value
-                if value is None:
-                    return
-                elif isinstance(value, bool):
-                    # Conditional datatype stores its values (structures or boolean literals) as JSON
-                    if attr_def.data_type.name == 'conditional':
-                        self.repository.update_or_create_node_attribute(
-                            node_id,
-                            attr_def,
-                            {'value_json': value}
-                        )
-                    else:
-                        self.repository.update_or_create_node_attribute(
-                            node_id,
-                            attr_def,
-                            {'value_bool': value}
-                        )
-                elif isinstance(value, str):
-                    self.repository.update_or_create_node_attribute(
-                        node_id,
-                        attr_def,
-                        {'value_string': value}
-                    )
-                elif isinstance(value, (int, float)):
-                    from decimal import Decimal
-                    decimal_value = Decimal(str(value))
-                    self.repository.update_or_create_node_attribute(
-                        node_id,
-                        attr_def,
-                        {'value_number': decimal_value}
-                    )
-                elif isinstance(value, (list, dict)):
-                    self.repository.update_or_create_node_attribute(
-                        node_id,
-                        attr_def,
-                        {'value_json': value}
-                    )
+
+            if attr_def and value is not None:
+                # Run any datatype-specific plugin validators (e.g. conditional).
+                validate_datatype_value(attr_def.data_type, value)
+
+                # Store the value in the column declared by primary_storage_type.
+                defaults = get_storage_defaults(attr_def.data_type, value)
+                self.repository.update_or_create_node_attribute(node_id, attr_def, defaults)
         finally:
             # Re-enable triggers
             repository.enable_triggers()
@@ -879,48 +835,21 @@ class SchemaService:
                         if value is None:
                             # Skip None values (no attribute row needed)
                             continue
-                        elif isinstance(value, bool):
-                            # Boolean value - use direct insert (must check before int since bool is subclass of int)
-                            # Conditional datatype stores boolean literals as JSON alongside conditional structures
-                            if attr_def.data_type.name == 'conditional':
-                                self.repository.update_or_create_node_attribute(
-                                    node_id,
-                                    attr_def,
-                                    {'value_json': value}
-                                )
-                            else:
-                                self.repository.update_or_create_node_attribute(
-                                    node_id,
-                                    attr_def,
-                                    {'value_bool': value}
-                                )
-                        elif isinstance(value, str):
-                            # String value - use direct insert
-                            self.repository.update_or_create_node_attribute(
-                                node_id,
-                                attr_def,
-                                {'value_string': value}
-                            )
-                        elif isinstance(value, (int, float)):
-                            # Convert to Decimal
+
+                        # Run datatype-specific plugin validators (e.g. conditional structures).
+                        validate_datatype_value(attr_def.data_type, value)
+
+                        # Store the value in the column declared by primary_storage_type.
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
                             from decimal import Decimal
-                            decimal_value = Decimal(str(value))
-                            self.repository.update_or_create_node_attribute(
-                                node_id,
-                                attr_def,
-                                {'value_number': decimal_value}
-                            )
-                        elif isinstance(value, (list, dict)):
-                            # JSON value - use direct insert with value_json
-                            self.repository.update_or_create_node_attribute(
-                                node_id,
-                                attribute_def=attr_def,
-                                defaults={'value_json': value}
-                            )
-                        else:
-                            # Unknown type - skip
-                            pass
-                    except Exception as e:
+                            value = Decimal(str(value))
+                        defaults = get_storage_defaults(attr_def.data_type, value)
+                        self.repository.update_or_create_node_attribute(
+                            node_id,
+                            attribute_def=attr_def,
+                            defaults=defaults
+                        )
+                    except Exception:
                         # Log error but continue processing other attributes
                         pass
         finally:

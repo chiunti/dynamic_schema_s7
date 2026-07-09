@@ -30,6 +30,35 @@ ALLOWED_LOGIC_OPERATORS = {'and', 'or'}
 ALLOWED_OPERAND_KINDS = {'field', 'value'}
 
 
+def validate_conditional_value(json_value: Any) -> None:
+    """
+    Validates that a value is a valid conditional expression.
+
+    A conditional value can be either:
+    - A boolean literal (True/False)
+    - A conditional structure with "logic" and "conditions"
+
+    Args:
+        json_value: The value to validate (can be bool, dict, str, or already parsed JSON)
+
+    Raises:
+        ValidationError: If validation fails (including invalid JSON strings)
+    """
+    # Parse JSON string if needed
+    if isinstance(json_value, str):
+        try:
+            json_value = json.loads(json_value)
+        except json.JSONDecodeError:
+            raise ValidationError("Invalid JSON string")
+
+    # Boolean values are valid conditional expressions
+    if isinstance(json_value, bool):
+        return
+
+    # Non-boolean values must be a valid conditional structure
+    validate_conditional_structure(json_value)
+
+
 def validate_conditional_structure(json_value: Any) -> None:
     """
     Validates that a JSON value conforms to the conditional structure.

@@ -396,7 +396,8 @@ class NodeService:
                             defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},
                         )
                     elif d.data_type.name == 'conditional':
-                        # Conditional datatype stores as JSON in value_json
+                        from .conditional_validator import validate_conditional_value
+                        validate_conditional_value(value)
                         self.schema_repository.update_or_create_node_attribute(
                             node.id, d,
                             defaults={"value_string": None, "value_number": None, "value_bool": None, "value_json": value},

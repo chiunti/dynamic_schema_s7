@@ -82,7 +82,7 @@ BEGIN
     IF NEW.value_bool IS NULL THEN
       RAISE EXCEPTION 'Expected value_bool for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;
-  ELSIF v_type_name IN ('json', 'list_string', 'int_tuple', 'dict', 'list_int') THEN
+  ELSIF v_type_name IN ('json', 'list_string', 'int_tuple', 'dict', 'list_int', 'conditional') THEN
     IF NEW.value_json IS NULL THEN
       RAISE EXCEPTION 'Expected value_json for data_type=% (attribute_def_id=%)', v_type_name, NEW.attribute_def_id;
     END IF;

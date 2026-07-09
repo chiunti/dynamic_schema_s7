@@ -552,7 +552,7 @@ class SchemaService:
                 variant_key
             )
 
-            if attr_def and attr_def.data_type.name == 'conditional':
+            if attr_def and attr_def.data_type.name == 'conditional' and not isinstance(value, bool):
                 try:
                     validate_conditional_structure(value)
                 except Exception as e:
@@ -566,7 +566,7 @@ class SchemaService:
                 node_type,
                 json_key,
                 variant_key=final_variant_key
-            ).first()
+            )
 
             if not attr_def:
                 # Create AttributeDef with the determined variant_key
@@ -586,11 +586,19 @@ class SchemaService:
                 if value is None:
                     return
                 elif isinstance(value, bool):
-                    self.repository.update_or_create_node_attribute(
-                        node_id,
-                        attr_def,
-                        {'value_bool': value}
-                    )
+                    # Conditional datatype stores its values (structures or boolean literals) as JSON
+                    if attr_def.data_type.name == 'conditional':
+                        self.repository.update_or_create_node_attribute(
+                            node_id,
+                            attr_def,
+                            {'value_json': value}
+                        )
+                    else:
+                        self.repository.update_or_create_node_attribute(
+                            node_id,
+                            attr_def,
+                            {'value_bool': value}
+                        )
                 elif isinstance(value, str):
                     self.repository.update_or_create_node_attribute(
                         node_id,
@@ -873,11 +881,19 @@ class SchemaService:
                             continue
                         elif isinstance(value, bool):
                             # Boolean value - use direct insert (must check before int since bool is subclass of int)
-                            self.repository.update_or_create_node_attribute(
-                                node_id,
-                                attr_def,
-                                {'value_bool': value}
-                            )
+                            # Conditional datatype stores boolean literals as JSON alongside conditional structures
+                            if attr_def.data_type.name == 'conditional':
+                                self.repository.update_or_create_node_attribute(
+                                    node_id,
+                                    attr_def,
+                                    {'value_json': value}
+                                )
+                            else:
+                                self.repository.update_or_create_node_attribute(
+                                    node_id,
+                                    attr_def,
+                                    {'value_bool': value}
+                                )
                         elif isinstance(value, str):
                             # String value - use direct insert
                             self.repository.update_or_create_node_attribute(

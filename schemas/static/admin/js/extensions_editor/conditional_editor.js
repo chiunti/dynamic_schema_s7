@@ -46,15 +46,118 @@ function renderConditionalRow(p, tbody) {
   const tdVal = document.createElement('td');
 
   const current = p.value || {};
-  const currentConditional = current.value_json;
-  const logic = currentConditional?.logic || 'and';
-  const conditions = Array.isArray(currentConditional?.conditions) ? currentConditional.conditions : [];
+  // Conditional values (structures or boolean literals) are stored in value_json
+  const currentValue = current.value_json;
+  const currentConditional = (typeof currentValue === 'object' && currentValue !== null) ? currentValue : null;
+  const currentBool = (typeof currentValue === 'boolean') ? currentValue : null;
+  const hasBoolValue = currentBool === true || currentBool === false;
+
+  let mode = hasBoolValue ? 'boolean' : 'conditional';
 
   // Create inline conditional editor
   const wrapper = document.createElement('div');
   wrapper.style.display = 'flex';
   wrapper.style.flexDirection = 'column';
   wrapper.style.gap = '8px';
+
+  // Mode selector
+  const modeRow = document.createElement('div');
+  modeRow.style.display = 'flex';
+  modeRow.style.alignItems = 'center';
+  modeRow.style.gap = '8px';
+
+  const modeLabel = document.createElement('label');
+  modeLabel.textContent = 'Value type:';
+  modeLabel.style.fontWeight = 'bold';
+  modeLabel.style.fontSize = '0.85em';
+  modeRow.appendChild(modeLabel);
+
+  const modeSelect = document.createElement('select');
+  modeSelect.style.padding = '4px';
+  modeSelect.style.borderRadius = '3px';
+  modeSelect.style.border = '1px solid var(--border-color, #ddd)';
+  modeSelect.style.fontSize = '0.85em';
+
+  [
+    { value: 'boolean', label: 'Boolean' },
+    { value: 'conditional', label: 'Conditional structure' }
+  ].forEach(opt => {
+    const option = document.createElement('option');
+    option.value = opt.value;
+    option.textContent = opt.label;
+    if (opt.value === mode) option.selected = true;
+    modeSelect.appendChild(option);
+  });
+
+  modeRow.appendChild(modeSelect);
+  wrapper.appendChild(modeRow);
+
+  // Boolean value container
+  const booleanContainer = document.createElement('div');
+  booleanContainer.style.display = 'flex';
+  booleanContainer.style.alignItems = 'center';
+  booleanContainer.style.gap = '8px';
+
+  const booleanCheckbox = document.createElement('input');
+  booleanCheckbox.type = 'checkbox';
+  booleanCheckbox.dataset.checkbox = '1';
+  if (currentBool === true) {
+    booleanCheckbox.checked = true;
+    booleanCheckbox.indeterminate = false;
+    booleanCheckbox.dataset.boolState = 'true';
+  } else if (currentBool === false) {
+    booleanCheckbox.checked = false;
+    booleanCheckbox.indeterminate = false;
+    booleanCheckbox.dataset.boolState = 'false';
+  } else {
+    booleanCheckbox.checked = false;
+    booleanCheckbox.indeterminate = true;
+    booleanCheckbox.dataset.boolState = 'null';
+  }
+
+  booleanCheckbox.addEventListener('click', (e) => {
+    const currentState = e.target.dataset.boolState;
+    if (currentState === 'null') {
+      e.target.checked = true;
+      e.target.indeterminate = false;
+      e.target.dataset.boolState = 'true';
+    } else if (currentState === 'true') {
+      e.target.checked = false;
+      e.target.indeterminate = false;
+      e.target.dataset.boolState = 'false';
+    } else {
+      e.target.checked = false;
+      e.target.indeterminate = true;
+      e.target.dataset.boolState = 'null';
+    }
+    syncBoolean();
+    window.s7NodeEditor?.checkPropsChanges();
+  });
+
+  const booleanLabel = document.createElement('label');
+  booleanLabel.style.fontSize = '0.85em';
+  booleanLabel.style.display = 'flex';
+  booleanLabel.style.alignItems = 'center';
+  booleanLabel.style.gap = '6px';
+  const booleanLabelText = document.createElement('span');
+  booleanLabelText.textContent = 'Boolean value';
+  booleanLabel.appendChild(booleanCheckbox);
+  booleanLabel.appendChild(booleanLabelText);
+  booleanContainer.appendChild(booleanLabel);
+
+  const booleanHint = document.createElement('span');
+  booleanHint.style.fontSize = '0.8em';
+  booleanHint.style.color = 'var(--body-quiet-color, #666)';
+  booleanHint.textContent = 'Click to cycle: null → true → false → null';
+  booleanContainer.appendChild(booleanHint);
+
+  wrapper.appendChild(booleanContainer);
+
+  // Conditional structure container
+  const conditionalContainer = document.createElement('div');
+  conditionalContainer.style.display = 'flex';
+  conditionalContainer.style.flexDirection = 'column';
+  conditionalContainer.style.gap = '8px';
 
   // Logic operator selector
   const logicRow = document.createElement('div');
@@ -73,7 +176,10 @@ function renderConditionalRow(p, tbody) {
   logicSelect.style.borderRadius = '3px';
   logicSelect.style.border = '1px solid var(--border-color, #ddd)';
   logicSelect.style.fontSize = '0.85em';
-  
+
+  const logic = currentConditional?.logic || 'and';
+  const conditions = Array.isArray(currentConditional?.conditions) ? currentConditional.conditions : [];
+
   ['and', 'or'].forEach(op => {
     const option = document.createElement('option');
     option.value = op;
@@ -81,14 +187,14 @@ function renderConditionalRow(p, tbody) {
     if (op === logic) option.selected = true;
     logicSelect.appendChild(option);
   });
-  
+
   logicSelect.addEventListener('change', () => {
     syncConditional();
     window.s7NodeEditor?.checkPropsChanges();
   });
-  
+
   logicRow.appendChild(logicSelect);
-  wrapper.appendChild(logicRow);
+  conditionalContainer.appendChild(logicRow);
 
   // Create container for conditions (vertical layout)
   const conditionsContainer = document.createElement('div');
@@ -97,14 +203,13 @@ function renderConditionalRow(p, tbody) {
   conditionsContainer.style.gap = '8px';
   conditionsContainer.style.marginBottom = '8px';
   conditionsContainer.style.fontSize = '0.85em';
-  wrapper.appendChild(conditionsContainer);
+  conditionalContainer.appendChild(conditionsContainer);
 
-  // Hidden textarea to store the JSON object
+  // Hidden textarea to store the JSON value (boolean or conditional structure)
   const hiddenInput = document.createElement('textarea');
   hiddenInput.style.display = 'none';
   hiddenInput.dataset.json = '1';
   hiddenInput.dataset.jsonKey = p.json_key;
-  hiddenInput.value = JSON.stringify(currentConditional);
   wrapper.appendChild(hiddenInput);
 
   // Allowed operators
@@ -410,7 +515,43 @@ function renderConditionalRow(p, tbody) {
   });
 
   addBtnContainer.appendChild(addBtn);
-  wrapper.appendChild(addBtnContainer);
+  conditionalContainer.appendChild(addBtnContainer);
+
+  wrapper.appendChild(conditionalContainer);
+
+  // Function to sync boolean value to hidden input
+  const syncBoolean = () => {
+    const boolState = booleanCheckbox.dataset.boolState;
+    if (boolState === 'true') {
+      hiddenInput.value = 'true';
+    } else if (boolState === 'false') {
+      hiddenInput.value = 'false';
+    } else {
+      hiddenInput.value = '';
+    }
+  };
+
+  // Toggle visibility based on selected mode
+  const updateVisibility = () => {
+    const isBoolean = modeSelect.value === 'boolean';
+    booleanContainer.style.display = isBoolean ? 'flex' : 'none';
+    conditionalContainer.style.display = isBoolean ? 'none' : 'flex';
+  };
+
+  modeSelect.addEventListener('change', () => {
+    updateVisibility();
+    if (modeSelect.value === 'boolean') {
+      syncBoolean();
+    } else {
+      syncConditional();
+    }
+    window.s7NodeEditor?.checkPropsChanges();
+  });
+
+  updateVisibility();
+  if (mode === 'boolean') {
+    syncBoolean();
+  }
 
   tdVal.appendChild(wrapper);
   tr.appendChild(tdVal);

@@ -460,7 +460,7 @@ class SchemaCache(models.Model):
     version = models.CharField(max_length=20)
     schema_json = models.JSONField()
     generated_at = models.DateTimeField(default=timezone.now, editable=False)
-    schema_type = models.CharField(max_length=20, null=True, blank=True)
+    schema_type = models.CharField(max_length=255, null=True, blank=True)
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,

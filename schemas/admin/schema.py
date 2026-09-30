@@ -405,7 +405,6 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             if not schema_version:
                 schema_version = ""
             
-            validated_schema["node_type"] = root_node_type.name
             try:
                 schema_id, version_warning = SchemaService().import_schema(
                     validated_schema, schema_key, schema_version, schema_status, overwrite,

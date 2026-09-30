@@ -555,16 +555,6 @@ class SchemaRepository:
         from ..models import Node
         return Node.objects.filter(id=node_id).first()
 
-    def get_root_node_by_key_version(self, key, version):
-        """Get root node by key and version"""
-        from ..models import Node
-        return Node.objects.filter(
-            node_type__is_root=True,
-            parent__isnull=True,
-            key=key,
-            version=version,
-        ).first()
-
     def get_attribute_defs_by_node_type_and_keys(self, node_type, json_keys):
         """Get attribute definitions by node type and json keys"""
         from ..models import AttributeDef

@@ -4,9 +4,17 @@ import logging
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 from django.views.decorators.cache import cache_page
+from rest_framework import status
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .repositories.schema_repository import SchemaRepository
 from .constants import ERR_ERROR_IN_SCHEMA_VIEW
+from .serializers import SchemaImportSerializer
+from .services.schema_import_service import SchemaImportService
+from .services.schema_publish_service import SchemaPublishService
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +30,9 @@ def schema_view(request, node_type, key, version):
     - node_type matches the parameter
     - Schema exists in cache
     """
-    logger.debug(f"schema_view called with node_type={node_type}, key={key}, version={version}")
+    logger.debug(
+        f"schema_view called with node_type={node_type}, key={key}, version={version}"
+    )
 
     try:
         repository = SchemaRepository()
@@ -36,24 +46,22 @@ def schema_view(request, node_type, key, version):
                     "type": "schema_not_found",
                     "title": "Schema Not Found",
                     "detail": "Schema not found, not published, or node type mismatch",
-                    "status": 404
+                    "status": 404,
                 },
-                status=404
+                status=404,
             )
 
         # Convert JSONB string to Python dict to avoid double serialization
-        schema_dict = json.loads(schema_json) if isinstance(schema_json, str) else schema_json
+        schema_dict = (
+            json.loads(schema_json) if isinstance(schema_json, str) else schema_json
+        )
 
         response_data = {
             "data": schema_dict,
-            "meta": {
-                "node_type": node_type,
-                "key": key,
-                "version": version
-            }
+            "meta": {"node_type": node_type, "key": key, "version": version},
         }
 
-        return JsonResponse(response_data, json_dumps_params={'ensure_ascii': False})
+        return JsonResponse(response_data, json_dumps_params={"ensure_ascii": False})
 
     except Exception as e:
         logger.error(ERR_ERROR_IN_SCHEMA_VIEW.format(error=str(e)))
@@ -62,7 +70,62 @@ def schema_view(request, node_type, key, version):
                 "type": "internal_error",
                 "title": "Internal Server Error",
                 "detail": str(e),
-                "status": 500
+                "status": 500,
             },
-            status=500
+            status=500,
         )
+
+
+class SchemaImportView(APIView):
+    """DRF endpoint to import a schema JSON using token authentication."""
+
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = SchemaImportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            schema_id, warning = SchemaImportService().import_from_request(
+                serializer.validated_data, request.user
+            )
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except (ValueError, RuntimeError) as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("Schema import failed")
+            return Response(
+                {"error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {"schema_id": str(schema_id), "warning": warning or ""},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SchemaPublishView(APIView):
+    """DRF endpoint to publish a schema using token authentication."""
+
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, node_type, key, version):
+        try:
+            SchemaPublishService().publish(
+                node_type, key, version, user=request.user
+            )
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except (ValueError, RuntimeError) as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("Schema publish failed")
+            return Response(
+                {"error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)

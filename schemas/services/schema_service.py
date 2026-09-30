@@ -49,6 +49,7 @@ class SchemaService:
         self.data_type_repository = DataTypeRepository()
         self.node_type_repository = NodeTypeRepository()
     
+    @transaction.atomic
     def import_schema(
         self,
         validated_schema: dict,
@@ -59,7 +60,7 @@ class SchemaService:
         project_id: Optional[uuid.UUID] = None,
         organization_id: Optional[uuid.UUID] = None,
         user=None,
-    ) -> uuid.UUID:
+    ) -> tuple[uuid.UUID, dict]:
         """Import a schema with validation"""
         if project_id and user:
             perm = PermissionService()

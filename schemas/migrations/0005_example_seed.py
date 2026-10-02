@@ -1,4 +1,5 @@
 import json as _json
+import os
 from django.db import migrations
 
 
@@ -533,12 +534,16 @@ def create_example_survey(apps, schema_editor):
 def seed_survey_example(apps, schema_editor):
     """
     Seed the complete Survey System example.
-    
+
     This creates:
     1. Survey schema structure (domains, node types, attributes)
     2. A fully-built example survey with organization and project
     3. Multiple question types demonstrating the system's flexibility
+
+    Skipped when S7_SKIP_EXAMPLE_SEED is truthy (e.g. production deploys).
     """
+    if os.environ.get("S7_SKIP_EXAMPLE_SEED", "").lower() in {"1", "true", "yes", "on"}:
+        return
     create_survey_structure(apps, schema_editor)
     create_example_survey(apps, schema_editor)
 

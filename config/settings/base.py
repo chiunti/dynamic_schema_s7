@@ -25,7 +25,9 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'change-me-in-production')
+# No insecure fallback here: development.py provides a dev-only value and
+# production.py fails fast if DJANGO_SECRET_KEY is unset.
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', '0').lower() in {'1', 'true', 'yes', 'on'}
@@ -45,12 +47,10 @@ INSTALLED_APPS = [
     'accounts',
     'schemas',
     'rest_framework',
-    'rest_framework.authtoken',
 ]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
@@ -161,8 +161,9 @@ STORAGES = {
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
-# NOTE: This setting only applies to third-party or contrib apps that don't define their own
-# primary key. All project models explicitly define UUID primary keys using:
+# NOTE: This setting only applies to apps that don't define their own primary key.
+# All schemas-app models explicitly define UUID primary keys using:
 #   id = models.UUIDField(primary_key=True, db_default=models.Func(function="gen_random_uuid"))
-# Never use AutoField or BigAutoField for project models — see AGENTS.md conventions.
+# Documented exception: accounts.CustomUser uses BigAutoField (standard Django convention).
+# Never use AutoField or BigAutoField for schemas models — see AGENTS.md conventions.
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from django.contrib.auth.decorators import login_required
@@ -5,9 +6,12 @@ from django.http import HttpRequest, JsonResponse
 from django.utils.decorators import method_decorator
 from django.views import View
 
+from .constants import ROLE_VIEWER
 from .services.organization_service import OrganizationService
 from .services.project_service import ProjectService
 from .utils import parse_uuid, json_body, org_to_dict, project_to_dict, member_to_dict
+
+logger = logging.getLogger(__name__)
 
 
 @method_decorator(login_required, name="dispatch")
@@ -32,8 +36,9 @@ class OrganizationListCreateView(View):
             return JsonResponse({"error": str(e)}, status=403)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+        except Exception:
+            logger.exception("Organization creation failed")
+            return JsonResponse({"error": "Internal server error"}, status=500)
 
 
 @method_decorator(login_required, name="dispatch")
@@ -85,7 +90,7 @@ class OrganizationMemberListView(View):
             member = OrganizationService().add_member(
                 organization_id=oid,
                 user_email=data.get("user_email", ""),
-                role=data.get("role", "viewer"),
+                role=data.get("role", ROLE_VIEWER),
                 requesting_user=request.user,
             )
             return JsonResponse(member_to_dict(member), status=201)
@@ -140,8 +145,9 @@ class ProjectListCreateView(View):
             return JsonResponse({"error": str(e)}, status=403)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
+        except Exception:
+            logger.exception("Project creation failed")
+            return JsonResponse({"error": "Internal server error"}, status=500)
 
 
 @method_decorator(login_required, name="dispatch")

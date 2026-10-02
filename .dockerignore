@@ -1,0 +1,45 @@
+# Version control
+.git/
+.gitignore
+
+# Environment files — secrets must be injected via env vars, never baked in
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Internal documentation and tooling (not for the image)
+docs/
+scripts/
+fixtures/
+.devin/
+AGENTS.md
+TODO.md
+SYNC_STATE.md
+PRE_RELEASE_AUDIT.md
+*.ps1
+
+# Tests (local-only in this project)
+tests.py
+schemas/tests/
+accounts/tests/
+
+# Collected static files (built inside the image/CI)
+staticfiles/
+
+# Local DB artifacts
+db.sqlite3
+*.log

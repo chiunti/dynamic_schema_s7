@@ -153,3 +153,22 @@ SCHEMA_METADATA_SUFFIX = "_metadata"
 # Node service error messages
 ERR_SCHEMA_KEY_VERSION_EXISTS = "A schema with key='{key}' and version='{version}' already exists"
 ERR_MIN_CHILDREN_VIOLATION = "min_children_violation: Cannot delete, minimum {min_children} {node_type}(s) required per {parent_type}"
+
+# --------------------------------------------------------------------------- #
+# Domain constants                                                              #
+# --------------------------------------------------------------------------- #
+
+# Schema lifecycle statuses — canonical values of the 'status' domain used by
+# s7_import_schema / s7_publish_schema (see migration 0002) and the root-node
+# 'status' AttributeDef domain seeds. Domain-specific status domains (e.g. the
+# survey 'closed' value in 0005_example_seed) are NOT part of this lifecycle set.
+STATUS_DRAFT = "draft"
+STATUS_PUBLISHED = "published"
+STATUS_ARCHIVED = "archived"
+VALID_SCHEMA_STATUSES = (STATUS_DRAFT, STATUS_PUBLISHED, STATUS_ARCHIVED)
+
+# Organization member roles — mirror OrganizationMember.ROLE_CHOICES in
+# schemas/models.py (keep both in sync).
+ROLE_ADMIN = "admin"
+ROLE_EDITOR = "editor"
+ROLE_VIEWER = "viewer"

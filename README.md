@@ -5,7 +5,6 @@ A production-grade platform for managing dynamic schemas. Built on Django 5.0+ w
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://python.org)
 [![Django](https://img.shields.io/badge/Django-5.0+-green.svg)](https://djangoproject.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-orange.svg)](https://postgresql.org)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
@@ -23,7 +22,6 @@ A production-grade platform for managing dynamic schemas. Built on Django 5.0+ w
 - [Deployment](#deployment)
 - [Database Migrations](#database-migrations)
 - [Contributing](#contributing)
-- [License](#license)
 
 ---
 
@@ -64,6 +62,7 @@ This system is **domain-agnostic** and can create any type of data structure:
 
 ### Schema Versioning
 - Every schema has a unique `key` + `version` combination
+- `key` + `version` is globally unique across **all** projects (partial unique index `uq_snodes_key_version_root` on root nodes) — two projects cannot reuse the same pair
 - Strict mutational control (immutable published schemas)
 - Draft → Published → Archived lifecycle
 - Build counter tracking for cache invalidation
@@ -83,7 +82,7 @@ This system is **domain-agnostic** and can create any type of data structure:
 - Pluggable validator system per `DataType` (e.g., `conditional` structure validation)
 
 ### Cache Layer
-- Pre-computed JSON schemas cached in `FormSchemaCache`
+- Pre-computed JSON schemas cached in `SchemaCache`
 - Automatic cache invalidation on schema changes
 - Optimized for high-read scenarios
 
@@ -230,7 +229,7 @@ These seven components work together to enable the EAV pattern: **DataType** and
    └─ NodeAttribute(node=survey, attribute_def=status, value_string="published")
 
 4. Build cached schema
-   └─ s7_build_schema_cached() → FormSchemaCache with pre-computed JSON
+   └─ s7_build_schema_cached() → SchemaCache with pre-computed JSON
 ```
 
 ---
@@ -274,8 +273,9 @@ pip install -r requirements.txt
 # Configure database in .env
 cp .env.example .env
 # Edit .env with your PostgreSQL credentials
-# Note: Use DJANGO_SECRET_KEY, DJANGO_DEBUG, DJANGO_ALLOWED_HOSTS for Django settings
-# Use POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, etc. for database settings
+# Note: manage.py defaults to config.settings.development (DEBUG=True).
+# Django settings come from DJANGO_SECRET_KEY, DJANGO_ALLOWED_HOSTS, etc.;
+# database settings from POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, etc.
 
 # Run migrations
 python manage.py migrate
@@ -354,7 +354,7 @@ python manage.py runserver
 
 ### API Endpoints
 
-The project provides admin-facing API endpoints for managing schemas:
+The project provides admin-facing JSON endpoints that power the schema editor UI. They require an authenticated staff session — each route is wrapped in `admin.site.admin_view`:
 
 ```bash
 # Component types (for admin UI)
@@ -375,27 +375,32 @@ POST /admin/schemas/api/create-attribute-def/
 POST /admin/schemas/api/update-attribute-common/
 POST /admin/schemas/api/update-attribute-specific/
 POST /admin/schemas/api/delete-attribute-def/
+
+# Example schema JSON (used by the admin UI)
+GET /admin/schemas/api/json-example/
 ```
 
-For public schema consumption, use the endpoints in `schemas/api_views.py`.
+Schema retrieval, import and publish endpoints are implemented in `schemas/views.py` — see [API Documentation](#api-documentation) for routes and required credentials.
 
 ---
 
 ## API Documentation
 
-The API follows RESTful principles with JSON payloads. Authentication is required for write operations.
+The API follows RESTful principles with JSON payloads. All endpoints require authentication: Bearer project credentials for the machine schema endpoints, and a Django session for organization/project administration and the staff-only admin JSON endpoints.
 
 ### Authentication
 
-The API uses Django session authentication. Login via the admin interface (`/admin/`) or implement your own authentication views.
+The schema GET, import and publish endpoints require `Authorization: Bearer <project credential>`. Credentials are bound to one project and independently scoped for `read`, `import` and `publish`. User/session tokens cannot access these machine endpoints. Administrative organization/project routes continue to use Django sessions.
 
-All write operations (POST, PATCH, PUT, DELETE) require authentication. The schema endpoint (`GET /api/schema/...`) is publicly readable.
+Provision a separate high-entropy secret per backend service through a secret manager. Superusers issue credentials from Django Admin → Tenancy → Project API credentials → Add: a random secret is generated on save and shown once in a warning message — copy it there; only its SHA-256 digest is stored. Configure the secret as `S7_PROJECT_TOKEN` in the consuming service and use HTTPS between services. Rotate by provisioning a new credential, updating the consumer, then revoking the old credential from the same admin screen. The project/organization IDs supplied in an import payload, if present, must match the credential.
 
 ### Core Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/schema/{node_type}/{key}/{version}/` | Get published schema by type, key, and version (public, cached) |
+| GET | `/api/schema/{node_type}/{key}/{version}/` | Get published schema for the authenticated project |
+| POST | `/api/schema/import/` | Import a schema JSON (`import` scope) |
+| POST | `/api/schema/{node_type}/{key}/{version}/publish/` | Publish a schema (`publish` scope) |
 
 **Schema Response Format:**
 ```json
@@ -431,7 +436,7 @@ All write operations (POST, PATCH, PUT, DELETE) require authentication. The sche
 | PATCH/PUT | `/api/projects/{id}/` | Update project |
 | DELETE | `/api/projects/{id}/` | Delete project |
 
-All endpoints require authentication except `/api/schema/{...}/`.
+Schema endpoints use project service credentials; organization/project administration uses the authenticated user session.
 
 ---
 
@@ -441,17 +446,19 @@ All endpoints require authentication except `/api/schema/{...}/`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DJANGO_DEBUG` | `1` | Enable debug mode (0/1, true/false) |
-| `DJANGO_SECRET_KEY` | Required | Django secret key |
+| `DJANGO_SETTINGS_MODULE` | `config.settings.production` (wsgi/asgi), `config.settings.development` (manage.py) | Django settings module |
+| `DJANGO_SECRET_KEY` | Required in production | Django secret key — production fails fast if unset; development provides a dev-only fallback |
+| `DJANGO_DEBUG` | `0` | Debug toggle — only honored by `config.settings.base`; development forces `True`, production forces `False` |
+| `DJANGO_ALLOWED_HOSTS` | — | Comma-separated allowed hosts (required in production) |
 | `POSTGRES_DB` | `dynamic_schema` | PostgreSQL database name |
 | `POSTGRES_USER` | `dynamic_schema` | PostgreSQL username |
 | `POSTGRES_PASSWORD` | Required | PostgreSQL password |
 | `POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `POSTGRES_PORT` | `5432` | PostgreSQL port |
-| `POSTGRES_SCHEMA` | `s7,public` | PostgreSQL search path |
-| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated allowed hosts |
-| `TIME_ZONE` | `America/Mexico_City` | Application timezone |
-| `LANGUAGE_CODE` | `en-us` | Language code |
+| `POSTGRES_SCHEMA` | `public` | PostgreSQL search path — must include `s7` (e.g. `s7,public`) |
+| `S7_SKIP_EXAMPLE_SEED` | — | When truthy (`1`, `true`, `yes`, `on`), `0005_example_seed` inserts no demo data; `docker-compose.prod.yml` sets it to `1` |
+
+Timezone and language are not configurable via environment — they are hardcoded to `UTC` / `en-us` in `config/settings/base.py`. Likewise, `S7_PROJECT_TOKEN` is intentionally absent: this application never reads it. It is the suggested environment variable name for the Bearer credential in *consuming* services (see [Authentication](#authentication)).
 
 ### Database Configuration
 
@@ -480,7 +487,7 @@ DATABASES = {
 
 ### Running Tests
 
-The project includes a placeholder for tests at `schemas/tests.py`. Add your test cases following Django's testing framework:
+The test suite is maintained and run locally; it is not included in this repository. To add your own tests, create them under the app (e.g. `schemas/tests.py` or a `tests/` package) following Django's testing framework:
 
 ```bash
 # Run all tests
@@ -598,11 +605,12 @@ docker compose exec web python manage.py migrate
 docker compose exec web python manage.py createsuperuser
 ```
 
+`docker-compose.prod.yml` starts the web service with `python manage.py migrate`. The optional survey example (`0005_example_seed`) is skipped when `S7_SKIP_EXAMPLE_SEED` is truthy — the prod compose sets it to `1` by default.
+
 ### Manual Deployment
 
 1. **Set environment variables**
    ```bash
-   export DJANGO_DEBUG=0
    export DJANGO_SECRET_KEY=your-production-secret
    export DJANGO_ALLOWED_HOSTS=yourdomain.com
    export POSTGRES_DB=dynamic_schema
@@ -640,22 +648,21 @@ dynamic_schema_s7/
 │   ├── asgi.py             # ASGI entry point
 │   └── wsgi.py             # WSGI entry point
 ├── schemas/                # Core application
-│   ├── admin/              # Admin interface customizations
-│   ├── constants/          # Constants and enums
-│   ├── management/         # Django management commands
-│   ├── migrations/         # Database migrations
+│   ├── admin/              # Admin interface customizations (incl. project_credential.py)
+│   ├── migrations/         # Database migrations (0001–0007 ship in this repo)
 │   ├── repositories/       # Data access layer
-│   ├── services/           # Business logic
+│   ├── services/           # Business logic (incl. node_json_service, schema_read_service, project_credential_service)
 │   ├── static/             # Static files (admin UI)
 │   ├── templates/          # Admin templates
-│   ├── admin_api_views.py  # Admin-facing API endpoints
-│   ├── api_views.py        # Public API endpoints
+│   ├── admin_api_views.py  # Staff-only admin JSON endpoints
+│   ├── api_views.py        # Organization/project API endpoints
+│   ├── authentication.py   # Project credential authentication (Bearer token + scopes)
 │   ├── constants.py        # Application constants
 │   ├── models.py           # Data models
+│   ├── serializers.py      # DRF serializers
 │   ├── urls.py             # Schema app URL routing
 │   ├── utils.py            # Utility functions
-│   ├── views.py            # Schema views
-│   └── tests.py            # Test cases
+│   └── views.py            # Schema views
 ├── .env.example            # Environment variables template
 ├── Dockerfile              # Docker configuration
 ├── docker-compose.yml      # Development Docker Compose
@@ -747,8 +754,10 @@ The migration sequence is designed for clean first-time deployment:
 | `0003_s7_views.py` | Database views |
 | `0004_base_seed.py` | Base seed data (universal DataTypes) |
 | `0005_example_seed.py` | Survey System example (organization, project, full survey) |
+| `0006_project_credentials.py` | Project-scoped API credentials (digest storage, scopes) |
+| `0007_project_scoped_routines.py` | Project-scoped s7 routines (import, build cache, publish) |
 
-The public release includes migrations 0001-0005. Additional domain-specific migrations (forms, SDUI, etc.) can be created privately.
+The public release includes migrations 0001-0007. Additional domain-specific migrations (forms, SDUI, design tokens, etc.) can be created privately and numbered from `0008` onwards.
 
 ---
 
@@ -775,16 +784,10 @@ See code comments and docstrings for detailed conventions.
 
 ---
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
 ## Support
 
 - **Issues**: Report issues via your project's issue tracker
-- **Documentation**: See this README and AGENTS.md for detailed development guidelines
+- **Documentation**: See this README for detailed development guidelines
 - **Health Check**: `/health/` endpoint verifies database connectivity
 
 ---

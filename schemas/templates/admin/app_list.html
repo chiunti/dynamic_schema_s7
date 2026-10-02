@@ -12,7 +12,7 @@
               <span class="section">Tenancy</span>
             </caption>
             {% for model in app.models %}
-              {% if model.object_name == "Organization" or model.object_name == "OrganizationMember" or model.object_name == "Project" %}
+              {% if model.object_name == "Organization" or model.object_name == "OrganizationMember" or model.object_name == "Project" or model.object_name == "ProjectAPICredential" %}
                 <tr class="model-{{ model.object_name|lower }}{% if model.admin_url in request.path|urlencode %} current-model{% endif %}">
                   <th scope="row"><a href="{{ model.admin_url }}"{% if model.admin_url in request.path|urlencode %} aria-current="page"{% endif %}>{{ model.name }}</a></th>
                   <td>{% if model.add_url %}<a href="{{ model.add_url }}" class="addlink">{% translate 'Add' %}</a>{% endif %}</td>

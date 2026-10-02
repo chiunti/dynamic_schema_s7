@@ -9,6 +9,7 @@ from django.db import transaction
 
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
+from ..repositories.node_type_repository import NodeTypeRepository
 from ..constants import (
     ERR_COMPOSITION_NOT_FOUND,
     ERR_INVALID_PARENT_OR_CHILD_TYPE,
@@ -22,6 +23,51 @@ class CompositionService:
     def __init__(self):
         self.repository = AttributeDefRepository()
         self.composition_repository = CompositionRepository()
+        self.node_type_repository = NodeTypeRepository()
+
+    def get_scope_node_type_ids(self, scope: Optional[str] = None) -> list:
+        """Return all NodeType IDs reachable from a root scope.
+
+        Walks the NodeTypeComposition tree from the root type identified by
+        json_scope. When scope is empty/None, aggregates the reachable IDs
+        across every root scope.
+        """
+        if scope:
+            return self.repository.get_node_type_ids_for_scope(scope)
+        all_ids = []
+        for nt in self.repository.get_all_root_node_types():
+            all_ids.extend(self.repository.get_node_type_ids_for_scope(nt.json_scope))
+        return list(set(all_ids))
+
+    def get_graph_data(self, scope: Optional[str], composition_model) -> Dict[str, Any]:
+        """Return the node type graph (types + compositions) for the editor.
+
+        Args:
+            scope: json_scope filter; empty/None covers all root scopes.
+            composition_model: Composition model class (NodeTypeComposition).
+
+        Returns:
+            Dict with "node_types" and "compositions" lists, IDs stringified.
+        """
+        type_ids = self.get_scope_node_type_ids(scope or None)
+        node_types = [
+            {**nt, "id": str(nt["id"])}
+            for nt in self.node_type_repository.get_node_types_by_ids(type_ids)
+        ]
+        compositions = [
+            {
+                **c,
+                "id": str(c["id"]),
+                "parent_type_id": str(c["parent_type_id"]),
+                "child_type_id": str(c["child_type_id"]),
+            }
+            for c in self.composition_repository.get_compositions_by_parent_type_ids(
+                type_ids, composition_model
+            ).values(
+                "id", "parent_type_id", "child_type_id", "collection_key", "min_children", "max_children"
+            )
+        ]
+        return {"node_types": node_types, "compositions": compositions}
 
     @transaction.atomic
     def update_composition(

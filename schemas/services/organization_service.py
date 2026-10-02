@@ -2,7 +2,6 @@ import uuid
 from typing import Optional
 
 from django.db import transaction
-from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
 from ..repositories.organization_repository import OrganizationRepository
@@ -20,10 +19,11 @@ from ..constants import (
     ERR_ORGANIZATION_NOT_FOUND,
     ERR_USER_NOT_FOUND,
     ERR_INVALID_ROLE,
+    ROLE_ADMIN,
+    ROLE_EDITOR,
+    ROLE_VIEWER,
 )
 from .permission_service import PermissionService
-
-User = get_user_model()
 
 
 class OrganizationService:
@@ -83,7 +83,7 @@ class OrganizationService:
         target_user = self._user_repo.get_user_by_email(user_email)
         if not target_user:
             raise ValueError(ERR_USER_NOT_FOUND.format(email=user_email))
-        if role not in ("admin", "editor", "viewer"):
+        if role not in (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER):
             raise ValueError(ERR_INVALID_ROLE.format(role=role))
         return self._repo.add_member(organization_id, target_user.id, role)
 

@@ -56,24 +56,11 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
 
-    def get_organizations(self):
-        """Get organizations for this user using repository layer."""
-        from schemas.repositories.multi_tenant_repository import MultiTenantRepository
-        return MultiTenantRepository().get_accessible_organizations(self)
-
-    def is_member_of(self, organization_id) -> bool:
-        """Check if user is member of organization using repository layer."""
-        from schemas.repositories.multi_tenant_repository import MultiTenantRepository
-        return MultiTenantRepository().is_member_of(self, organization_id)
-
-    def get_role_in(self, organization_id):
-        """Get user's role in organization using repository layer."""
-        from schemas.repositories.multi_tenant_repository import MultiTenantRepository
-        return MultiTenantRepository().get_role_in(self, organization_id)
-
-    def can_access_organization(self, organization_id) -> bool:
-        """Check if user can access organization using repository layer."""
-        return self.is_member_of(organization_id)
+    # NOTE: organization membership/role helpers used to live on this model
+    # (get_organizations / is_member_of / get_role_in / can_access_organization),
+    # which was a models→repositories architecture inversion. They were removed;
+    # use schemas.services.permission_service.PermissionService /
+    # schemas.services.organization_service.OrganizationService instead.
 
     def __str__(self):
         return self.email

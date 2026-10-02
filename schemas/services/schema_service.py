@@ -1,9 +1,10 @@
 import uuid
 from typing import Optional
 
+from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
 
-from ..models import Node
+from ..models import Node, NodeType
 from ..repositories.schema_repository import SchemaRepository
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
@@ -13,6 +14,7 @@ from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
 from .datatype_plugins import validate_datatype_value, get_storage_defaults
+from .schema_validation_service import SchemaValidationService
 from ..constants import (
     ERR_VERSION_NOT_SET,
     ERR_STATUS_ATTRIBUTE_NOT_FOUND,
@@ -33,9 +35,18 @@ from ..constants import (
     ERR_SCHEMA_NOT_IN_DRAFT_STATUS,
     ERR_SCHEMA_NOT_PUBLISHED_STATUS,
     ERR_SCHEMA_NOT_ARCHIVED_STATUS,
+    ERR_INCOMPLETE_SCHEMA,
+    ERR_INVALID_NODE_ID,
+    ERR_NODE_NOT_FOUND,
+    ERR_NOT_A_ROOT_NODE,
+    ERR_SCHEMA_NOT_FOUND,
+    ERR_PROJECT_ID_REQUIRED,
     MAX_VERSION_AUTO_INCREMENT_ATTEMPTS,
     SCHEMA_KEY_SUFFIX,
     SCHEMA_METADATA_SUFFIX,
+    STATUS_DRAFT,
+    STATUS_PUBLISHED,
+    STATUS_ARCHIVED,
 )
 
 
@@ -48,7 +59,78 @@ class SchemaService:
         self.composition_repository = CompositionRepository()
         self.data_type_repository = DataTypeRepository()
         self.node_type_repository = NodeTypeRepository()
-    
+
+    def resolve_root_node_type(self, scope: Optional[str]) -> Optional[NodeType]:
+        """Resolve the root NodeType for a json_scope.
+
+        Falls back to the first available root node type when the scope is
+        empty or does not match any root type.
+        """
+        node_type = self.node_type_repository.get_root_node_type_by_scope(scope) if scope else None
+        if not node_type:
+            root_types = self.node_type_repository.get_all_root_node_types()
+            node_type = root_types.first() if root_types else None
+        return node_type
+
+    def generate_json_example(self, schema_type: str) -> Optional[dict]:
+        """Generate a JSON example for a root schema type (by json_scope).
+
+        The example contains the root key with its required attributes and
+        empty placeholders for composition collections.
+
+        Returns:
+            Example dict, or None if the schema type does not resolve to a
+            root NodeType.
+        """
+        root_node_type = self.node_type_repository.get_root_node_type_by_scope(schema_type)
+        if not root_node_type:
+            return None
+        return self._generate_json_example(root_node_type)
+
+    def _generate_json_example(self, node_type: NodeType) -> dict:
+        """Generate JSON example from NodeType definitions (only root level with required fields)"""
+        example = {}
+
+        # Start with the root key (node_type name or json_scope without _root suffix)
+        root_key = node_type.json_scope.replace('_root', '') if node_type.json_scope else node_type.name
+        example[root_key] = {}
+
+        # Add only required attributes for this node type
+        attr_defs = self.attribute_def_repository.get_attribute_defs_by_node_type_required(node_type, variant_key=None)
+        for attr_def in attr_defs:
+            if attr_def.json_key in ['id', 'key', 'version']:
+                continue  # Skip auto-generated fields
+            example[root_key][attr_def.json_key] = self._get_example_value(attr_def)
+
+        # Add empty array placeholders for collections (only structure, no content)
+        compositions = self.composition_repository.get_compositions_by_node_type(node_type)
+        for composition in compositions:
+            if composition.collection_key:
+                example[root_key][composition.collection_key] = []
+
+        return example
+
+    def _get_example_value(self, attr_def):
+        """Generate example value based on DataType"""
+        data_type_name = attr_def.data_type.name if attr_def.data_type else 'string'
+
+        if data_type_name == 'string':
+            return f"example_{attr_def.json_key}"
+        elif data_type_name == 'int':
+            return 1
+        elif data_type_name == 'number':
+            return 1.0
+        elif data_type_name == 'bool':
+            return True
+        elif data_type_name == 'list_string':
+            return ["option1", "option2"]
+        elif data_type_name == 'json':
+            return {}
+        elif data_type_name == 'date':
+            return "2024-01-01"
+        else:
+            return f"example_{attr_def.json_key}"
+
     @transaction.atomic
     def import_schema(
         self,
@@ -62,12 +144,12 @@ class SchemaService:
         user=None,
     ) -> tuple[uuid.UUID, dict]:
         """Import a schema with validation"""
-        if project_id and user:
-            perm = PermissionService()
+        if project_id:
             project = ProjectRepository().get_project_by_id(project_id)
-            if project and project.organization_id:
-                if not perm.can_edit_organization(user, project.organization_id):
-                    raise PermissionError(ERR_PERMISSION_DENIED)
+            if not project or project.organization_id != organization_id or not project.organization.is_active:
+                raise PermissionError(ERR_PERMISSION_DENIED)
+            if user and not PermissionService().can_edit_organization(user, project.organization_id):
+                raise PermissionError(ERR_PERMISSION_DENIED)
         
         # Track if schema_version was explicitly specified by user
         # Empty string or None means user didn't specify a version
@@ -94,7 +176,14 @@ class SchemaService:
         
         # Ensure key and status are set as attributes on the root node
         self._set_schema_metadata(schema_id, schema_key, schema_status)
-        
+
+        # A schema imported directly as 'published' bypasses the publish routine,
+        # so its cache entry must be built here to keep it readable.
+        if schema_status == STATUS_PUBLISHED:
+            root_node = self.repository.get_node_by_id(schema_id)
+            self.build_schema_cached(root_node.key, root_node.version,
+                                     project_id=project_id)
+
         return schema_id, version_warning
     
     def _sync_version_from_metadata(self, schema_id: uuid.UUID, validated_schema: dict, form_version: Optional[str], form_version_is_explicit: bool) -> dict:
@@ -156,8 +245,11 @@ class SchemaService:
             if collection_key and collection_key in root_obj:
                 child_obj = root_obj[collection_key]
             elif isinstance(root_obj, dict):
-                # Try to find the child by type name as fallback
-                child_obj = root_obj.get(child_type.name)
+                # Fallback: the structural key declared by the child type
+                # (default_json_key), then the child type name itself.
+                child_obj = root_obj.get(child_type.default_json_key or child_type.name)
+                if child_obj is None and child_type.default_json_key:
+                    child_obj = root_obj.get(child_type.name)
 
             if not child_obj or not isinstance(child_obj, dict):
                 continue
@@ -224,7 +316,7 @@ class SchemaService:
 
         # Set key attribute — create AttributeDef dynamically if the node type lacks one
         if not key_attr_def:
-            string_type = self.attribute_def_repository.get_default_data_type('string')
+            string_type = self.attribute_def_repository.get_default_data_type()
             if string_type:
                 key_attr_def, _ = self.attribute_def_repository.get_or_create_attribute_def(
                     root_node_type,
@@ -273,39 +365,53 @@ class SchemaService:
     def _resolve_child_type_for_item(self, item: dict, compositions):
         """Select the correct child NodeType for a JSON item from a set of candidate compositions.
 
-        When multiple compositions share the same collection_key (e.g. both sdui_container and
-        sdui_widget are valid children under 'children'), the item's 'type' field is used to
-        discriminate:
-          - If a child_type has a domain-constrained 'type' AttributeDef whose domain contains
-            the item's type value, that child_type wins.
+        When multiple compositions share the same collection_key (e.g. a container
+        node type and a widget node type are both valid children under 'children'),
+        the item's discriminator attribute is used to discriminate:
+          - The discriminator json_key comes from each candidate's NodeTypeVariant
+            declaration via NodeTypeRepository.get_discriminator_attr.
+          - Only when a candidate child type has NO NodeTypeVariant row at all do
+            we fall back to the repository-level discriminator-attribute
+            heuristic (get_discriminator_attribute_def).
+          - If a child_type has a domain-constrained discriminator AttributeDef
+            whose domain contains the item's discriminator value, that
+            child_type wins.
           - If only one composition exists, it is used directly.
           - If no domain match is found, fall back to the first composition.
         """
-        from schemas.models import AttributeDef, DomainItem
-
         if len(compositions) == 1:
             return compositions[0].child_type
 
-        item_type_value = item.get('type')
-        if item_type_value:
-            for comp in compositions:
-                type_attr = self.attribute_def_repository.get_attribute_def_with_domain(
-                    comp.child_type,
-                    'type'
+        for comp in compositions:
+            ntv = self.node_type_repository.get_node_type_variant_by_node_type(
+                comp.child_type
+            )
+            if ntv is not None:
+                # discriminator_attr=None marks a props/inherited-variant node —
+                # it cannot be discriminated from a sibling item.
+                if not ntv.discriminator_attr:
+                    continue
+                discriminator_attr = self.attribute_def_repository.get_attribute_def_with_domain(
+                    comp.child_type, ntv.discriminator_attr
                 )
-                if type_attr and self.attribute_def_repository.domain_item_exists(
-                    type_attr.domain,
-                    item_type_value
-                ):
-                    return comp.child_type
+            else:
+                # No variant configuration — legacy heuristic fallback.
+                discriminator_attr = self.attribute_def_repository.get_discriminator_attribute_def(
+                    comp.child_type
+                )
+            if not discriminator_attr or not discriminator_attr.domain_id:
+                continue
+            item_type_value = item.get(discriminator_attr.json_key)
+            if item_type_value and self.attribute_def_repository.domain_item_exists(
+                discriminator_attr.domain,
+                item_type_value
+            ):
+                return comp.child_type
 
         return compositions[0].child_type
 
     def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0):
         """Process a collection of items as child nodes using NodeTypeComposition"""
-        from schemas.models import Node, NodeType, NodeTypeComposition, AttributeDef, DataType
-        from schemas.repositories.node_type_repository import NodeTypeRepository
-
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
             self.composition_repository.get_compositions_by_parent_type_select_related(parent_node_type)
@@ -315,14 +421,13 @@ class SchemaService:
             compositions = [c for c in compositions if c.collection_key == collection_key]
 
         if not compositions:
-            # No composition rule — try to infer from collection key
-            singular_key = collection_key.rstrip('s')
-            fallback_type = self.node_type_repository.get_node_type_by_name(singular_key)
-            if not fallback_type:
-                fallback_type = self.node_type_repository.get_container_node_type()
-            if not fallback_type:
-                return
-            compositions = [type('_Comp', (), {'child_type': fallback_type})()]
+            # No composition declares this collection_key for the parent type —
+            # refuse to guess child types by name (name-mangling is forbidden by
+            # the Declarative Variant Model).
+            raise ValueError(
+                f"No NodeTypeComposition declares collection_key '{collection_key}' "
+                f"for parent node type '{parent_node_type.name}'"
+            )
 
         # Pre-build field maps per child_type to avoid repeated DB queries
         field_maps = {}
@@ -427,7 +532,7 @@ class SchemaService:
             node_fields['key'] = item['key']
             node_fields['name'] = item['key']
         elif node_fields['key'] is None:
-            # Use provided json_key for structural matches (e.g., 'props' instead of 'sdui_props_0')
+            # Use provided json_key for structural matches (e.g., 'props' instead of '<props_type>_0')
             if json_key:
                 node_fields['key'] = json_key
                 node_fields['name'] = json_key
@@ -497,26 +602,28 @@ class SchemaService:
         if usage_attr_def:
             self._set_node_attribute(child_node.id, 'usage', json_key, child_type, inherited_variant)
 
-        # Process the dict as attributes and nested structures
+        # Process the dict as attributes and nested structures.
         # For props nodes, pass inherited_variant to _process_node_attributes
-        # so it can resolve variant-scoped AttributeDefs (keyed by parent component type)
-        # Check if this child_type is the props_node_type according to NodeTypeVariant
-        parent_ntv = self.node_type_repository.get_node_type_variant_by_props_node_type(child_type)
-        if parent_ntv and inherited_variant:
-            discriminator = parent_ntv.discriminator_attr
-            if discriminator and discriminator not in value:
+        # so it can resolve variant-scoped AttributeDefs (keyed by the parent's
+        # variant). The discriminator key is resolved from the ACTUAL parent's
+        # NodeTypeVariant — several parent types may share one props node type
+        # with different discriminators.
+        if inherited_variant:
+            parent_node = self.repository.get_node_by_id_with_node_type(parent_id)
+            parent_discriminator = (
+                self.node_type_repository.get_discriminator_attr(parent_node.node_type)
+                if parent_node is not None else None
+            )
+            if parent_discriminator and parent_discriminator not in value:
                 # Inject discriminator for variant resolution in _process_node_attributes,
                 # but it should NOT be stored as a NodeAttribute.
-                value = dict(value, **{discriminator: inherited_variant})
+                value = dict(value, **{parent_discriminator: inherited_variant})
         self._process_node_attributes(child_node.id, child_type, value, project_id, organization_id, inherited_variant)
     
     def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None):
         """Set a node attribute value, creating AttributeDef if needed"""
-        from schemas.repositories.schema_repository import SchemaRepository
-
         # Disable triggers to bypass s7 validation
-        repository = SchemaRepository()
-        repository.disable_triggers()
+        self.repository.disable_triggers()
 
         try:
             # Determine data type from the value shape
@@ -578,8 +685,36 @@ class SchemaService:
                 self.repository.update_or_create_node_attribute(node_id, attr_def, defaults)
         finally:
             # Re-enable triggers
-            repository.enable_triggers()
+            self.repository.enable_triggers()
     
+    def _process_keyed_map(self, node_id: uuid.UUID, node_type, entries: dict, compositions, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID]) -> None:
+        """Store arbitrary JSON object keys as individually editable child nodes."""
+        candidates = [comp.child_type for comp in compositions if comp.collection_key is None]
+        typed_objects = [
+            (candidate, {
+                attr.json_key for attr in self.attribute_def_repository.get_attribute_defs_by_node_type_variant_key(candidate, None)
+                if attr.is_required
+            })
+            for candidate in candidates if not candidate.is_json_map and not candidate.json_scalar_attribute
+        ]
+        object_map = next((candidate for candidate in candidates if candidate.is_json_map), None)
+        scalar = next((candidate for candidate in candidates if candidate.json_scalar_attribute), None)
+        for index, (key, value) in enumerate(entries.items()):
+            if not isinstance(key, str) or not key or len(key) > 255:
+                raise ValueError('Map keys must be non-empty strings of at most 255 characters')
+            if isinstance(value, dict):
+                child_type = next((candidate for candidate, required in typed_objects if required and required <= value.keys()), object_map)
+            else:
+                child_type = scalar
+            if child_type is None:
+                raise ValueError(f'Unsupported value for key {key!r} in {node_type.name}')
+            child = self.repository.create_child_node(
+                child_type, node_id, key, name=key, sort_order=index,
+                project_id=project_id, organization_id=organization_id,
+            )
+            child_attributes = value if isinstance(value, dict) else {child_type.json_scalar_attribute: value}
+            self._process_node_attributes(child.id, child_type, child_attributes, project_id, organization_id)
+
     def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None):
         """Process attributes for a node, creating AttributeDefs dynamically if needed.
         
@@ -588,20 +723,24 @@ class SchemaService:
              Also: dict value whose key matches a collection_key with max_children=1 -> wrapped as [value]
           2. Dict/list value whose key is a domain-discriminator shorthand for a collection
              (e.g. 'body' -> screen_section with section_key='body') -> create child node
-          3. Dict/list value that structurally matches a composition without collection_key
-             (e.g. 'show_if' -> sdui_show_if) -> _process_single_child_node
+          3. Dict/list value whose key matches a structural child's declared key
+             (composition without collection_key; child_type.default_json_key or
+             child_type.name) -> _process_single_child_node
           4. Scalar/dict value with no composition match -> store as NodeAttribute
         
         Args:
-            inherited_variant: Variant key inherited from parent node (e.g., for sdui_props)
+            inherited_variant: Variant key inherited from the parent node
+                (for child node types declared as a parent's props_node_type)
         """
         from schemas.models import AttributeDef, DataType, NodeAttribute, NodeTypeComposition, DomainItem, Node
-        from schemas.repositories.schema_repository import SchemaRepository
-        
+
         # Get Node model field names (these are not attributes)
-        node_field_names = {f.name for f in Node._meta.get_fields()}
+        node_field_names = self.repository.get_node_field_names()
 
         compositions = self.composition_repository.get_compositions_by_parent_type_select_related(node_type)
+        if getattr(node_type, 'is_json_map', False) is True:
+            self._process_keyed_map(node_id, node_type, attributes, compositions, project_id, organization_id)
+            return
         
         # Case 1 — collection keys (list or singleton dict values)
         collection_keys = {comp.collection_key for comp in compositions if comp.collection_key}
@@ -623,61 +762,62 @@ class SchemaService:
             for di in self.attribute_def_repository.get_domain_items_by_domain(discriminator.domain):
                 shorthand_map[di.value] = (comp.child_type, discriminator.json_key)
         
-        # Case 3 — structural inference for compositions without collection_key
-        #   (e.g. show_if -> sdui_show_if, layout -> sdui_layout)
-        # The matching is now based exclusively on NodeTypeComposition and key_overlap heuristics.
-        # No hardcoded prefixes are needed - the composition is the source of truth.
+        # Case 3 — structural children: compositions without collection_key
+        #   (e.g. 'props' -> props node type, 'layout' -> layout node type).
+        # Declarative matching only: a json_key dispatches to a structural child
+        # type when it equals the child type's declared NodeType.default_json_key
+        # or the child type's own name. No name-mangling or shape heuristics —
+        # the key→type mapping must be declared in the catalog.
         json_key_to_child_type = {}
         for comp in compositions:
             if comp.collection_key is not None:
                 continue
-            child_name = comp.child_type.name
-            canonical = child_name
-            child_attr_keys = {
-                ad.json_key for ad in self.attribute_def_repository.get_attribute_defs_by_node_type_variant_key(
-                    comp.child_type,
-                    None
-                )
-            }
-            # Match if json_key equals canonical name OR if ≥2 attribute keys overlap
-            # (single-key overlap is too weak and causes false positives like 'props' ~ sdui_layout)
-            # Fallback: suffix match (e.g., layout -> sdui_layout, show_if -> sdui_show_if)
+            child_type = comp.child_type
+            structural_keys = {child_type.name}
+            if child_type.default_json_key:
+                structural_keys.add(child_type.default_json_key)
             for json_key, value in attributes.items():
                 if json_key in node_field_names or json_key in collection_keys or json_key in shorthand_map:
                     continue
-                val_keys = set(value.keys()) if isinstance(value, dict) else (
-                    set(value[0].keys()) if isinstance(value, list) and value and isinstance(value[0], dict) else set()
-                )
-                exact_match = (json_key == canonical)
-                key_overlap = len(val_keys & child_attr_keys) >= 2
-                suffix_match = child_name.endswith('_' + json_key)  # e.g., sdui_layout ends with _layout
-                if not (exact_match or key_overlap or suffix_match):
+                if json_key not in structural_keys:
                     continue
                 if isinstance(value, dict):
-                    json_key_to_child_type[json_key] = comp.child_type
+                    json_key_to_child_type[json_key] = child_type
                 elif isinstance(value, list) and value and isinstance(value[0], dict):
-                    json_key_to_child_type[json_key] = comp.child_type
+                    json_key_to_child_type[json_key] = child_type
         
         # Disable triggers to bypass s7 validation
-        repository = SchemaRepository()
-        repository.disable_triggers()
-        
+        self.repository.disable_triggers()
+
         try:
-            # Determine the node's variant using the discriminator from NodeTypeVariant
+            # Determine the node's variant from the NodeTypeVariant declaration.
+            # No variant row => the node type has no variants at all (no fallback
+            # to a hardcoded discriminator key).
             ntv = self.node_type_repository.get_node_type_variant_by_node_type(node_type)
-            discriminator = ntv.discriminator_attr if ntv else 'type'
-            
-            # If this node_type is a props_node_type (discriminator_attr=None), use inherited_variant
-            # This allows sdui_props to resolve variant-scoped AttributeDefs based on parent component type
-            if ntv and ntv.discriminator_attr is None and inherited_variant:
+            if ntv is None:
+                node_variant = None
+            elif ntv.discriminator_attr is None:
+                # Props/inherited-variant node: the variant comes from the
+                # parent node that declared this type as its props_node_type.
                 node_variant = inherited_variant
             else:
-                node_variant = attributes.get(discriminator)
-            
+                node_variant = attributes.get(ntv.discriminator_attr)
+
+            # For props children, the actual parent's discriminator key may have
+            # been injected for variant resolution — it must never be stored as
+            # a NodeAttribute. Resolve it once via the real parent node.
+            injected_discriminator = None
+            if inherited_variant:
+                this_node = self.repository.get_node_by_id_with_parent(node_id)
+                if this_node and this_node.parent_id:
+                    injected_discriminator = self.node_type_repository.get_discriminator_attr(
+                        this_node.parent.node_type
+                    )
+
             # Counter to assign unique, sequential sort_orders to all child nodes
             # created by any dispatch path within this call.
             child_sort_order = 0
-            
+
             # Process ALL attributes (no filtering of empty/null/zero values)
             for json_key, value in attributes.items():
                 # Skip Node model fields (handled separately), except sort_order which
@@ -704,10 +844,8 @@ class SchemaService:
                     if has_display_order:
                         continue
 
-                # Skip the discriminator attribute if it's the one we inherited
-                # Check if this node_type is a props_node_type for some parent variant
-                parent_ntv = self.node_type_repository.get_node_type_variant_by_props_node_type(node_type)
-                if parent_ntv and json_key == parent_ntv.discriminator_attr:
+                # Skip the injected parent-discriminator key on props nodes
+                if injected_discriminator and json_key == injected_discriminator:
                     continue
                 
                 # Case 1: value whose key matches a composition collection_key
@@ -750,19 +888,25 @@ class SchemaService:
                     self._process_node_attributes(child_node.id, child_type, item_with_discriminator, project_id, organization_id)
                     continue
                 
-                # Case 3: structural match -> composition without collection_key (e.g. show_if, sdui_props)
+                # Case 3: structural match -> composition without collection_key
+                # (e.g. a props child node, or other named sub-structures)
                 if json_key in json_key_to_child_type:
                     child_type = json_key_to_child_type[json_key]
-                    # For sdui_props, pass the parent's variant (component type) so child
-                    # can resolve variant-scoped AttributeDefs (keyed by parent component type)
-                    inherited_variant = node_variant if child_type.name == 'sdui_props' else None
+                    # For props node types (declared via NodeTypeVariant.props_node_type),
+                    # pass the parent's variant so the child can resolve
+                    # variant-scoped AttributeDefs (keyed by the parent's variant).
+                    child_inherited_variant = (
+                        node_variant
+                        if self.node_type_repository.is_props_node_type(child_type)
+                        else None
+                    )
                     if isinstance(value, dict):
-                        self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=inherited_variant)
+                        self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant)
                         child_sort_order += 1
                     elif isinstance(value, list):
                         for idx, item in enumerate(value):
                             if isinstance(item, dict):
-                                self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=inherited_variant)
+                                self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant)
                                 child_sort_order += 1
                     continue
                 
@@ -855,7 +999,7 @@ class SchemaService:
                         pass
         finally:
             # Re-enable triggers
-            repository.enable_triggers()
+            self.repository.enable_triggers()
 
     def _create_attribute_def(self, node_type, json_key: str, value, variant_key=None):
         """Create an AttributeDef dynamically based on the value type
@@ -986,6 +1130,117 @@ class SchemaService:
         else:
             return 'string'
     
+    def get_publish_blockers(self, node: Node) -> Optional[dict]:
+        """Check whether a schema node can be published.
+
+        Business rule: all required properties must have values before a
+        schema may be published. Returns a payload describing the missing
+        required properties per node, or None when the schema is complete
+        and publishable.
+        """
+        warnings = SchemaValidationService().collect_required_warnings(node.id)
+        if not warnings:
+            return None
+        warning_details = [
+            f"{w['node_name']} ({w['node_type']}): missing {', '.join(w['missing'])}"
+            for w in warnings
+        ]
+        return {
+            "error": ERR_INCOMPLETE_SCHEMA,
+            "detail": f"Cannot publish: {len(warnings)} node(s) have missing required properties",
+            "warnings": warnings,
+            "message": "Complete all required properties before publishing. " + "; ".join(warning_details),
+        }
+
+    def get_available_actions(self, node: Node) -> dict:
+        """Lifecycle transition rules for a schema node.
+
+        Determines which lifecycle actions are available for a root schema
+        node based on its status attribute and build state:
+
+        - 'edit': always, unless the schema is archived (read-only)
+        - 'build': when the build state reports uncommitted changes (dirty)
+        - 'publish': when in draft status with no missing required properties
+        - 'publish_blocked': when in draft status but required properties are
+          missing (``blocked_nodes`` reports how many nodes are incomplete)
+        - 'archive': when in published status
+        - 'draft': when in archived status
+
+        Returns:
+            dict with keys: actions (list[str]), key, version,
+            blocked_nodes (int).
+        """
+        status = self._get_schema_attribute(node, 'status')
+        key = self._get_schema_attribute(node, 'key')
+        version = node.version
+
+        actions = []
+        if status != STATUS_ARCHIVED:
+            actions.append('edit')
+
+        build_state = self.repository.get_build_state(key, version) if key and version else None
+        if build_state and build_state.dirty:
+            actions.append('build')
+
+        blocked_nodes = 0
+        if status == STATUS_DRAFT:
+            blockers = self.get_publish_blockers(node)
+            if blockers:
+                actions.append('publish_blocked')
+                blocked_nodes = len(blockers["warnings"])
+            else:
+                actions.append('publish')
+        elif status == STATUS_PUBLISHED:
+            actions.append('archive')
+        elif status == STATUS_ARCHIVED:
+            actions.append('draft')
+
+        return {
+            "actions": actions,
+            "key": key,
+            "version": version,
+            "blocked_nodes": blocked_nodes,
+        }
+
+    def publish_schema_by_id(self, node_id) -> Optional[dict]:
+        """Resolve a node by ID, enforce the publish gates and publish.
+
+        Shared publish orchestration for admin views: coerces the raw ID,
+        loads the node with its node_type, applies the missing-required
+        rule (get_publish_blockers) and the root-node rule, then delegates
+        to publish_schema.
+
+        Args:
+            node_id: raw node identifier (str or UUID)
+
+        Returns:
+            The blockers payload dict when the schema is incomplete,
+            otherwise None (publish succeeded).
+
+        Raises:
+            ValueError: node_id is not a valid UUID or the node is not a
+                root node.
+            LookupError: no node exists for the given ID.
+        """
+        try:
+            node_id = uuid.UUID(node_id) if isinstance(node_id, str) else node_id
+            node = self.repository.get_node_by_id_with_node_type(node_id)
+        except (ValidationError, ValueError, TypeError) as e:
+            raise ValueError(ERR_INVALID_NODE_ID) from e
+
+        if not node:
+            raise LookupError(ERR_NODE_NOT_FOUND)
+
+        blockers = self.get_publish_blockers(node)
+        if blockers:
+            return blockers
+
+        if not node.node_type or not node.node_type.is_root:
+            raise ValueError(ERR_NOT_A_ROOT_NODE)
+
+        self.publish_schema(node)
+        return None
+
     @transaction.atomic
     def publish_schema(self, node: Node) -> None:
         """Publish a schema node of any root type"""
@@ -999,17 +1254,17 @@ class SchemaService:
         # Check if node type has a 'status' attribute with a 'published' value in its domain
         status_def = self.repository.get_attribute_def(node.node_type, 'status')
         if status_def and status_def.domain:
-            published_value = self.repository.get_domain_item_by_value(status_def.domain, 'published')
+            published_value = self.repository.get_domain_item_by_value(status_def.domain, STATUS_PUBLISHED)
             if not published_value:
                 raise ValueError(ERR_PUBLISHED_STATUS_NOT_AVAILABLE)
-            
-            draft_value = self.repository.get_domain_item_by_value(status_def.domain, 'draft')
-            if draft_value and status != 'draft':
+
+            draft_value = self.repository.get_domain_item_by_value(status_def.domain, STATUS_DRAFT)
+            if draft_value and status != STATUS_DRAFT:
                 raise ValueError(ERR_SCHEMA_NOT_IN_DRAFT_STATUS.format(status=status))
-        elif status and status != 'draft':
+        elif status and status != STATUS_DRAFT:
             raise ValueError(ERR_SCHEMA_NOT_IN_DRAFT_STATUS.format(status=status))
 
-        self.repository.publish_schema(key, version)
+        self.repository.publish_schema(key, version, node.project_id)
     
     @transaction.atomic
     def archive_schema(self, node: Node) -> None:
@@ -1026,16 +1281,16 @@ class SchemaService:
         
         # Check if 'published' value exists in the domain
         if status_def.domain:
-            published_value = self.repository.get_domain_item_by_value(status_def.domain, 'published')
-            if published_value and current_status != 'published':
+            published_value = self.repository.get_domain_item_by_value(status_def.domain, STATUS_PUBLISHED)
+            if published_value and current_status != STATUS_PUBLISHED:
                 raise ValueError(ERR_SCHEMA_NOT_PUBLISHED_STATUS.format(current_status=current_status))
-        elif current_status != 'published':
+        elif current_status != STATUS_PUBLISHED:
             raise ValueError(ERR_SCHEMA_NOT_PUBLISHED_STATUS.format(current_status=current_status))
 
         # Check if 'archived' value exists in the domain
         archived_value = None
         if status_def.domain:
-            archived_value = self.repository.get_domain_item_by_value(status_def.domain, 'archived')
+            archived_value = self.repository.get_domain_item_by_value(status_def.domain, STATUS_ARCHIVED)
         if not archived_value:
             raise ValueError(ERR_ARCHIVED_STATUS_NOT_AVAILABLE)
 
@@ -1044,7 +1299,7 @@ class SchemaService:
                 node.id,
                 node.node_type.name,
                 status_def.json_key,
-                "archived",
+                STATUS_ARCHIVED,
                 status_def.domain.domain_name if status_def.domain_id else None
             )
             # Delete schema cache to prevent public access after archiving
@@ -1072,16 +1327,16 @@ class SchemaService:
         
         # Check if 'archived' value exists in the domain
         if status_def.domain:
-            archived_value = self.repository.get_domain_item_by_value(status_def.domain, 'archived')
-            if archived_value and current_status != 'archived':
+            archived_value = self.repository.get_domain_item_by_value(status_def.domain, STATUS_ARCHIVED)
+            if archived_value and current_status != STATUS_ARCHIVED:
                 raise ValueError(ERR_SCHEMA_NOT_ARCHIVED_STATUS.format(current_status=current_status))
-        elif current_status != 'archived':
+        elif current_status != STATUS_ARCHIVED:
             raise ValueError(ERR_SCHEMA_NOT_ARCHIVED_STATUS.format(current_status=current_status))
 
         # Check if 'draft' value exists in the domain
         draft_value = None
         if status_def.domain:
-            draft_value = self.repository.get_domain_item_by_value(status_def.domain, 'draft')
+            draft_value = self.repository.get_domain_item_by_value(status_def.domain, STATUS_DRAFT)
         if not draft_value:
             raise ValueError(ERR_DRAFT_STATUS_NOT_AVAILABLE)
 
@@ -1090,7 +1345,7 @@ class SchemaService:
                 node.id,
                 node.node_type.name,
                 status_def.json_key,
-                "draft",
+                STATUS_DRAFT,
                 status_def.domain.domain_name if status_def.domain_id else None
             )
             # Delete schema cache to prevent public access after moving to draft
@@ -1103,6 +1358,25 @@ class SchemaService:
         except Exception as e:
             raise RuntimeError(ERR_UNEXPECTED_ERROR_DRAFT.format(error=e)) from e
     
+    def increment_build_for(self, key: str, version: str) -> None:
+        """Resolve the root schema node for key+version and increment its build counter.
+
+        Admin "Build" orchestration: the project_id needed by the s7 function is
+        derived from the root node rather than supplied by the view.
+
+        Raises:
+            LookupError: no root node exists for key+version.
+            ValueError: the schema has no project assigned.
+        """
+        schema_node = self.repository.get_root_node_by_key_version(key, version)
+        if not schema_node:
+            raise LookupError(ERR_SCHEMA_NOT_FOUND)
+        project_id = schema_node.project_id
+        if not project_id:
+            raise ValueError(ERR_PROJECT_ID_REQUIRED)
+        self.increment_build(key, version, project_id)
+
+    @transaction.atomic
     def increment_build(self, key: str, version: str, project_id: uuid.UUID) -> None:
         """Increment build counter"""
         try:
@@ -1114,10 +1388,12 @@ class SchemaService:
         except Exception as e:
             raise RuntimeError(ERR_UNEXPECTED_ERROR_BUILD.format(error=e)) from e
 
-    def build_schema_cached(self, key: str, version: str, schema_type: Optional[str] = None) -> None:
+    @transaction.atomic
+    def build_schema_cached(self, key: str, version: str, schema_type: Optional[str] = None,
+                            project_id: Optional[uuid.UUID] = None) -> None:
         """Build schema cache"""
         try:
-            self.repository.build_schema_cached(key, version, schema_type)
+            self.repository.build_schema_cached(key, version, schema_type, project_id=project_id)
         except DatabaseError as e:
             raise RuntimeError(ERR_DATABASE_ERROR_CACHE_REBUILD.format(error=e)) from e
         except ValueError as e:
@@ -1167,9 +1443,9 @@ class SchemaService:
             status_def = self.repository.get_attribute_def(node.node_type, 'status')
             if status_def and status_def.domain:
                 # Try to get default value from domain items, fallback to 'draft'
-                default_status = self.repository.get_domain_item_by_value(status_def.domain, 'draft')
+                default_status = self.repository.get_domain_item_by_value(status_def.domain, STATUS_DRAFT)
                 if default_status:
-                    root_defaults['status'] = 'draft'
+                    root_defaults['status'] = STATUS_DRAFT
             
             # Get attribute defs for the keys we need to set
             attr_defs = self.repository.get_attribute_defs_by_node_type_and_keys(node.node_type, root_defaults.keys())
@@ -1237,6 +1513,10 @@ class SchemaService:
         finally:
             self.repository.enable_triggers()
     
+    def is_schema_locked(self, node: Node) -> bool:
+        """Lifecycle rule: archived schemas are read-only."""
+        return self._get_schema_attribute(node, 'status') == STATUS_ARCHIVED
+
     def _get_schema_attribute(self, node: Node, attribute_key: str) -> Optional[str]:
         """Get a schema node attribute value by key"""
         if attribute_key == 'key' and node.key:

@@ -6,13 +6,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.http import QueryDict
 
-from ..models import (
-    SchemaCache,
-    AttributeDef,
-    Node,
-    NodeAttribute,
-    Project,
-)
+from ..models import SchemaCache
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..repositories.project_repository import ProjectRepository
@@ -94,11 +88,21 @@ class SchemaCacheAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         """Filter by node_type if selected in tab"""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            from ..repositories.multi_tenant_repository import MultiTenantRepository
+            accessible_org_ids = MultiTenantRepository().get_accessible_organization_ids(request.user)
+            qs = qs.filter(project__organization_id__in=accessible_org_ids)
         node_type_name = getattr(self, '_node_type_filter', None) or request.GET.get('node_type')
 
         if node_type_name:
-            keys_list = self.repository.get_schema_cache_keys_by_node_type(node_type_name)
-            if keys_list:
-                qs = qs.filter(key__in=keys_list)
+            from django.db.models import Q
+            matching = self.repository.get_schema_cache_keys_by_node_type(node_type_name)
+            if matching:
+                q = Q()
+                for key, version, project_id in matching:
+                    q |= Q(key=key, version=version, project_id=project_id)
+                qs = qs.filter(q)
+            else:
+                qs = qs.none()
 
         return qs

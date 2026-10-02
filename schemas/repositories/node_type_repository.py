@@ -216,6 +216,20 @@ class NodeTypeRepository:
             props_node_type=node_type
         ).exists()
 
+    def get_props_node_type_ids(self) -> set:
+        """
+        Get IDs of all node types used as props_node_type in NodeTypeVariant.
+
+        Returns:
+            Set of NodeType UUIDs declared as props containers
+        """
+        from ..models import NodeTypeVariant
+        return set(
+            NodeTypeVariant.objects.filter(
+                props_node_type__isnull=False
+            ).values_list("props_node_type_id", flat=True)
+        )
+
     def get_discriminator_attr(self, node_type) -> Optional[str]:
         """
         Get discriminator attribute from NodeTypeVariant configuration.
@@ -232,3 +246,22 @@ class NodeTypeRepository:
         from ..models import NodeTypeVariant
         ntv = NodeTypeVariant.objects.filter(node_type=node_type).first()
         return ntv.discriminator_attr if ntv else None
+
+    def get_discriminator_attrs_by_node_type_ids(self, node_type_ids) -> dict:
+        """
+        Get declared discriminator attributes for many node types at once.
+
+        Args:
+            node_type_ids: Iterable of NodeType UUIDs
+
+        Returns:
+            Dict mapping node_type_id -> discriminator_attr for node types
+            whose NodeTypeVariant rows declare a (non-null) discriminator.
+        """
+        from ..models import NodeTypeVariant
+        return dict(
+            NodeTypeVariant.objects
+            .filter(node_type_id__in=node_type_ids, discriminator_attr__isnull=False)
+            .values_list("node_type_id", "discriminator_attr")
+            .distinct()
+        )

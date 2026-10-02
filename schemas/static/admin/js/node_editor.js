@@ -426,10 +426,23 @@
     const variantRow = document.getElementById('variant_row');
     const variantSel = document.getElementById('variant_select');
 
-    // Check if parent is a screen node - need two-step selection
-    const isScreenParent = parentNodeType === 'screen';
+    // Data-driven check: show the two-step "slot → type" selector when the
+    // parent's allowed children declare the same collection_key for more than
+    // one child type — i.e. named slots that accept several node types.
+    // (Replaces the hardcoded parentNodeType === 'screen' check; works for any
+    // seeded schema that defines multi-type singleton slots, and is inert for
+    // catalogs without them.)
+    const slotsWithMultipleTypes = new Set(
+      allowed
+        .map(a => a.collection_key)
+        .filter(k => k)
+        .filter((key, _i, arr) =>
+          new Set(allowed.filter(a => a.collection_key === key).map(a => a.node_type)).size > 1
+        )
+    );
+    const isCollectionSlotParent = slotsWithMultipleTypes.size > 0;
 
-    if (isScreenParent) {
+    if (isCollectionSlotParent) {
       // Show both slot selector and component type selector simultaneously
       sectionRow.classList.remove('hidden');
       variantRow.classList.remove('hidden');
@@ -490,7 +503,7 @@
         emptyVariantOpt.textContent = '— select type —';
         variantSel.appendChild(emptyVariantOpt);
 
-        // Show component types (sdui_container, sdui_widget) only
+        // Show every child type allowed in this slot
         slotChildren.forEach(a => {
           const opt = document.createElement('option');
           opt.value = a.node_type;
@@ -509,7 +522,7 @@
       sectionSel.addEventListener('change', sectionSel._slotChangeHandler);
 
       // Enable create button when component type is selected
-      // For screen nodes, we don't load variants - the type is determined by the component
+      // For collection-slot parents, we don't load variants - the type is determined by the component
       // Remove any existing variant loading handlers
       variantSel.removeEventListener('change', variantSel._variantRowHandler);
       variantSel.removeEventListener('change', variantSel._variantEnableHandler);
@@ -518,13 +531,13 @@
         const selectedType = variantSel.value;
         document.getElementById('btn_create').disabled = !selectedType;
         
-        // For screen nodes, don't load variants - just enable create button
+        // For collection-slot parents, don't load variants - just enable create button
         // The type attribute will be set automatically by the backend
       };
       variantSel.addEventListener('change', variantSel._variantEnableHandler);
 
     } else {
-      // Standard flow for non-screen parents
+      // Standard flow for parents without multi-type collection slots
       sectionRow.classList.add('hidden');
       sel.parentElement.classList.remove('hidden');
       variantRow.classList.add('hidden');

@@ -2,6 +2,8 @@
 Business logic for AttributeDef, component type, and variant property management.
 """
 
+from django.db import transaction
+
 from ..models import DomainItem
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.node_type_repository import NodeTypeRepository
@@ -53,6 +55,7 @@ class AttributeDefService:
         properties = self.repository.get_domain_items(domain)
         return {"domain_name": domain_name, "properties": properties}
 
+    @transaction.atomic
     def save_component_properties(self, component_type: str, properties: list) -> dict:
         """
         Replace the DomainItems for a component type domain and sync variant AttributeDefs.
@@ -99,7 +102,7 @@ class AttributeDefService:
                     )
             label = attr_def.name if attr_def else prop_value
             domain_items_to_create.append(
-                DomainItem(domain=domain, value=prop_value, label=label, extra_metadata=None)
+                DomainItem(domain=domain, value=prop_value, label=label)
             )
 
         if domain_items_to_create:
@@ -120,6 +123,7 @@ class AttributeDefService:
         """Return variant keys for a specific node_type."""
         return self.repository.get_variants_for_node_type(node_type_id)
 
+    @transaction.atomic
     def create_attribute_def(
         self,
         variant_key: str,
@@ -165,6 +169,7 @@ class AttributeDefService:
         )
         return {"ok": True, "id": str(attr_def.id)}
 
+    @transaction.atomic
     def make_attribute_common(self, attr_id: str) -> dict:
         """
         Convert a variant-specific AttributeDef to common (is_common=True, variant_key=None).
@@ -176,6 +181,7 @@ class AttributeDefService:
         self.repository.update_attribute_def_to_common(attr_def)
         return {"ok": True}
 
+    @transaction.atomic
     def make_attribute_specific(self, attr_id: str) -> dict:
         """
         Convert a common AttributeDef to variant-specific (is_common=False).
@@ -190,6 +196,7 @@ class AttributeDefService:
         self.repository.update_attribute_def_to_specific(attr_def)
         return {"ok": True}
 
+    @transaction.atomic
     def delete_attribute_def(self, attr_id: str) -> dict:
         """
         Delete an AttributeDef by ID.
@@ -250,19 +257,10 @@ class AttributeDefService:
         if not semantic_type_ids:
             semantic_type_ids = self.repository.get_parent_node_type_ids(catalog_type_ids, scope_type_ids)
 
-        # catalog source: prefer dedicated catalog types; fall back to all variant types
+        # catalog source: prefer dedicated catalog types; fall back to all variant types.
+        # Props node types are already included via NodeTypeVariant.props_node_type_id
+        # (select_related'd, so out-of-scope props types are still resolved).
         catalog_source_ids = catalog_type_ids if catalog_type_ids else variant_node_type_ids
-
-        # Special case: if scope is provided and catalog_type_ids contains sdui_props,
-        # ensure sdui_props is included even if it's not in the scope (it has json_scope='sdui_sub')
-        # This is needed because sdui_props is where SDUI component properties are stored
-        if scope and catalog_type_ids:
-            from ..models import NodeType
-            sdui_props_nt = NodeType.objects.filter(name='sdui_props').first()
-            if sdui_props_nt and sdui_props_nt.id in catalog_type_ids:
-                # Ensure sdui_props is in catalog_source_ids
-                if sdui_props_nt.id not in catalog_source_ids:
-                    catalog_source_ids.append(sdui_props_nt.id)
 
         common_attrs = self.repository.get_common_attribute_defs(semantic_type_ids)
         for a in common_attrs:
@@ -287,6 +285,7 @@ class AttributeDefService:
             "variant_key": variant_key,
         }
 
+    @transaction.atomic
     def save_attributes_by_variant(self, variant_key: str, selected_ids: list, scope: str = "") -> dict:
         """
         Sync the set of catalog AttributeDefs assigned to a variant_key.

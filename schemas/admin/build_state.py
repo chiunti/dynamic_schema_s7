@@ -8,25 +8,17 @@ from django.urls import path, reverse
 from django.utils.html import format_html
 from django.contrib.admin.views.main import IncorrectLookupParameters
 
-from ..models import (
-    BuildState,
-    AttributeDef,
-    Node,
-    NodeAttribute,
-    Project,
-)
+from ..models import BuildState
 from ..services.schema_service import SchemaService
-from ..services.schema_validation_service import SchemaValidationService
 from ..repositories.schema_repository import SchemaRepository
 from ..repositories.project_repository import ProjectRepository
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..constants import (
-    ERR_INVALID_NODE_ID,
     ERR_NODE_NOT_FOUND,
-    ERR_INCOMPLETE_SCHEMA,
-    ERR_NOT_A_ROOT_NODE,
     ERR_PUBLISH_FAILED,
     ERR_REBUILD_FAILED,
+    STATUS_DRAFT,
+    STATUS_PUBLISHED,
 )
 
 
@@ -49,7 +41,6 @@ class ProjectListFilter(admin.SimpleListFilter):
 class BuildStateAdmin(admin.ModelAdmin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.validation_service = SchemaValidationService()
         self.schema_service = SchemaService()
         self.schema_repository = SchemaRepository()
         self.node_type_repository = NodeTypeRepository()
@@ -110,6 +101,10 @@ class BuildStateAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         """Filter by node_type if selected in tab"""
         qs = super().get_queryset(request)
+        if not request.user.is_superuser:
+            from ..repositories.multi_tenant_repository import MultiTenantRepository
+            accessible_org_ids = MultiTenantRepository().get_accessible_organization_ids(request.user)
+            qs = qs.filter(project__organization_id__in=accessible_org_ids)
         node_type_name = getattr(self, '_node_type_filter', None)
 
         if node_type_name:
@@ -117,8 +112,8 @@ class BuildStateAdmin(admin.ModelAdmin):
             matching = list(self.schema_repository.get_root_nodes_by_node_type_name(node_type_name))
             if matching:
                 q = Q()
-                for k, v in matching:
-                    q |= Q(key=k, version=v)
+                for key, version, project_id in matching:
+                    q |= Q(key=key, version=version, project_id=project_id)
                 qs = qs.filter(q)
             else:
                 qs = qs.none()
@@ -167,7 +162,7 @@ class BuildStateAdmin(admin.ModelAdmin):
                     status_attr = self.schema_repository.get_node_attribute_by_node_attr_def(node, ad_status)
                     if status_attr and status_attr.value_string:
                         status = status_attr.value_string
-                        color = "green" if status == "published" else "orange" if status == "draft" else "gray"
+                        color = "green" if status == STATUS_PUBLISHED else "orange" if status == STATUS_DRAFT else "gray"
                         return format_html('<span style="color: {};">{}</span>', color, status.capitalize())
         except Exception:
             pass
@@ -190,10 +185,11 @@ class BuildStateAdmin(admin.ModelAdmin):
         except Exception:
             pass
 
-        if node_status == 'draft' and obj.last_cached_build is None and node_id:
-            # Check for missing required properties before allowing publish
-            warnings = self._collect_required_warnings(node_id)
-            if warnings:
+        if node_status == STATUS_DRAFT and obj.last_cached_build is None and node_id:
+            # Shared publish gate: same missing-required rule as publish_view
+            blockers = self.schema_service.get_publish_blockers(node)
+            if blockers:
+                warnings = blockers["warnings"]
                 return format_html(
                     '<span class="s7-publish-blocked" title="Missing required properties: {} properties across {} nodes">'
                     '<button class="button" disabled style="opacity:0.6;cursor:not-allowed;">Publish</button>'
@@ -206,7 +202,7 @@ class BuildStateAdmin(admin.ModelAdmin):
             url = reverse("admin:schemas_buildstate_publish", kwargs={"node_id": node_id})
             return format_html('<a href="{}" class="button">Publish</a>', url)
 
-        if obj.current_build != obj.last_cached_build and node_status == 'published':
+        if obj.current_build != obj.last_cached_build and node_status == STATUS_PUBLISHED:
             url = reverse("admin:schemas_buildstate_rebuild_cache", kwargs={"key": obj.key, "version": obj.version})
             return format_html('<a href="{}" class="button">Rebuild Cache</a>', url)
 
@@ -220,44 +216,21 @@ class BuildStateAdmin(admin.ModelAdmin):
         ]
         return custom_urls + urls
 
-    def _collect_required_warnings(self, root_node_id):
-        """Walk the node tree and return missing required AttributeDefs per node."""
-        return self.validation_service.collect_required_warnings(root_node_id)
-
     def publish_view(self, request, node_id):
-        from uuid import UUID
+        # View = params + response. All publish gating (UUID coercion,
+        # not-found, missing-required blockers, root-node rule, publish)
+        # is orchestrated by SchemaService.publish_schema_by_id.
         try:
-            node_id = UUID(node_id) if isinstance(node_id, str) else node_id
-            node = self.schema_repository.get_node_by_id_with_node_type(node_id)
-        except Exception:
-            return JsonResponse({"error": ERR_INVALID_NODE_ID}, status=400)
-
-        if not node:
+            blockers = self.schema_service.publish_schema_by_id(node_id)
+        except LookupError:
             return JsonResponse({"error": ERR_NODE_NOT_FOUND}, status=404)
-
-        # Validate no missing required properties before publishing
-        warnings = self._collect_required_warnings(node.id)
-        if warnings:
-            warning_details = [
-                f"{w['node_name']} ({w['node_type']}): missing {', '.join(w['missing'])}"
-                for w in warnings
-            ]
-            return JsonResponse({
-                "error": ERR_INCOMPLETE_SCHEMA,
-                "detail": f"Cannot publish: {len(warnings)} node(s) have missing required properties",
-                "warnings": warnings,
-                "message": "Complete all required properties before publishing. " + "; ".join(warning_details)
-            }, status=400)
-
-        if not node.node_type or not node.node_type.is_root:
-            return JsonResponse({"error": ERR_NOT_A_ROOT_NODE}, status=400)
-
-        try:
-            self.schema_service.publish_schema(node)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:
             return JsonResponse({"error": ERR_PUBLISH_FAILED, "detail": str(e)}, status=500)
+
+        if blockers:
+            return JsonResponse(blockers, status=400)
 
         return HttpResponseRedirect(reverse("admin:schemas_buildstate_changelist"))
 

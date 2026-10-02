@@ -1,6 +1,7 @@
 import uuid
 from typing import Optional
 
+from ..constants import ROLE_ADMIN
 from ..models import Organization, OrganizationMember, Project
 
 
@@ -64,7 +65,7 @@ class MultiTenantRepository:
     def get_role_in(self, user, organization_id: uuid.UUID) -> Optional[str]:
         """Get user's role in an organization."""
         if user.is_superuser:
-            return "admin"
+            return ROLE_ADMIN
         try:
             member = OrganizationMember.objects.get(
                 user=user,

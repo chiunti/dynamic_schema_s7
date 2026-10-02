@@ -24,6 +24,7 @@ from ..constants import (
     ERR_VALUE_MUST_BE_JSON_SERIALIZABLE,
     ERR_DOMAIN_NAME_MUST_BE_NON_EMPTY_MAX_255_OR_NONE,
     ERR_NODE_TYPE_MUST_BE_NON_EMPTY_MAX_255,
+    VALID_SCHEMA_STATUSES,
 )
 
 
@@ -261,7 +262,7 @@ class SchemaRepository:
         # Allow None or empty string for schema_version (will use "1" as fallback)
         if schema_version is not None and schema_version != "" and (not isinstance(schema_version, str) or len(schema_version) == 0 or len(schema_version) > 20):
             raise ValueError(ERR_SCHEMA_VERSION_MUST_BE_NON_EMPTY_MAX_20)
-        if not isinstance(schema_status, str) or schema_status not in ['draft', 'published', 'archived']:
+        if not isinstance(schema_status, str) or schema_status not in VALID_SCHEMA_STATUSES:
             raise ValueError(ERR_SCHEMA_STATUS_MUST_BE_VALID)
         if not isinstance(overwrite, bool):
             raise ValueError(ERR_OVERWRITE_MUST_BE_BOOLEAN)
@@ -270,15 +271,23 @@ class SchemaRepository:
         if schema_version is None or schema_version == "":
             schema_version = "1"
 
+        if project_id and not organization_id:
+            raise ValueError('Organization is required for a project schema')
+        query = (
+            "SELECT s7.s7_import_schema_scoped(%s::jsonb, %s, %s, %s, %s, %s::uuid, %s::uuid)"
+            if project_id else
+            "SELECT s7.s7_import_schema(%s::jsonb, %s, %s, %s, %s, %s::uuid, %s::uuid)"
+        )
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT s7.s7_import_schema(%s::jsonb, %s, %s, %s, %s, %s::uuid, %s::uuid)",
-                [json.dumps(validated_schema), schema_key, schema_version, schema_status, overwrite, str(project_id) if project_id else None, str(organization_id) if organization_id else None]
+                query,
+                [json.dumps(validated_schema), schema_key, schema_version, schema_status, overwrite,
+                 str(project_id) if project_id else None, str(organization_id) if organization_id else None]
             )
             schema_id = cursor.fetchone()[0]
         return schema_id
     
-    def publish_schema(self, key, version):
+    def publish_schema(self, key, version, project_id):
         """
         Publish a schema using PostgreSQL function.
         
@@ -291,9 +300,12 @@ class SchemaRepository:
             raise ValueError(ERR_KEY_MUST_BE_NON_EMPTY_MAX_30)
         if not isinstance(version, str) or len(version) == 0 or len(version) > 20:
             raise ValueError(ERR_VERSION_MUST_BE_NON_EMPTY_MAX_20)
-        
         with connection.cursor() as cursor:
-            cursor.execute("SELECT s7.s7_publish_schema(%s, %s)", [key, version])
+            if project_id:
+                cursor.execute("SELECT s7.s7_publish_schema_scoped(%s, %s, %s::uuid)",
+                               [key, version, str(project_id)])
+            else:
+                cursor.execute("SELECT s7.s7_publish_schema(%s, %s)", [key, version])
     
     def set_node_attribute_from_json(self, node_id, node_type_name, json_key, value, domain_name=None):
         """
@@ -407,7 +419,7 @@ class SchemaRepository:
         if project_id is not None:
             qs = qs.filter(project_id=project_id)
         if organization_id is not None:
-            qs = qs.filter(organization_id=organization_id)
+            qs = qs.filter(project__organization_id=organization_id)
         qs.update(dirty=True)
     
     def build_schema_cached(self, key, version, schema_type=None, project_id=None, organization_id=None):
@@ -425,9 +437,15 @@ class SchemaRepository:
             raise ValueError(ERR_VERSION_MUST_BE_NON_EMPTY_MAX_20)
         
         with connection.cursor() as cursor:
-            cursor.execute("SELECT s7.s7_build_schema_cached(%s, %s, %s)", [key, version, schema_type])
+            if project_id:
+                cursor.execute(
+                    "SELECT s7.s7_build_schema_cached_scoped(%s, %s, %s, %s::uuid)",
+                    [key, version, schema_type, str(project_id)],
+                )
+            else:
+                cursor.execute("SELECT s7.s7_build_schema_cached(%s, %s, %s)", [key, version, schema_type])
     
-    def get_published_schema(self, node_type, key, version, project_id=None, organization_id=None):
+    def get_published_schema(self, node_type: str, key: str, version: str, project_id: uuid.UUID):
         """
         Get schema JSON for published schemas.
         
@@ -447,6 +465,8 @@ class SchemaRepository:
         if not isinstance(version, str) or len(version) == 0 or len(version) > 20:
             raise ValueError(ERR_VERSION_MUST_BE_NON_EMPTY_MAX_20)
         
+        if not project_id:
+            raise ValueError(ERR_PROJECT_ID_REQUIRED)
         # Build query using shared published view
         # node_type is passed to the view which filters by node_type_name
         # Additional status check for defense in depth
@@ -454,16 +474,19 @@ class SchemaRepository:
             SELECT sc.schema_json
             FROM s7.schema_cache sc
             JOIN s7.v_schema_published v
-              ON v.key = sc.key
-              AND v.version = sc.version
+              ON v.key = sc.key AND v.version = sc.version
+            JOIN s7.schema_nodes n
+              ON n.id = v.root_node_id AND n.project_id = sc.project_id
             WHERE sc.key = %s
               AND sc.version = %s
               AND v.node_type_name = %s
+              AND sc.schema_type = %s
               AND v.status = 'published'
+              AND sc.project_id = %s::uuid
         """
 
         with connection.cursor() as cursor:
-            cursor.execute(query, [key, version, node_type])
+            cursor.execute(query, [key, version, node_type, node_type, str(project_id)])
             result = cursor.fetchone()
             return result[0] if result else None
     
@@ -480,6 +503,16 @@ class SchemaRepository:
         """
         with connection.cursor() as cursor:
             cursor.execute("SET session_replication_role = DEFAULT;")
+
+    def get_node_field_names(self):
+        """Return the set of concrete field names on the Node model.
+
+        These are real schema_nodes columns/relations — not attribute keys —
+        so JSON keys matching them are handled as node fields instead of
+        NodeAttributes.
+        """
+        from ..models import Node
+        return {f.name for f in Node._meta.get_fields()}
 
     def get_attribute_def(self, node_type, json_key):
         """Get attribute definition by node type and json key"""
@@ -550,11 +583,6 @@ class SchemaRepository:
         from ..models import NodeAttribute
         return NodeAttribute.objects.filter(node=node, attribute_def=attribute_def).first()
 
-    def get_node_by_id(self, node_id):
-        """Get node by ID"""
-        from ..models import Node
-        return Node.objects.filter(id=node_id).first()
-
     def get_attribute_defs_by_node_type_and_keys(self, node_type, json_keys):
         """Get attribute definitions by node type and json keys"""
         from ..models import AttributeDef
@@ -604,14 +632,6 @@ class SchemaRepository:
             attribute_def_id__in=attribute_def_ids
         ).delete()
         return result[0]  # delete() returns (count, {model: count})
-
-    def update_or_create_node_attribute(self, node, attribute_def, defaults):
-        """Update or create node attribute with given defaults"""
-        from ..models import NodeAttribute
-        return NodeAttribute.objects.update_or_create(
-            node=node, attribute_def=attribute_def,
-            defaults=defaults
-        )
 
     def update_node_version_by_parent(self, parent_id, version):
         """Update version field for root node by parent ID"""
@@ -711,13 +731,15 @@ class SchemaRepository:
             root_id: UUID of the root node
 
         Returns:
-            List of dicts with node data including id, parent_id, node_type__name, sort_order, key
+            List of dicts with node data including id, parent_id, node_type_id,
+            node_type__name, node_type__default_json_key, sort_order, key
         """
         from ..models import Node
         node_ids = self._get_subtree_ids(root_id)
         return list(Node.objects.select_related("node_type").filter(
             id__in=node_ids
-        ).values("id", "parent_id", "node_type__name", "sort_order", "key"))
+        ).values("id", "parent_id", "node_type_id", "node_type__name",
+                 "node_type__default_json_key", "sort_order", "key"))
 
     def get_nodes_with_attrs(self, node_ids):
         """
@@ -774,7 +796,7 @@ class SchemaRepository:
             queue.extend(children)
         return ids
 
-    def get_root_node_by_key_version(self, key: str, version: str):
+    def get_root_node_by_key_version(self, key: str, version: str, project_id: uuid.UUID = None):
         """
         Get root node by key and version.
 
@@ -786,12 +808,10 @@ class SchemaRepository:
             Node instance or None
         """
         from ..models import Node
-        return Node.objects.filter(
-            node_type__is_root=True,
-            parent__isnull=True,
-            key=key,
-            version=version,
-        ).select_related('node_type').first()
+        filters = {'node_type__is_root': True, 'parent__isnull': True, 'key': key, 'version': version}
+        if project_id is not None:
+            filters['project_id'] = project_id
+        return Node.objects.filter(**filters).select_related('node_type').first()
 
     def get_attribute_def_by_node_type_key(self, node_type, json_key: str):
         """
@@ -829,7 +849,7 @@ class SchemaRepository:
             node_type_name: Name of the node type
 
         Returns:
-            List of (key, version) tuples
+            List of (key, version, project_id) tuples
         """
         from ..models import Node
         return Node.objects.filter(
@@ -837,7 +857,7 @@ class SchemaRepository:
             parent__isnull=True,
             key__isnull=False,
             version__isnull=False,
-        ).values_list('key', 'version')
+        ).values_list('key', 'version', 'project_id')
 
     def get_children_ids_by_parent(self, parent_id):
         """
@@ -860,7 +880,11 @@ class SchemaRepository:
             node_id: UUID of the node
 
         Returns:
-            Node instance or None
+            Node instance
+
+        Raises:
+            Node.DoesNotExist: If no node exists with the given ID
+            ValidationError: If node_id is not a valid UUID
         """
         from ..models import Node
         return Node.objects.get(id=node_id)

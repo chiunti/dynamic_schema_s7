@@ -116,6 +116,35 @@ class Project(models.Model):
         return self.name
 
 
+class ProjectAPICredential(models.Model):
+    id = models.UUIDField(
+        primary_key=True,
+        editable=False,
+        default=uuid.uuid4,
+        db_default=models.Func(function="gen_random_uuid"),
+    )
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="api_credentials")
+    name = models.CharField(max_length=255)
+    token_digest = models.CharField(max_length=64, unique=True)
+    can_read = models.BooleanField(default=False)
+    can_import = models.BooleanField(default=False)
+    can_publish = models.BooleanField(default=False)
+    expires_at = models.DateField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "schema_project_api_credentials"
+        verbose_name = "Project API credential"
+        verbose_name_plural = "Project API credentials"
+        indexes = [
+            models.Index(fields=["project", "revoked_at"], name="idx_project_tokens_active"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.project_id}:{self.name}"
+
+
 class NodeType(models.Model):
     id = models.UUIDField(
         primary_key=True,
@@ -129,6 +158,8 @@ class NodeType(models.Model):
     is_root = models.BooleanField(default=False)
     json_scope = models.TextField(null=True, blank=True)
     default_json_key = models.CharField(max_length=255, null=True, blank=True, help_text='Default JSON key for nodes of this type when no explicit key is provided')
+    is_json_map = models.BooleanField(default=False)
+    json_scalar_attribute = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = "schema_node_types"

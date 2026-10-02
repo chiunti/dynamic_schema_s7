@@ -152,21 +152,48 @@ class CompositionRepository:
             collection_key=collection_key
         ).first()
 
-    def get_child_type_names_by_parent_no_collection_key(self, parent_type):
+    def get_structural_child_types(self, parent_type) -> list[NodeType]:
         """
-        Get child type names for compositions without collection_key.
+        Get child NodeTypes for compositions without collection_key.
+
+        These are "structural" children — embedded sub-nodes whose JSON key
+        is declared by the child type itself (NodeType.default_json_key)
+        or equals the child type name.
 
         Args:
             parent_type: Parent NodeType instance
 
         Returns:
-            Set of child type names
+            List of child NodeType instances
+        """
+        from ..models import NodeTypeComposition
+        return [
+            comp.child_type
+            for comp in NodeTypeComposition.objects
+            .filter(parent_type=parent_type, collection_key__isnull=True)
+            .select_related('child_type')
+        ]
+
+    def get_collection_member_type_pairs(self, parent_type_ids) -> set:
+        """
+        Get (parent_type_id, child_type_id) pairs rendered as JSON arrays.
+
+        Only non-singleton collection compositions qualify (collection_key
+        set and max_children != 1), i.e. children that appear as elements
+        of a JSON array in s7_build_node_json output.
+
+        Args:
+            parent_type_ids: List of parent NodeType IDs to restrict to
+
+        Returns:
+            Set of (parent_type_id, child_type_id) tuples
         """
         from ..models import NodeTypeComposition
         return set(
             NodeTypeComposition.objects
-            .filter(parent_type=parent_type, collection_key__isnull=True)
-            .values_list('child_type__name', flat=True)
+            .filter(parent_type_id__in=parent_type_ids, collection_key__isnull=False)
+            .exclude(max_children=1)
+            .values_list("parent_type_id", "child_type_id")
         )
 
     def get_compositions_by_parent_type_select_related(self, node_type):

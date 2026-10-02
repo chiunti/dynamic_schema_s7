@@ -16,8 +16,8 @@ class SchemaImportSerializer(serializers.Serializer):
         help_text="Root node type name or json_scope (e.g. design_token_collection).",
     )
     project_id = serializers.UUIDField(
-        required=True,
-        help_text="Project UUID where the schema will be imported.",
+        required=False,
+        help_text="Optional project UUID; must match the authenticated project.",
     )
     organization_id = serializers.UUIDField(
         required=False,

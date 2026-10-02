@@ -1,7 +1,7 @@
 import uuid
 from typing import Optional
 
-from ..models import Project
+from ..models import Project, ProjectAPICredential
 
 
 class ProjectRepository:
@@ -83,3 +83,22 @@ class ProjectRepository:
             QuerySet of Project instances ordered by name
         """
         return Project.objects.all().order_by('name')
+
+
+class ProjectCredentialRepository:
+    """Persistence for project-scoped service credentials."""
+
+    def get_by_digest(self, digest: str) -> Optional[ProjectAPICredential]:
+        return ProjectAPICredential.objects.select_related('project__organization').filter(token_digest=digest).first()
+
+    def create(self, project: Project, name: str, digest: str, expires_at,
+               scopes: set[str]) -> ProjectAPICredential:
+        return ProjectAPICredential.objects.create(
+            project=project, name=name, token_digest=digest, expires_at=expires_at,
+            can_read='read' in scopes, can_import='import' in scopes, can_publish='publish' in scopes,
+        )
+
+    def revoke(self, project_id: uuid.UUID, credential_id: uuid.UUID, revoked_at) -> bool:
+        return bool(ProjectAPICredential.objects.filter(
+            id=credential_id, project_id=project_id, revoked_at__isnull=True
+        ).update(revoked_at=revoked_at))

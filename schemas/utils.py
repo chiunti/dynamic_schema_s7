@@ -3,9 +3,8 @@ Utility functions for the schemas app.
 """
 
 import json
-import re
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from .models import Organization, Project, OrganizationMember
 
@@ -107,32 +106,3 @@ def member_to_dict(member: OrganizationMember) -> Dict[str, Any]:
         "role": member.role,
         "joined_at": member.joined_at.isoformat(),
     }
-
-
-def normalize_variant_key(variant_key: Optional[str]) -> Optional[str]:
-    """Normalize variant_key to snake_case for comparison.
-
-    Args:
-        variant_key: Variant key in camelCase or other format
-
-    Returns:
-        Normalized variant key in snake_case, or None if input is None/empty
-    """
-    if not variant_key:
-        return None
-    # Convert camelCase to snake_case
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', variant_key)
-    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
-
-
-def snake_to_camel(s: str) -> str:
-    """Convert snake_case to camelCase.
-
-    Args:
-        s: String in snake_case format
-
-    Returns:
-        String in camelCase format
-    """
-    parts = s.split('_')
-    return parts[0] + ''.join(word.capitalize() for word in parts[1:])

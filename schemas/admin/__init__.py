@@ -1,14 +1,14 @@
 """
 Dynamic Schema Admin Package
 
-Organizado en módulos por responsabilidad:
-- base: Clases base, inlines y utilidades compartidas
-- definitions: Admin para modelos de definición (NodeType, AttributeDef, DataType, etc.)
+Organized into modules by responsibility:
+- base: Base classes, inlines and shared utilities
+- definitions: Admin for definition models (NodeType, AttributeDef, DataType, etc.)
 - node_editor: NodeEditorMixin - API endpoints for visual editor
-- node: NodeAdmin y NodeAttributeAdmin
-- schema: SchemaAdmin con import, publish, archive, draft, build
-- build_state: BuildStateAdmin con tabs dinámicos
-- schema_cache: SchemaCacheAdmin con tabs dinámicos
+- node: NodeAdmin and NodeAttributeAdmin
+- schema: SchemaAdmin with import, publish, archive, draft, build
+- build_state: BuildStateAdmin with dynamic tabs
+- schema_cache: SchemaCacheAdmin with dynamic tabs
 """
 
 from .base import (
@@ -42,6 +42,7 @@ from .schema_cache import SchemaCacheAdmin
 
 from .organization import OrganizationAdmin, OrganizationMemberInline
 from .project import ProjectAdmin
+from .project_credential import ProjectAPICredentialAdmin
 
 __all__ = [
     # Base
@@ -70,4 +71,5 @@ __all__ = [
     'OrganizationAdmin',
     'OrganizationMemberInline',
     'ProjectAdmin',
+    'ProjectAPICredentialAdmin',
 ]

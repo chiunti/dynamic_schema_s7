@@ -1,6 +1,7 @@
 import uuid
 from typing import Optional
 
+from ..constants import ROLE_ADMIN, ROLE_EDITOR
 from ..repositories.organization_repository import OrganizationRepository
 from ..repositories.project_repository import ProjectRepository
 
@@ -8,8 +9,8 @@ from ..repositories.project_repository import ProjectRepository
 class PermissionService:
     """Service for evaluating user permissions on organizations and projects."""
 
-    EDIT_ROLES = ("admin", "editor")
-    ADMIN_ROLES = ("admin",)
+    EDIT_ROLES = (ROLE_ADMIN, ROLE_EDITOR)
+    ADMIN_ROLES = (ROLE_ADMIN,)
 
     def __init__(
         self,
@@ -24,7 +25,7 @@ class PermissionService:
 
     def get_user_role_in_organization(self, user, organization_id: uuid.UUID) -> Optional[str]:
         if self.is_superuser(user):
-            return "admin"
+            return ROLE_ADMIN
         return self._org_repo.get_user_role_in_organization(user.id, organization_id)
 
     def can_access_organization(self, user, organization_id: uuid.UUID) -> bool:

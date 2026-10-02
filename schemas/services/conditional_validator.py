@@ -8,9 +8,9 @@ Format:
     "logic": "and|or",
     "conditions": [
         {
-            "left": {"field": "campo_x"} | {"value": 5},
+            "left": {"field": "field_x"} | {"value": 5},
             "op": "==|!=|>|>=|<|<=|in|not_in",
-            "right": {"field": "campo_y"} | {"value": 10}
+            "right": {"field": "field_y"} | {"value": 10}
         }
     ]
 }

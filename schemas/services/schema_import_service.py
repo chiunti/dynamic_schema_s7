@@ -6,18 +6,33 @@ from typing import Any, Optional
 
 from django.db import transaction
 
+from ..constants import STATUS_DRAFT, VALID_SCHEMA_STATUSES
 from ..repositories.node_type_repository import NodeTypeRepository
+from ..repositories.project_repository import ProjectRepository
 from ..services.schema_service import SchemaService
 
 
 class SchemaImportService:
     """Service that prepares and executes a schema import from API request data."""
 
-    VALID_STATUSES = ("draft", "published", "archived")
+    VALID_STATUSES = VALID_SCHEMA_STATUSES
 
     def __init__(self):
         self.node_type_repository = NodeTypeRepository()
+        self.project_repository = ProjectRepository()
         self.schema_service = SchemaService()
+
+    def get_import_form_options(self) -> dict:
+        """Return the options needed to render the schema import form.
+
+        Returns:
+            Dict with 'root_types' (root NodeTypes) and 'projects'
+            (projects ordered by name).
+        """
+        return {
+            "root_types": self.node_type_repository.get_all_root_node_types(),
+            "projects": self.project_repository.get_all_projects_ordered(),
+        }
 
     def _resolve_node_type(self, node_type_value: str):
         """Resolve a root node type by name or json_scope."""
@@ -94,9 +109,9 @@ class SchemaImportService:
             "",
         )
         if not schema_key:
-            # Fall back to the root object's name, truncated to the
+            # Fall back to the root object's name or id, truncated to the
             # schema_nodes.key column limit (30 chars).
-            schema_key = self._extract_string(inner.get("name"), "")[:30]
+            schema_key = self._extract_string(inner.get("name") or inner.get("id"), "")[:30]
         if not schema_key:
             raise ValueError(
                 "schema_key is required and cannot be determined from the schema"
@@ -109,7 +124,7 @@ class SchemaImportService:
 
         schema_status = self._extract_string(
             data.get("schema_status") or inner.get("status"),
-            "draft",
+            STATUS_DRAFT,
         )
         if schema_status not in self.VALID_STATUSES:
             raise ValueError(
@@ -119,6 +134,12 @@ class SchemaImportService:
         overwrite = bool(data.get("overwrite", False))
         project_id: Optional[uuid.UUID] = data.get("project_id")
         organization_id: Optional[uuid.UUID] = data.get("organization_id")
+
+        # Derive the organization from the project when it is not supplied
+        # explicitly (e.g. the admin import form only submits a project_id).
+        if project_id and not organization_id:
+            project = self.project_repository.get_project_by_id(project_id)
+            organization_id = project.organization_id if project else None
 
         schema_id, version_warning = self.schema_service.import_schema(
             resolved_schema,

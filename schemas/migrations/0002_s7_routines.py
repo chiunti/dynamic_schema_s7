@@ -280,8 +280,10 @@ BEGIN
   -- Also captures shorthand-dispatch children: nodes in singleton compositions
   -- (max_children=1) that were stored under a key != ntc.collection_key
   -- (e.g. appbar, fab, drawer stored as screen_section children).
-  -- Use COALESCE to fallback to node_type name when key is NULL (e.g. sdui_props -> 'props')
-  SELECT jsonb_object_agg(COALESCE(ch.key, ch_nt.name), s7_build_node_json(ch.id))
+  -- Fallback key for unkeyed children: the child type's declared
+  -- default_json_key first (e.g. a props node type declares 'props'),
+  -- then the raw node_type name as last resort.
+  SELECT jsonb_object_agg(COALESCE(ch.key, ch_nt.default_json_key, ch_nt.name), s7_build_node_json(ch.id))
   INTO v_keyed_children
   FROM s7.schema_nodes ch
   JOIN s7.schema_node_types ch_nt ON ch_nt.id = ch.node_type_id
@@ -580,43 +582,6 @@ BEGIN
   ELSE
     RETURN 'json';
   END IF;
-END;
-$$ LANGUAGE plpgsql
-SET search_path TO s7, public;
-"""
-
-
- # ------------------------------
- # infer_variant_key
- # ------------------------------
-FN_INFER_VARIANT_KEY_SQL = r"""
-SET search_path TO s7, public;
-
-CREATE OR REPLACE FUNCTION s7_infer_variant_key(
-  p_node_type_name TEXT,
-  p_json_key TEXT,
-  p_field_type TEXT DEFAULT NULL
-)
-RETURNS TEXT AS $$
-BEGIN
-  -- Only fields have variant_keys based on their type
-  IF p_node_type_name != 'field' THEN
-    RETURN NULL;
-  END IF;
-
-  -- Specific json_keys that should use the field type as variant_key
-  IF p_json_key IN (
-    'accepted_file_types', 'currency', 'custom_mask', 'decimal_digits', 'depends_of',
-    'focus_frame_caption', 'focus_frame', 'format', 'height', 'input_mask', 'integer_only',
-    'marker_color', 'marker_type', 'max_file_size_mb', 'max_image_size_mb', 'max_items',
-    'max_length', 'max_lines', 'max_photos', 'max_video_duration_seconds', 'max_videos',
-    'max', 'min_length', 'min_lines', 'min', 'no_label', 'options_url', 'options',
-    'pattern', 'picture_source', 'quality', 'style', 'yes_label', 'zoom'
-  ) THEN
-    RETURN p_field_type;
-  END IF;
-
-  RETURN NULL;
 END;
 $$ LANGUAGE plpgsql
 SET search_path TO s7, public;
@@ -1403,9 +1368,9 @@ DECLARE
   v_status_eff TEXT;
   v_root_key TEXT;
 BEGIN
-  RAISE NOTICE 's7_import_schema called with p_schema: %, p_key: %, p_version: %, p_status: %, p_project_id: %, p_organization_id: %', 
-    p_schema, p_key, p_version, p_status, p_project_id, p_organization_id;
-  
+  RAISE NOTICE 's7_import_schema: key=%, version=%, status=%, project=%, org=%',
+    p_key, p_version, p_status, p_project_id, p_organization_id;
+
   IF p_schema IS NULL OR p_schema = 'null'::jsonb THEN
     RAISE EXCEPTION 'schema is required';
   END IF;

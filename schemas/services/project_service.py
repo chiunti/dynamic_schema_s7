@@ -36,7 +36,7 @@ class ProjectService:
         user,
         slug: Optional[str] = None,
     ) -> Project:
-        if organization_id and not self._perm.can_edit_organization(user, organization_id):
+        if not organization_id or not self._perm.can_edit_organization(user, organization_id):
             raise PermissionError(ERR_NO_PERMISSION_TO_CREATE_PROJECTS)
         resolved_slug = slug or slugify(name)
         if self._repo.slug_exists_in_organization(resolved_slug, organization_id):

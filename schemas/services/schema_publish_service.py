@@ -20,7 +20,7 @@ class SchemaPublishService:
         self.schema_service = SchemaService()
 
     @transaction.atomic
-    def publish(self, node_type_value: str, key: str, version: str, user=None) -> None:
+    def publish(self, node_type_value: str, key: str, version: str, user=None, project_id=None) -> None:
         """Publish a schema by node type, key and version."""
         node_type = self.node_type_repository.get_node_type_by_name(node_type_value)
         if not node_type:
@@ -30,7 +30,7 @@ class SchemaPublishService:
         if not node_type or not node_type.is_root:
             raise ValueError(f"Root node type not found for '{node_type_value}'")
 
-        node = self.schema_repository.get_root_node_by_key_version(key, version)
+        node = self.schema_repository.get_root_node_by_key_version(key, version, project_id=project_id)
         if not node or node.node_type_id != node_type.id:
             raise ValueError(f"Schema not found for {node_type_value}/{key}/{version}")
 

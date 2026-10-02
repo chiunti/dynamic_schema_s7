@@ -2,16 +2,18 @@
 Base classes, inlines and shared utilities for Dynamic Schema admin
 """
 
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.urls import path, reverse
 from django.http import HttpResponseRedirect, JsonResponse
 from django.utils.html import format_html
 
 from ..models import (
-    AttributeDef,
     NodeAttribute,
     NodeTypeComposition,
 )
+from ..services.node_service import NodeService
 from ..services.schema_service import SchemaService
 from ..services.schema_validation_service import SchemaValidationService
 from ..repositories.schema_repository import SchemaRepository
@@ -22,7 +24,9 @@ from ..constants import (
     ERR_KEY_AND_VERSION_REQUIRED,
     ERR_SCHEMA_NOT_FOUND,
     ERR_UNEXPECTED_ERROR,
-    ERR_PROJECT_ID_REQUIRED,
+    STATUS_DRAFT,
+    STATUS_PUBLISHED,
+    STATUS_ARCHIVED,
 )
 
 
@@ -93,29 +97,37 @@ class RootNodeAdminMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.schema_service = SchemaService()
+        self.node_service = NodeService()
         self.repository = SchemaRepository()
         self.validation_service = SchemaValidationService()
 
     def get_changeform_initial_data(self, request):
         initial = super().get_changeform_initial_data(request)
-        nt = self.repository.get_node_type_by_name(self.root_node_type_name)
+        nt = self.node_service.get_node_type(self.root_node_type_name)
         if nt:
             initial['node_type'] = nt.pk
         return initial
 
     def save_model(self, request, obj, form, change):
         if not change:
-            obj.node_type = self.repository.get_node_type_by_name(self.root_node_type_name)
+            obj.node_type = self.node_service.get_node_type(self.root_node_type_name)
             obj.parent = None
         else:
             obj.parent = None
-        super().save_model(request, obj, form, change)
-
         if not change and obj.node_type and obj.node_type.name == self.root_node_type_name:
+            # Save the node and initialize its attributes atomically: on
+            # failure the node is rolled back instead of reporting the
+            # error after a commit.
             try:
-                self.schema_service.initialize_schema_attributes(obj)
+                with transaction.atomic():
+                    super().save_model(request, obj, form, change)
+                    self.schema_service.initialize_schema_attributes(obj)
             except ValueError as e:
                 form.add_error('name', str(e))
+                messages.error(request, str(e))
+                return
+        else:
+            super().save_model(request, obj, form, change)
 
     def _get_version(self, obj):
         return obj.version or None
@@ -150,7 +162,7 @@ class RootNodeAdminMixin:
             if domain_item and hasattr(domain_item, 'color') and domain_item.color:
                 return format_html('<span style="color: {};">{}</span>', domain_item.color, status_value)
         # Fallback to default colors for common status values
-        colors = {'archived': 'red', 'published': 'green', 'draft': 'orange'}
+        colors = {STATUS_ARCHIVED: 'red', STATUS_PUBLISHED: 'green', STATUS_DRAFT: 'orange'}
         color = colors.get(status_value)
         if color:
             return format_html('<span style="color: {};">{}</span>', color, status_value)
@@ -180,7 +192,7 @@ class RootNodeAdminMixin:
     def warnings_display(self, obj):
         """Display warning indicator if schema has missing required properties."""
         status_value = self._get_attr_value(obj, 'status')
-        if status_value != 'draft':
+        if status_value != STATUS_DRAFT:
             return format_html('<span style="color:#999;">—</span>')
         
         warnings = self._collect_required_warnings(obj.id)
@@ -200,41 +212,35 @@ class RootNodeAdminMixin:
 
     @admin.display(description="Actions")
     def acciones(self, obj):
+        # Lifecycle transition rules (which actions exist for which status)
+        # live in SchemaService.get_available_actions; this display method
+        # only maps each action to its URL/button markup.
+        info = self.schema_service.get_available_actions(obj)
         buttons = []
-        status_value = self._get_attr_value(obj, 'status')
-
-        if status_value != 'archived':
-            editor_url = reverse("admin:schemas_node_editor")
-            buttons.append(format_html('<a href="{}?node_id={}" class="button">Edit</a>', editor_url, obj.id))
-
-        key_value = self._get_attr_value(obj, 'key')
-        version_value = obj.version
-        if key_value and version_value:
-            build_state = self.repository.get_build_state(key_value, version_value)
-            if build_state and build_state.dirty:
+        for action in info["actions"]:
+            if action == 'edit':
+                editor_url = reverse("admin:schemas_node_editor")
+                buttons.append(format_html('<a href="{}?node_id={}" class="button">Edit</a>', editor_url, obj.id))
+            elif action == 'build':
                 build_url = reverse(f"admin:{self.url_prefix}_build")
-                buttons.append(format_html('<a href="{}?key={}&version={}" class="button">Build</a>', build_url, key_value, version_value))
-
-        if status_value == 'draft':
-            # Check for warnings before allowing publish
-            warnings = self._collect_required_warnings(obj.id)
-            if warnings:
+                buttons.append(format_html('<a href="{}?key={}&version={}" class="button">Build</a>', build_url, info["key"], info["version"]))
+            elif action == 'publish_blocked':
                 buttons.append(format_html(
                     '<span class="button" disabled style="opacity:0.6;cursor:not-allowed;" '
                     'title="Cannot publish: {} node(s) have missing required properties">'
                     'Publish 🔒'
                     '</span>',
-                    len(warnings)
+                    info["blocked_nodes"]
                 ))
-            else:
+            elif action == 'publish':
                 publish_url = reverse(f"admin:{self.url_prefix}_publish")
                 buttons.append(format_html('<a href="{}?node_id={}" class="button">Publish</a>', publish_url, obj.id))
-        elif status_value == 'published':
-            archive_url = reverse(f"admin:{self.url_prefix}_archive")
-            buttons.append(format_html('<a href="{}?node_id={}" class="button">Archive</a>', archive_url, obj.id))
-        elif status_value == 'archived':
-            draft_url = reverse(f"admin:{self.url_prefix}_draft")
-            buttons.append(format_html('<a href="{}?node_id={}" class="button">Draft</a>', draft_url, obj.id))
+            elif action == 'archive':
+                archive_url = reverse(f"admin:{self.url_prefix}_archive")
+                buttons.append(format_html('<a href="{}?node_id={}" class="button">Archive</a>', archive_url, obj.id))
+            elif action == 'draft':
+                draft_url = reverse(f"admin:{self.url_prefix}_draft")
+                buttons.append(format_html('<a href="{}?node_id={}" class="button">Draft</a>', draft_url, obj.id))
 
         return format_html(' '.join(buttons))
 
@@ -248,12 +254,15 @@ class RootNodeAdminMixin:
         ]
         return custom_urls + urls
 
-    def _get_node_or_error(self, request, model_class):
+    def _get_node_or_error(self, request, model_class=None):
         node_id = request.GET.get("node_id")
         if not node_id:
             return None, JsonResponse({"error": ERR_NODE_ID_REQUIRED}, status=400)
-        obj = self.repository.get_node_by_id(node_id)
-        if not obj:
+        try:
+            obj = self.node_service.get_node_with_parent(node_id)
+        except (ValidationError, ValueError):
+            return None, JsonResponse({"error": ERR_NOT_FOUND}, status=404)
+        if obj is None:
             return None, JsonResponse({"error": ERR_NOT_FOUND}, status=404)
         return obj, None
 
@@ -263,6 +272,10 @@ class RootNodeAdminMixin:
         obj, err = self._get_node_or_error(request, self.model)
         if err:
             return err
+        # Shared publish gate: missing required properties block publishing
+        blockers = self.schema_service.get_publish_blockers(obj)
+        if blockers:
+            return JsonResponse(blockers, status=400)
         try:
             self.schema_service.publish_schema(obj)
         except ValueError as e:
@@ -307,15 +320,12 @@ class RootNodeAdminMixin:
         if not key or not version:
             return JsonResponse({"error": ERR_KEY_AND_VERSION_REQUIRED}, status=400)
         try:
-            schema_node = self.repository.get_root_node_by_key_version(key, version)
-            
-            if not schema_node:
-                return JsonResponse({"error": ERR_SCHEMA_NOT_FOUND}, status=404)
-            
-            project_id = schema_node.project_id
-            if not project_id:
-                return JsonResponse({"error": ERR_PROJECT_ID_REQUIRED}, status=400)
-            self.schema_service.increment_build(key, version, project_id)
+            # Look up the root node and derive project_id inside the service
+            self.schema_service.increment_build_for(key, version)
+        except LookupError:
+            return JsonResponse({"error": ERR_SCHEMA_NOT_FOUND}, status=404)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
         return HttpResponseRedirect(reverse(f"admin:{self.changelist_url_name}"))

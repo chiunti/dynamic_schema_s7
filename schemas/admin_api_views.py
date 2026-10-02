@@ -1,6 +1,6 @@
 """
 HTTP view functions for the component properties admin API.
-These views are thin wrappers that delegate all business logic to AttributeDefService.
+These views are thin wrappers that delegate all business logic to services.
 """
 
 
@@ -8,9 +8,8 @@ import json
 from django.http import HttpRequest, JsonResponse
 
 from .services.attribute_def_service import AttributeDefService
-from .repositories.node_type_repository import NodeTypeRepository
-from .repositories.attribute_def_repository import AttributeDefRepository
-from .repositories.composition_repository import CompositionRepository
+from .services.node_service import NodeService
+from .services.schema_service import SchemaService
 from .constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_INVALID_JSON,
@@ -148,27 +147,15 @@ def api_delete_attribute_def(request: HttpRequest) -> JsonResponse:
 def api_attributes_by_variant(request: HttpRequest, variant_key: str) -> JsonResponse:
     scope = request.GET.get("scope", "")
     parent_node_id = request.GET.get("parent_node_id")
-    
+
     if request.method == "GET":
         # If parent_node_id is provided, use it to infer variant_key for props nodes
         # This allows the component properties editor to work when editing props child nodes
-        effective_variant_key = variant_key
-        if parent_node_id:
-            from .services.node_service import NodeService
-            from .repositories.schema_repository import SchemaRepository
-            
-            node_service = NodeService()
-            schema_repo = SchemaRepository()
-            
-            # Get the parent node
-            parent = schema_repo.get_node_by_id_with_node_type(parent_node_id)
-            if parent:
-                # Use NodeService to infer variant from parent
-                effective_variant_key = node_service.infer_variant_from_parent(parent)
-        
+        effective_variant_key = NodeService().get_effective_variant_key(variant_key, parent_node_id)
+
         if not effective_variant_key:
             return JsonResponse({"error": "variant_key is required or could not be inferred from parent_node_id"}, status=400)
-        
+
         result = AttributeDefService().get_attributes_by_variant(effective_variant_key, scope)
         return JsonResponse(result)
 
@@ -189,69 +176,14 @@ def api_json_example(request: HttpRequest) -> JsonResponse:
     """Generate JSON example dynamically from DB definitions"""
     if request.method != "GET":
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
-    
+
     schema_type = request.GET.get('schema_type')
-    
+
     if not schema_type:
         return JsonResponse({"error": "schema_type parameter required"}, status=400)
-    
-    root_node_type = NodeTypeRepository().get_root_node_type_by_scope(schema_type)
-    if not root_node_type:
+
+    example = SchemaService().generate_json_example(schema_type)
+    if example is None:
         return JsonResponse({"error": "Invalid schema type"}, status=400)
-    
-    # Generate example based on NodeType and compositions
-    example = _generate_json_example(root_node_type)
-    
+
     return JsonResponse({"example": example})
-
-
-def _generate_json_example(node_type):
-    """Generate JSON example from NodeType definitions (only root level with required fields)"""
-    attr_def_repo = AttributeDefRepository()
-    comp_repo = CompositionRepository()
-    from schemas.models import NodeTypeComposition
-
-    example = {}
-
-    # Start with the root key (node_type name or json_scope without _root suffix)
-    root_key = node_type.json_scope.replace('_root', '') if node_type.json_scope else node_type.name
-    example[root_key] = {}
-
-    # Add only required attributes for this node type
-    attr_defs = attr_def_repo.get_attribute_defs_by_node_type_required(node_type, variant_key=None)
-    for attr_def in attr_defs:
-        if attr_def.json_key in ['id', 'key', 'version']:
-            continue  # Skip auto-generated fields
-        example[root_key][attr_def.json_key] = _get_example_value(attr_def)
-
-    # Add empty array placeholders for collections (only structure, no content)
-    compositions = comp_repo.get_compositions_by_node_type(node_type)
-    for composition in compositions:
-        if composition.collection_key:
-            example[root_key][composition.collection_key] = []
-
-    return example
-
-
-def _get_example_value(attr_def):
-    """Generate example value based on DataType"""
-    from schemas.models import DataType
-    
-    data_type_name = attr_def.data_type.name if attr_def.data_type else 'string'
-    
-    if data_type_name == 'string':
-        return f"example_{attr_def.json_key}"
-    elif data_type_name == 'int':
-        return 1
-    elif data_type_name == 'number':
-        return 1.0
-    elif data_type_name == 'bool':
-        return True
-    elif data_type_name == 'list_string':
-        return ["option1", "option2"]
-    elif data_type_name == 'json':
-        return {}
-    elif data_type_name == 'date':
-        return "2024-01-01"
-    else:
-        return f"example_{attr_def.json_key}"

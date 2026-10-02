@@ -6,49 +6,33 @@ This mixin provides all the AJAX endpoints for the tree editor:
 - Node CRUD operations
 - Property management
 - Move and reorder operations
+
+Views are thin wrappers: they parse requests, delegate to services, and map
+errors to HTTP status codes. All business logic and data access live in
+services (NodeService, SchemaValidationService).
 """
 
 import json
 import logging
 import os
-from collections import deque
 
 from django.http import JsonResponse
-from django.db import transaction
-from django.db.models import Count, Max
 from django.urls import path
 from django.shortcuts import render
 from django.conf import settings
 
-from ..models import (
-    Node,
-    NodeType,
-    NodeTypeVariant,
-    AttributeDef,
-    NodeAttribute,
-    NodeTypeComposition,
-    Domain,
-    DomainItem,
-)
 from ..services.node_service import NodeService
+from ..services.node_json_service import NodeJsonService
 from ..services.schema_validation_service import SchemaValidationService
-from ..services.attribute_def_service import AttributeDefService
-from ..repositories.schema_repository import SchemaRepository
-from ..repositories.node_type_repository import NodeTypeRepository
-from ..repositories.attribute_def_repository import AttributeDefRepository
-from ..repositories.composition_repository import CompositionRepository
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_INVALID_JSON,
     ERR_NOT_FOUND,
     ERR_PARENT_NOT_FOUND,
     ERR_NODE_TYPE_NOT_FOUND,
-    ERR_COMPOSITION_NOT_ALLOWED,
     ERR_SCHEMA_NOT_FOUND,
     ERR_INTERNAL_SERVER_ERROR,
-    ERR_NAME_REQUIRED,
     ERR_PARENT_ID_AND_NODE_TYPE_REQUIRED,
-    ERR_MAX_CHILDREN_REACHED,
     ERR_NODE_TYPE_REQUIRED,
     ERR_NODE_ID_AND_NEW_PARENT_ID_REQUIRED,
     ERR_NODE_ID_AND_DIRECTION_REQUIRED,
@@ -68,11 +52,7 @@ class NodeEditorMixin:
         super().__init__(*args, **kwargs)
         self.validation_service = SchemaValidationService()
         self.node_service = NodeService()
-        self.attribute_def_service = AttributeDefService()
-        self.schema_repository = SchemaRepository()
-        self.node_type_repository = NodeTypeRepository()
-        self.attribute_def_repository = AttributeDefRepository()
-        self.composition_repository = CompositionRepository()
+        self.node_json_service = NodeJsonService()
 
     def get_urls(self):
         urls = super().get_urls()
@@ -99,25 +79,12 @@ class NodeEditorMixin:
         }
         return render(request, "admin/schemas/node/editor.html", context)
 
-    def _normalize_positions(self, parent_id):
-        self.schema_repository.normalize_positions(parent_id)
-
     def _resolve_root_node_id(self, request):
-        node_id = request.GET.get("node_id")
-        if node_id:
-            try:
-                node = self.schema_repository.get_node_by_id(node_id)
-                return node.id if node else None
-            except Node.DoesNotExist:
-                return None
-
-        key = request.GET.get("key")
-        version = request.GET.get("version")
-        if not key or not version:
-            return None
-
-        root_node = self.schema_repository.get_root_node_by_key_version(key, version)
-        return root_node.id if root_node else None
+        return self.node_service.resolve_root_node_id(
+            node_id=request.GET.get("node_id"),
+            key=request.GET.get("key"),
+            version=request.GET.get("version"),
+        )
 
     def _resolve_schema_root_id(self, request):
         return self._resolve_root_node_id(request)
@@ -128,8 +95,7 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_SCHEMA_NOT_FOUND}, status=404)
 
         try:
-            node_service = NodeService()
-            nodes = node_service.get_node_tree(root_id)
+            nodes = self.node_service.get_node_tree(root_id)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:
@@ -139,20 +105,12 @@ class NodeEditorMixin:
         return JsonResponse({"root_id": root_id, "nodes": nodes})
 
     def api_node(self, request, node_id):
-        node = self.schema_repository.get_node_by_id_with_parent(node_id)
+        node = self.node_service.get_node_with_parent(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
         if request.method == "GET":
-            children = list(self.schema_repository.get_children_by_parent(node))
-            return JsonResponse({
-                "id": node.id,
-                "name": node.name,
-                "sort_order": node.sort_order,
-                "parent_id": node.parent_id,
-                "node_type": node.node_type.name,
-                "children": [{"id": str(c["id"]), "name": c["name"], "node_type": c["node_type__name"]} for c in children],
-            })
+            return JsonResponse(self.node_service.get_node_detail(node))
 
         if request.method != "PATCH":
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
@@ -166,10 +124,10 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
 
         if "name" in payload:
-            node.name = str(payload.get("name") or "").strip()
-            if not node.name:
-                return JsonResponse({"error": ERR_NAME_REQUIRED}, status=400)
-            self.schema_repository.update_node_name(node.id, node.name)
+            try:
+                self.node_service.update_node_name(node.id, payload.get("name"))
+            except ValueError as e:
+                return JsonResponse({"error": str(e)}, status=400)
 
         return JsonResponse({"ok": True})
 
@@ -177,7 +135,7 @@ class NodeEditorMixin:
         if request.method != "GET":
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
-        node = self.schema_repository.get_node_by_id_with_node_type(node_id)
+        node = self.node_service.get_node_with_node_type(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
@@ -185,10 +143,7 @@ class NodeEditorMixin:
         return JsonResponse(result)
 
     def api_properties(self, request, node_id):
-        import logging
-        logger = logging.getLogger(__name__)
-
-        node = self.schema_repository.get_node_by_id_with_node_type(node_id)
+        node = self.node_service.get_node_with_node_type(node_id)
         if not node:
             return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
 
@@ -212,8 +167,7 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_PROPERTIES_REQUIRED}, status=400)
 
         try:
-            node_service = NodeService()
-            node_service.update_node_properties(node, updates)
+            self.node_service.update_node_properties(node, updates)
         except ValueError as e:
             logging.error(f"Validation error saving properties for node {node_id}: {e}")
             return JsonResponse({"error": str(e)}, status=400)
@@ -237,66 +191,22 @@ class NodeEditorMixin:
 
         parent_id = payload.get("parent_id")
         node_type_name = payload.get("node_type")
-        variant_key = payload.get("variant_key")
-        collection_key = payload.get("collection_key")
         if not parent_id or not node_type_name:
             return JsonResponse({"error": ERR_PARENT_ID_AND_NODE_TYPE_REQUIRED}, status=400)
 
-        parent = self.schema_repository.get_node_by_id_with_node_type(parent_id)
-        if not parent:
+        if not self.node_service.get_node_with_node_type(parent_id):
             return JsonResponse({"error": ERR_PARENT_NOT_FOUND}, status=404)
-
-        child_type = self.node_type_repository.get_node_type_by_name(node_type_name)
-        if not child_type:
+        if not self.node_service.get_node_type(node_type_name):
             return JsonResponse({"error": ERR_NODE_TYPE_NOT_FOUND}, status=404)
 
-        # Filter composition by collection_key if provided
-        if collection_key:
-            composition = self.composition_repository.get_composition_by_parent_child_collection_key(
-                parent.node_type, child_type, collection_key
-            )
-        else:
-            composition = self.schema_repository.get_composition_by_parent_child(parent.node_type, child_type)
-
-        if not composition:
-            return JsonResponse({"error": ERR_COMPOSITION_NOT_ALLOWED}, status=400)
-
-        # For collection_key-based compositions, check if a child with that key already exists
-        # Only apply this check for singleton slots (max_children=1)
-        if composition.collection_key and composition.max_children == 1:
-            existing = self.schema_repository.node_exists_by_parent_key(parent, composition.collection_key)
-            if existing:
-                return JsonResponse({"error": f"A child with key '{composition.collection_key}' already exists"}, status=400)
-        # For non-collection_key compositions or non-singleton compositions, use count-based check
-        elif composition.max_children is not None:
-            current_children_count = self.schema_repository.count_children_by_parent_type(parent, child_type)
-            if current_children_count >= composition.max_children:
-                return JsonResponse({"error": ERR_MAX_CHILDREN_REACHED}, status=400)
-
-        logging.info(f"Creating node: parent={parent_id}, node_type={node_type_name}, collection_key={collection_key}, composition.collection_key={composition.collection_key}")
-
-        max_pos = self.schema_repository.get_max_sort_order(parent.id)
-        next_pos = 0 if max_pos is None else int(max_pos) + 1
-        name = payload.get("name")
-        if name is None or str(name).strip() == "":
-            name = f"{node_type_name}_{next_pos}"
-
-        # Use collection_key as the node key only for singleton slots (max_children=1)
-        # For compositions that allow multiple children (max_children=None or >1), don't use collection_key as key
-        if composition.collection_key and composition.max_children == 1:
-            node_key = composition.collection_key
-        else:
-            node_key = None
-
-        # For props nodes, infer variant_key from parent's type attribute
-        if not variant_key:
-            child_type = self.node_type_repository.get_node_type_by_name(node_type_name)
-            if child_type and self.node_type_repository.is_props_node_type(child_type):
-                variant_key = self.node_service.infer_variant_from_parent(parent)
-
         try:
-            node_service = NodeService()
-            node = node_service.create_node(parent_id, node_type_name, name, variant_key, key=node_key, collection_key=collection_key)
+            node = self.node_service.create_node(
+                parent_id,
+                node_type_name,
+                payload.get("name"),
+                variant_key=payload.get("variant_key"),
+                collection_key=payload.get("collection_key"),
+            )
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:
@@ -328,42 +238,16 @@ class NodeEditorMixin:
 
         node_id = payload.get("node_id")
         new_parent_id = payload.get("new_parent_id")
-        new_position = payload.get("new_position")
 
         if not node_id or not new_parent_id:
             return JsonResponse({"error": ERR_NODE_ID_AND_NEW_PARENT_ID_REQUIRED}, status=400)
 
-        node = self.schema_repository.get_node_by_id_with_parent(node_id)
-        if not node:
-            return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
-
-        new_parent = self.schema_repository.get_node_by_id_with_node_type(new_parent_id)
-        if not new_parent:
-            return JsonResponse({"error": ERR_PARENT_NOT_FOUND}, status=404)
-
-        allowed = self.schema_repository.composition_exists(new_parent.node_type, node.node_type)
-        if not allowed:
-            return JsonResponse({"error": ERR_COMPOSITION_NOT_ALLOWED}, status=400)
-
-        old_parent_id = node.parent_id
-        with transaction.atomic():
-            self.schema_repository.update_node_parent(node.id, new_parent.id)
-            self._normalize_positions(old_parent_id)
-            self._normalize_positions(new_parent.id)
-
-            if new_position is not None:
-                try:
-                    pos = int(new_position)
-                except (TypeError, ValueError):
-                    pos = None
-                if pos is not None:
-                    siblings = list(self.schema_repository.get_children_by_parent_full(new_parent.id))
-                    pos = max(0, min(pos, max(0, len(siblings) - 1)))
-                    ordered = [n for n in siblings if n.id != node.id]
-                    ordered.insert(pos, self.schema_repository.get_node_by_id(node_id))
-                    for idx, n in enumerate(ordered):
-                        n.sort_order = idx
-                    self.schema_repository.bulk_update_nodes_sort_order(ordered)
+        try:
+            self.node_service.move_node(node_id, new_parent_id, payload.get("new_position"))
+        except LookupError as e:
+            return JsonResponse({"error": str(e)}, status=404)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         return JsonResponse({"ok": True})
 
@@ -384,28 +268,10 @@ class NodeEditorMixin:
         if not node_id or direction not in {"up", "down"}:
             return JsonResponse({"error": ERR_NODE_ID_AND_DIRECTION_REQUIRED}, status=400)
 
-        node = self.schema_repository.get_node_by_id_with_parent(node_id)
-        if not node:
-            return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
-
-        parent_id = node.parent_id
-        with transaction.atomic():
-            self._normalize_positions(parent_id)
-            siblings = list(self.schema_repository.get_children_by_parent_full(parent_id))
-            ids = [n.id for n in siblings]
-            try:
-                idx = ids.index(node.id)
-            except ValueError:
-                return JsonResponse({"error": ERR_NOT_FOUND}, status=404)
-
-            if direction == "up" and idx > 0:
-                siblings[idx - 1].sort_order, siblings[idx].sort_order = siblings[idx].sort_order, siblings[idx - 1].sort_order
-                self.schema_repository.bulk_update_nodes_sort_order([siblings[idx - 1], siblings[idx]])
-            elif direction == "down" and idx < len(siblings) - 1:
-                siblings[idx + 1].sort_order, siblings[idx].sort_order = siblings[idx].sort_order, siblings[idx + 1].sort_order
-                self.schema_repository.bulk_update_nodes_sort_order([siblings[idx + 1], siblings[idx]])
-
-            self._normalize_positions(parent_id)
+        try:
+            self.node_service.reorder_node(node_id, direction)
+        except LookupError as e:
+            return JsonResponse({"error": str(e)}, status=404)
 
         return JsonResponse({"ok": True})
 
@@ -414,8 +280,7 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            node_service = NodeService()
-            node_service.delete_node(node_id)
+            self.node_service.delete_node(node_id)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
         except Exception as e:
@@ -437,8 +302,7 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_NODE_ID_REQUIRED_MSG}, status=400)
 
         try:
-            node_service = NodeService()
-            jsonb_result = node_service.build_node_json(node_id)
+            jsonb_result = self.node_service.build_node_json(node_id)
             # jsonb_result may be a dict (from psycopg2 JSONB adapter) or a string
             if isinstance(jsonb_result, dict):
                 json_text = json.dumps(jsonb_result, indent=2, ensure_ascii=False)
@@ -457,10 +321,9 @@ class NodeEditorMixin:
         """
         Build a map of { node_id: [startLine, endLine] } for every node in the subtree.
 
-        Delegates to utils.build_node_line_map for implementation.
+        Delegates to NodeJsonService.build_node_line_map for implementation.
         """
-        from .utils import build_node_line_map
-        return build_node_line_map(json_text, root_id)
+        return self.node_json_service.build_node_line_map(json_text, root_id)
 
     def api_editor_extensions(self, request):
         """List all JavaScript files in the extensions_editor directory."""
@@ -472,7 +335,7 @@ class NodeEditorMixin:
             # In production, use STATIC_ROOT (collected files)
             static_dirs = getattr(settings, 'STATICFILES_DIRS', [])
             static_root = getattr(settings, 'STATIC_ROOT', None)
-            
+
             # Try STATICFILES_DIRS first (development)
             extensions_dir = None
             for static_dir in static_dirs:
@@ -480,7 +343,7 @@ class NodeEditorMixin:
                 if os.path.exists(potential_path):
                     extensions_dir = potential_path
                     break
-            
+
             # If not found in STATICFILES_DIRS, try STATIC_ROOT (production)
             if not extensions_dir and static_root:
                 potential_path = os.path.join(static_root, 'admin', 'js', 'extensions_editor')
@@ -495,9 +358,8 @@ class NodeEditorMixin:
             for filename in os.listdir(extensions_dir):
                 if filename.endswith('.js') and not filename.startswith('.'):
                     extensions.append(filename)
-            
+
             return JsonResponse({"extensions": extensions})
         except Exception as e:
             logging.error(f"Error listing editor extensions: {e}", exc_info=True)
             return JsonResponse({"extensions": []})
-

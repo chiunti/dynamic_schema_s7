@@ -46,12 +46,24 @@ class AttributeDefRepository:
         return list(NodeType.objects.filter(is_root=True).order_by("name"))
 
     def get_type_attribute_def_for_scope(self, scope: str) -> Optional[AttributeDef]:
-        """Return the first AttributeDef with json_key='type' that has a domain, reachable from scope."""
+        """Return the first domain-bound discriminator AttributeDef reachable from scope.
+
+        The discriminator json_keys are read from the declarative
+        NodeTypeVariant.discriminator_attr values of the node types in
+        scope (usually a single key, e.g. 'type'), instead of assuming a
+        fixed attribute name.
+        """
         type_ids = self.get_node_type_ids_for_scope(scope)
+        discriminator_keys = (
+            NodeTypeVariant.objects
+            .filter(node_type_id__in=type_ids, discriminator_attr__isnull=False)
+            .values_list("discriminator_attr", flat=True)
+            .distinct()
+        )
         return (
             AttributeDef.objects.filter(
                 node_type_id__in=type_ids,
-                json_key="type",
+                json_key__in=discriminator_keys,
                 domain__isnull=False,
             )
             .select_related("domain")
@@ -157,34 +169,6 @@ class AttributeDefRepository:
         return AttributeDef.objects.filter(
             node_type=node_type, json_key=json_key, variant_key=variant_key
         ).exists()
-
-    def create_attribute_def(
-        self,
-        node_type: NodeType,
-        name: str,
-        json_key: str,
-        data_type: DataType,
-        is_required: bool,
-        is_common: bool,
-        variant_key: Optional[str],
-        domain: Optional[Domain] = None,
-        group: Optional[str] = None,
-    ) -> AttributeDef:
-        """Create and return a new AttributeDef."""
-        kwargs = dict(
-            node_type=node_type,
-            name=name,
-            json_key=json_key,
-            data_type=data_type,
-            is_required=is_required,
-            is_common=is_common,
-            variant_key=variant_key,
-        )
-        if domain is not None:
-            kwargs["domain"] = domain
-        if group is not None:
-            kwargs["group"] = group
-        return AttributeDef.objects.create(**kwargs)
 
     def update_attribute_def_to_common(self, attr_def: AttributeDef) -> None:
         """Set is_common=True and variant_key=None on an AttributeDef."""
@@ -298,22 +282,24 @@ class AttributeDefRepository:
         """Return any NodeType instance."""
         return NodeType.objects.first()
 
-    def get_schema_cache_keys_by_node_type(self, node_type_name: str) -> list[str]:
+    def get_schema_cache_keys_by_node_type(self, node_type_name: str) -> list[tuple]:
         """
-        Get schema cache keys for a given node type name.
+        Get (key, version, project_id) tuples for nodes of a given node type name.
 
         Args:
             node_type_name: Name of the node type to filter by
 
         Returns:
-            List of key strings from NodeAttribute matching the node type
+            List of (key, version, project_id) tuples from NodeAttribute/Node
+            matching the node type, so callers can scope filters per project
+            and version instead of matching on key alone.
         """
         from ..models import NodeAttribute
         return list(
             NodeAttribute.objects.filter(
                 node__node_type__name=node_type_name,
                 attribute_def__json_key='key'
-            ).values_list('value_string', flat=True)
+            ).values_list('value_string', 'node__version', 'node__project_id')
         )
 
     def get_node_type_variant_config(
@@ -492,7 +478,16 @@ class AttributeDefRepository:
 
     def get_discriminator_attribute_def(self, node_type):
         """
-        Get discriminator AttributeDef for a node type.
+        Get the discriminator AttributeDef for a node type.
+
+        Prefers the declarative NodeTypeVariant.discriminator_attr
+        declared for ``node_type``. Only when the node type has no variant
+        rows at all does it fall back to the legacy heuristic (first
+        required + domain-bound + non-natural attribute), so catalogs
+        without variant declarations still resolve. The configured
+        discriminator may legitimately be 'type', so the fallback does
+        not exclude any literal key; deterministic ordering keeps the
+        heuristic stable when several attributes qualify.
 
         Args:
             node_type: NodeType instance
@@ -500,12 +495,31 @@ class AttributeDefRepository:
         Returns:
             AttributeDef instance or None
         """
+        variants = NodeTypeVariant.objects.filter(node_type=node_type)
+        if variants.exists():
+            discriminator_attr = (
+                variants.filter(discriminator_attr__isnull=False)
+                .values_list("discriminator_attr", flat=True)
+                .first()
+            )
+            if not discriminator_attr:
+                # Variant rows exist but declare discriminator_attr=None:
+                # this is a props node type whose variant is inherited
+                # from the parent — it has no own discriminator.
+                return None
+            return AttributeDef.objects.filter(
+                node_type=node_type,
+                json_key=discriminator_attr,
+            ).first()
+
+        # Legacy fallback for catalogs without any NodeTypeVariant rows:
+        # first required, domain-bound, non-natural attribute.
         return AttributeDef.objects.filter(
             node_type=node_type,
             variant_key__isnull=True,
             is_required=True,
             domain__isnull=False,
-        ).exclude(data_type__name__startswith='natural_').exclude(json_key='type').first()
+        ).exclude(data_type__name__startswith='natural_').order_by('json_key').first()
 
     def get_domain_items_by_domain(self, domain):
         """

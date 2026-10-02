@@ -192,6 +192,8 @@ class Migration(migrations.Migration):
                 ("is_root", models.BooleanField(default=False)),
                 ("json_scope", models.TextField(null=True, blank=True)),
                 ("default_json_key", models.CharField(max_length=255, null=True, blank=True, help_text='Default JSON key for nodes of this type when no explicit key is provided')),
+                ("is_json_map", models.BooleanField(default=False)),
+                ("json_scalar_attribute", models.CharField(max_length=255, null=True, blank=True)),
             ],
             options={
                 "db_table": "schema_node_types",

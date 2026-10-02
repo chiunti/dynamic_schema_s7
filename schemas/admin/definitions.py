@@ -9,7 +9,6 @@ from django.contrib.admin.views.main import IncorrectLookupParameters
 from django.http import JsonResponse, QueryDict, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import path, re_path
-from django.utils.html import format_html
 
 from ..models import (
     Domain,
@@ -22,7 +21,6 @@ from ..models import (
     ComponentPropertiesProxy,
 )
 from ..repositories.node_type_repository import NodeTypeRepository
-from ..repositories.composition_repository import CompositionRepository
 from ..services.composition_service import CompositionService
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
@@ -94,23 +92,10 @@ class NodeTypeAdmin(admin.ModelAdmin):
     inlines = (NodeTypeCompositionInline, NodeTypeVariantInline)
 
 
-def _get_tree_node_type_ids(root_scope):
-    """Return all NodeType IDs reachable from the root type with the given json_scope,
-    by walking the NodeTypeComposition tree. No hardcoded names needed."""
-    root = NodeTypeRepository().get_root_node_type_by_scope(root_scope)
-    if not root:
-        return []
-    visited = set()
-    queue = [root.id]
-    comp_repo = CompositionRepository()
-    while queue:
-        current_id = queue.pop()
-        if current_id in visited:
-            continue
-        visited.add(current_id)
-        children = comp_repo.get_child_type_ids_by_parent_type_id(current_id, NodeTypeComposition)
-        queue.extend(children)
-    return list(visited)
+# NOTE: the BFS helper that used to live here (_get_tree_node_type_ids) was
+# equivalent to AttributeDefRepository.get_node_type_ids_for_scope — same
+# root-scope lookup, same child_type_id walk — so it was removed. Callers
+# now go through CompositionService.get_scope_node_type_ids.
 
 
 class CompositionAdminMixin:
@@ -124,19 +109,9 @@ class CompositionAdminMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.composition_service = CompositionService()
-        self.node_type_repository = NodeTypeRepository()
-        self.composition_repository = CompositionRepository()
-
-    def _active_scope(self, request):
-        return getattr(self, '_scope_filter', None) or request.GET.get('scope', '')
 
     def _type_ids(self, scope=None):
-        if scope:
-            return _get_tree_node_type_ids(scope)
-        all_ids = []
-        for nt in NodeTypeRepository().get_all_root_node_types():
-            all_ids.extend(_get_tree_node_type_ids(nt.json_scope))
-        return list(set(all_ids))
+        return self.composition_service.get_scope_node_type_ids(scope or None)
 
     def get_changelist_instance(self, request):
         self._scope_filter = request.GET.get('scope')
@@ -209,18 +184,7 @@ class CompositionAdminMixin:
         if request.method != "GET":
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
         scope = request.GET.get("scope", "")
-        type_ids = self._type_ids(scope if scope else None)
-        node_types = [
-            {**nt, "id": str(nt["id"])}
-            for nt in self.node_type_repository.get_node_types_by_ids(type_ids)
-        ]
-        compositions = [
-            {**c, "id": str(c["id"]), "parent_type_id": str(c["parent_type_id"]), "child_type_id": str(c["child_type_id"])}
-            for c in self.composition_repository.get_compositions_by_parent_type_ids(type_ids, self.composition_model).values(
-                "id", "parent_type_id", "child_type_id", "collection_key", "min_children", "max_children"
-            )
-        ]
-        return JsonResponse({"node_types": node_types, "compositions": compositions})
+        return JsonResponse(self.composition_service.get_graph_data(scope, self.composition_model))
 
     def api_composition(self, request, comp_id):
         if request.method == "GET":

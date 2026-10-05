@@ -1,0 +1,2274 @@
+[
+  {
+    "model": "schemas.domain",
+    "pk": "e2d5ac9c-2e5a-570a-89be-a4adc5445798",
+    "fields": {
+      "domain_name": "QuestionType",
+      "description": "Types of survey questions"
+    }
+  },
+  {
+    "model": "schemas.domain",
+    "pk": "680a9637-0fd6-5912-8d4c-55caf3a0feb8",
+    "fields": {
+      "domain_name": "SatisfactionLevel",
+      "description": "Customer satisfaction scale"
+    }
+  },
+  {
+    "model": "schemas.domain",
+    "pk": "56b8848a-2cf0-59cf-b394-68e60b18cd9f",
+    "fields": {
+      "domain_name": "ScoreRange",
+      "description": "Labels for score_range int_tuple [min, max]"
+    }
+  },
+  {
+    "model": "schemas.domain",
+    "pk": "4a742416-1dfc-50dd-8910-21b80b4a3cc9",
+    "fields": {
+      "domain_name": "ServiceUsed",
+      "description": "Services the customer has used"
+    }
+  },
+  {
+    "model": "schemas.domain",
+    "pk": "7d090d8d-09f0-5515-be48-a371770680a5",
+    "fields": {
+      "domain_name": "SurveyStatus",
+      "description": "Workflow status for survey lifecycle"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "07f42aa1-54c9-54be-96dd-62b2eaa1affe",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "boolean",
+      "label": "Yes/No"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "df2e3ca4-dd9e-5f07-bf94-19ee11a8cb28",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "date",
+      "label": "Date"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "41dcc70e-7f58-5d07-ac67-5e1740882f4c",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "email",
+      "label": "Email"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "087eea93-ef22-52c5-ace9-bc6e238b3942",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "multiple_choice",
+      "label": "Multiple Choice"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "29c0fdda-2070-5822-8720-d998b82fa00a",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "number",
+      "label": "Number"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "a7c420e5-42f7-5e29-8e6b-a304c12371db",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "rating",
+      "label": "Rating (1-5)"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "de14d8df-4e1c-58c0-9260-ee6313cdb9fa",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "single_choice",
+      "label": "Single Choice"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "222646ca-2036-529c-aaf4-7038c9a30230",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "text",
+      "label": "Short Text"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "21a7afb1-8fdb-57b0-9877-c18f0c444c57",
+    "fields": {
+      "domain": [
+        "QuestionType"
+      ],
+      "value": "textarea",
+      "label": "Long Text"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "4d5a4b5a-8d32-5492-b825-a258148842ac",
+    "fields": {
+      "domain": [
+        "SatisfactionLevel"
+      ],
+      "value": "1",
+      "label": "Very Dissatisfied"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "a8bb0919-55b7-5aa7-be6d-ee8dc77d848a",
+    "fields": {
+      "domain": [
+        "SatisfactionLevel"
+      ],
+      "value": "2",
+      "label": "Dissatisfied"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "3c2a6bd7-31ff-5205-ad9a-c4e4b891a11c",
+    "fields": {
+      "domain": [
+        "SatisfactionLevel"
+      ],
+      "value": "3",
+      "label": "Neutral"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "7a9cc378-1dfe-5e22-b714-ec3ed2404a6f",
+    "fields": {
+      "domain": [
+        "SatisfactionLevel"
+      ],
+      "value": "4",
+      "label": "Satisfied"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "b6af7aec-00dc-5b2e-b0fb-c7305672c18c",
+    "fields": {
+      "domain": [
+        "SatisfactionLevel"
+      ],
+      "value": "5",
+      "label": "Very Satisfied"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "9d810a3b-c0d7-5bb6-b401-0930da15553e",
+    "fields": {
+      "domain": [
+        "ScoreRange"
+      ],
+      "value": "max",
+      "label": "Max score"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "cce016c1-c00b-51bf-a888-ff7d05f56303",
+    "fields": {
+      "domain": [
+        "ScoreRange"
+      ],
+      "value": "min",
+      "label": "Min score"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "2e22e160-4397-5d64-843b-c836a790707b",
+    "fields": {
+      "domain": [
+        "ServiceUsed"
+      ],
+      "value": "delivery",
+      "label": "Delivery Service"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "28766423-ab6e-5ed8-adc4-1947a2cf07d7",
+    "fields": {
+      "domain": [
+        "ServiceUsed"
+      ],
+      "value": "in_store",
+      "label": "In-Store Experience"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "70cc764d-6900-5ceb-b930-66b02932f73a",
+    "fields": {
+      "domain": [
+        "ServiceUsed"
+      ],
+      "value": "mobile_app",
+      "label": "Mobile App"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "b03043b3-66c7-555a-84aa-0fef64b86d3b",
+    "fields": {
+      "domain": [
+        "ServiceUsed"
+      ],
+      "value": "support",
+      "label": "Customer Support"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "364e9f0f-5b8a-5543-89ce-e205422aa079",
+    "fields": {
+      "domain": [
+        "ServiceUsed"
+      ],
+      "value": "website",
+      "label": "Online Platform"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "5919b516-e197-58bd-9dcc-af1fd1272f67",
+    "fields": {
+      "domain": [
+        "SurveyStatus"
+      ],
+      "value": "closed",
+      "label": "Closed"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "2a7f041e-bd33-531c-ad24-37f3f96541ae",
+    "fields": {
+      "domain": [
+        "SurveyStatus"
+      ],
+      "value": "draft",
+      "label": "Draft"
+    }
+  },
+  {
+    "model": "schemas.domainitem",
+    "pk": "1f873684-065c-589d-9d40-5e3eaf5ded9a",
+    "fields": {
+      "domain": [
+        "SurveyStatus"
+      ],
+      "value": "published",
+      "label": "Published"
+    }
+  },
+  {
+    "model": "schemas.nodetype",
+    "pk": "dd4f93cc-3d0f-5df3-a7c4-e59ff93f6a57",
+    "fields": {
+      "name": "survey",
+      "label": "Survey",
+      "is_container": true,
+      "is_root": true,
+      "json_scope": "survey_root",
+      "default_json_key": null,
+      "is_json_map": false,
+      "json_scalar_attribute": null
+    }
+  },
+  {
+    "model": "schemas.nodetype",
+    "pk": "813861ee-a7a9-5b33-940d-743ab5dd655e",
+    "fields": {
+      "name": "survey_question",
+      "label": "Survey Question",
+      "is_container": false,
+      "is_root": false,
+      "json_scope": "survey_question",
+      "default_json_key": null,
+      "is_json_map": false,
+      "json_scalar_attribute": null
+    }
+  },
+  {
+    "model": "schemas.nodetype",
+    "pk": "85984218-ea5d-5e27-ad3a-85e9016f8fe2",
+    "fields": {
+      "name": "survey_section",
+      "label": "Survey Section",
+      "is_container": true,
+      "is_root": false,
+      "json_scope": "survey_section",
+      "default_json_key": null,
+      "is_json_map": false,
+      "json_scalar_attribute": null
+    }
+  },
+  {
+    "model": "schemas.nodetypecomposition",
+    "pk": "c5668402-6eac-5e5f-883a-e998d5189f49",
+    "fields": {
+      "parent_type": [
+        "survey"
+      ],
+      "child_type": [
+        "survey_section"
+      ],
+      "collection_key": "sections",
+      "min_children": 1,
+      "max_children": null
+    }
+  },
+  {
+    "model": "schemas.nodetypecomposition",
+    "pk": "e93c6ded-a395-5c90-a6fa-75fe5493d7e1",
+    "fields": {
+      "parent_type": [
+        "survey_section"
+      ],
+      "child_type": [
+        "survey_question"
+      ],
+      "collection_key": "questions",
+      "min_children": 1,
+      "max_children": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "6c0d619a-dffc-50cd-bdeb-8e3245b6ca14",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "boolean",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "8080e574-357e-584c-8c19-5b7eadd0eedc",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "date",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "7aae2cab-15ac-57c5-9458-e2089c44af68",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "email",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "7378d3ba-4e95-5e18-a84b-90e708c6a920",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "multiple_choice",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "850864a6-54e1-5500-80c9-d2f2deeea61e",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "number",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "bf377364-0285-5c26-8359-f05a95f87d9c",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "rating",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "3d178852-d54c-54a5-84f3-285fce50bdd0",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "single_choice",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "72917fdf-2e22-570a-81d9-21b2d37e5f21",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "text",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.nodetypevariant",
+    "pk": "a14dfd90-0fdf-538f-ab78-412621ce217c",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "variant_key": "textarea",
+      "discriminator_attr": "type",
+      "props_node_type": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "7fd51581-beb6-5479-b163-0ee6e6d34663",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "allowed_scores",
+      "json_key": "allowed_scores",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "list_int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "0fc4aa55-5df7-5d2e-a88c-53b6ca84d80c",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "anonymous",
+      "json_key": "anonymous",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "bool"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "59d2ec25-6ef1-5fc6-b713-3c66b00287a7",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "brand_color",
+      "json_key": "brand_color",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "color"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "90b60a2d-0182-5140-95a1-520e57394e98",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "description",
+      "json_key": "description",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "355baf92-5a78-5c9b-a66e-814d852f97d9",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "end_date",
+      "json_key": "end_date",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "date"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "69167592-2965-50a0-8ed2-7c9c78fb9cf6",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "id",
+      "json_key": "id",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "natural_uuid"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "7cb54c73-68bb-5083-820a-53d74837d66f",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "meta",
+      "json_key": "meta",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "dict"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "b65fe7bf-497a-582d-8b1f-c006a6ddf25a",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "response_count",
+      "json_key": "response_count",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "3e80fa07-e709-5f47-8091-e2aab28fd074",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "score_range",
+      "json_key": "score_range",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "int_tuple"
+      ],
+      "domain": [
+        "ScoreRange"
+      ],
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "a703a3f8-07ce-5d41-815a-2446f0809762",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "start_date",
+      "json_key": "start_date",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "date"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "093bbf31-df84-5f86-9812-72014ffcb75d",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "status",
+      "json_key": "status",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": [
+        "SurveyStatus"
+      ],
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "169f8811-08db-57b1-b694-b51b1b44229c",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "tags",
+      "json_key": "tags",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "list_string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "8226994b-031a-5fd7-9bed-c03f71da377b",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "name": "title",
+      "json_key": "title",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "c267db63-0572-574f-bc3d-8a5604d83ac7",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "false_label",
+      "json_key": "false_label",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "boolean",
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "869f0d18-c311-5c3f-b596-39b495022402",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "false_label",
+      "json_key": "false_label",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "29d4c739-3869-566c-b17f-e778fe5599d1",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "help_text",
+      "json_key": "help_text",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "ef0cd557-ffd8-518c-abe4-65a5531c110f",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "id",
+      "json_key": "id",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "natural_uuid"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "571dba91-ab2e-5bd8-919f-bd9df546c26a",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "label",
+      "json_key": "label",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "04c29d0a-0b27-54ad-b9d8-02660e36f48f",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_date",
+      "json_key": "max_date",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "date",
+      "data_type": [
+        "date"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "7d710198-4dba-52a5-b26d-2ee47abca1c3",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_date",
+      "json_key": "max_date",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "date"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "d7f74e14-2100-5178-8c47-ba6ad908a5b8",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_length",
+      "json_key": "max_length",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "email",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "ed1fde8b-7225-5a99-8853-0b79c7ecdd4f",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_length",
+      "json_key": "max_length",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "text",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "c2f70cb1-723d-51e3-9a7a-6b8c6b5a6e30",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_length",
+      "json_key": "max_length",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "textarea",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "84cdb540-7feb-56ab-8341-fd4e1dec4190",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_length",
+      "json_key": "max_length",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "25c4195a-6563-55e6-af0f-dc205b55ebc3",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_lines",
+      "json_key": "max_lines",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "textarea",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "89e0aad1-2cfd-52af-8838-79b198ef1c49",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_lines",
+      "json_key": "max_lines",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "d6503105-6e21-5624-892a-fd2627ac2744",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_selections",
+      "json_key": "max_selections",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "multiple_choice",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "5f48485f-115f-5a1c-ab25-d5393fdc5439",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_selections",
+      "json_key": "max_selections",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "c4ce20ba-1f2d-5260-a4d2-fd6ab3be4736",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_value",
+      "json_key": "max_value",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "number",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "eca941b7-714b-5f2a-931f-5b39aaa5ba36",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_value",
+      "json_key": "max_value",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "rating",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "94e62a6c-849b-5457-b5b7-e24b115a4ff0",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "max_value",
+      "json_key": "max_value",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "84007aaa-cb10-58f4-bad1-f491c5e615dc",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_date",
+      "json_key": "min_date",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "date",
+      "data_type": [
+        "date"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "8f40eabe-eaf6-5ca0-ac32-e363ec4beb1d",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_date",
+      "json_key": "min_date",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "date"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "ca818994-1135-5290-8757-207441c76e92",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_lines",
+      "json_key": "min_lines",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "textarea",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "b66b2d29-b38d-5eb4-9853-0bf0769d52b3",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_lines",
+      "json_key": "min_lines",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "c4a5f77a-5254-562d-90e6-1985d9f472ce",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_value",
+      "json_key": "min_value",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "number",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "0aca364e-b5d6-5c1e-89d1-b8f458da48ca",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_value",
+      "json_key": "min_value",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "rating",
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "0b574965-75c5-5bcd-8b56-a978e71e1c75",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "min_value",
+      "json_key": "min_value",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "int"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "39a959d9-ed3e-595e-ac29-7482400b7e4d",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "options",
+      "json_key": "options",
+      "is_required": true,
+      "is_common": false,
+      "variant_key": "multiple_choice",
+      "data_type": [
+        "list_string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "02bec081-794f-5275-a880-eb0eae3b9bf7",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "options",
+      "json_key": "options",
+      "is_required": true,
+      "is_common": false,
+      "variant_key": "single_choice",
+      "data_type": [
+        "list_string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "b43165c0-20a9-5bfa-93e8-f1e19fafbc67",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "options",
+      "json_key": "options",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "list_string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "690e7406-fa10-5c0e-a151-3e08ae1b3cb4",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "placeholder",
+      "json_key": "placeholder",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "77e9f804-ae18-5ae9-9a59-039fe8c9daec",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "required",
+      "json_key": "required",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "bool"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "3e1b4981-ccc9-5b78-84ca-95b5f3fce7ee",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "sort_order",
+      "json_key": "sort_order",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "display_order"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "88966c8f-0347-5826-af0a-f23bbe83287a",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "true_label",
+      "json_key": "true_label",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": "boolean",
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "211fcbad-8823-557a-80d4-55025a3bbb98",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "true_label",
+      "json_key": "true_label",
+      "is_required": false,
+      "is_common": false,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "f493b46b-5691-582c-9d56-74ed8cd61cf2",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "name": "type",
+      "json_key": "type",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": [
+        "QuestionType"
+      ],
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "23c58749-a477-534d-9c78-cde2ddee7567",
+    "fields": {
+      "node_type": [
+        "survey_section"
+      ],
+      "name": "description",
+      "json_key": "description",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "eb20a744-c092-5c8a-8c3c-69efaee9ce08",
+    "fields": {
+      "node_type": [
+        "survey_section"
+      ],
+      "name": "id",
+      "json_key": "id",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "natural_uuid"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "2a6ef671-efd9-5ead-ad52-06c1680930f7",
+    "fields": {
+      "node_type": [
+        "survey_section"
+      ],
+      "name": "sort_order",
+      "json_key": "sort_order",
+      "is_required": false,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "display_order"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.attributedef",
+    "pk": "ae9f44b4-5af9-57d2-8987-01dda214cd28",
+    "fields": {
+      "node_type": [
+        "survey_section"
+      ],
+      "name": "title",
+      "json_key": "title",
+      "is_required": true,
+      "is_common": true,
+      "variant_key": null,
+      "data_type": [
+        "string"
+      ],
+      "domain": null,
+      "group": null
+    }
+  },
+  {
+    "model": "schemas.organization",
+    "pk": "6e193c10-1092-5929-9844-11136b20e4a7",
+    "fields": {
+      "name": "Demo Corp",
+      "slug": "demo-corp",
+      "description": "Example organization for demonstration purposes",
+      "is_active": true,
+      "created_at": "2026-10-04T14:45:51.581744+00:00",
+      "updated_at": "2026-10-04T14:45:51.581939+00:00"
+    }
+  },
+  {
+    "model": "schemas.project",
+    "pk": "ef81bc51-32af-555b-a477-38cfdb0b7afb",
+    "fields": {
+      "name": "Customer Experience",
+      "slug": "customer-experience",
+      "description": "Customer feedback and satisfaction initiatives",
+      "organization": [
+        "demo-corp"
+      ],
+      "created_at": "2026-10-04T14:45:51.597016+00:00",
+      "updated_at": "2026-10-04T14:45:51.597808+00:00"
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "c692e11a-e371-5d2a-b557-198080eb056d",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Which services have you used?",
+      "sort_order": 0
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "a656a176-1f31-5572-96c8-6269d01116d0",
+    "fields": {
+      "node_type": [
+        "survey"
+      ],
+      "parent": null,
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": "customer-satisfaction-2026",
+      "version": "1",
+      "name": "Customer Satisfaction Survey 2026",
+      "sort_order": 0
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "94184e17-99a7-506b-98cb-66bbbae2e8ef",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "66dcb186-2c55-5f8a-bd94-a4b73fc0ea9e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "What is your name?",
+      "sort_order": 0
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "66dcb186-2c55-5f8a-bd94-a4b73fc0ea9e",
+    "fields": {
+      "node_type": [
+        "survey_section"
+      ],
+      "parent": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Section 1: About You",
+      "sort_order": 0
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "6bf82865-258f-599f-a669-c09ae150ba3e",
+    "fields": {
+      "node_type": [
+        "survey_section"
+      ],
+      "parent": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Section 2: Your Experience",
+      "sort_order": 1
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "67a511be-9a1a-591f-9858-f5479d1351e1",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "66dcb186-2c55-5f8a-bd94-a4b73fc0ea9e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Email address",
+      "sort_order": 1
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "cd23fa9b-523e-5233-b7bb-1bb98c0d006b",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "How satisfied are you with our service?",
+      "sort_order": 1
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "846d02ce-3cb5-5442-8a10-32ba69ad26f5",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Would you recommend us to a friend?",
+      "sort_order": 2
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "66dcb186-2c55-5f8a-bd94-a4b73fc0ea9e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Your age",
+      "sort_order": 2
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "1a7f6f8b-7218-547c-9e84-8c65a8bf5a74",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "When did you last visit?",
+      "sort_order": 3
+    }
+  },
+  {
+    "model": "schemas.node",
+    "pk": "1fdc6144-e253-54c9-938c-0e97a12fc330",
+    "fields": {
+      "node_type": [
+        "survey_question"
+      ],
+      "parent": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "project": [
+        "demo-corp",
+        "customer-experience"
+      ],
+      "organization": null,
+      "key": null,
+      "version": null,
+      "name": "Any additional comments?",
+      "sort_order": 4
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "dd6f67b6-7833-575f-b709-aa3045509f4d",
+    "fields": {
+      "node": "c692e11a-e371-5d2a-b557-198080eb056d",
+      "attribute_def": [
+        "survey_question",
+        "help_text",
+        null
+      ],
+      "value_string": "Select all that apply"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "36002b48-ee15-51ce-a44b-b6f95a81e731",
+    "fields": {
+      "node": "c692e11a-e371-5d2a-b557-198080eb056d",
+      "attribute_def": [
+        "survey_question",
+        "options",
+        "multiple_choice"
+      ],
+      "value_json": [
+        "support",
+        "delivery",
+        "website",
+        "mobile_app",
+        "in_store"
+      ]
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "adb3f1db-9efa-5f34-a401-dc091b24b140",
+    "fields": {
+      "node": "c692e11a-e371-5d2a-b557-198080eb056d",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": true
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "455b917a-ccd7-578c-b621-ebdbfb9e5849",
+    "fields": {
+      "node": "c692e11a-e371-5d2a-b557-198080eb056d",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "multiple_choice"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "f90934c3-b6ed-518b-b014-043c6d1adcce",
+    "fields": {
+      "node": "c692e11a-e371-5d2a-b557-198080eb056d",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "Which services have you used?"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "d50c1d50-8ac4-5054-abaf-88c56450d2ad",
+    "fields": {
+      "node": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "number"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "556b42bb-5351-5885-876c-0c1611007fe6",
+    "fields": {
+      "node": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+      "attribute_def": [
+        "survey_question",
+        "min_value",
+        "number"
+      ],
+      "value_number": "18.0000000000"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "3f6bab79-b4b4-5e6a-95d8-9c0c8c2b9441",
+    "fields": {
+      "node": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+      "attribute_def": [
+        "survey_question",
+        "placeholder",
+        null
+      ],
+      "value_string": "30"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "53828730-e52b-5a43-920e-9b9a197ec1b3",
+    "fields": {
+      "node": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": false
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "ac16a179-0e92-5d29-a22b-c70d7ff55566",
+    "fields": {
+      "node": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "Your age"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "2aaeff84-4a22-56d7-98ed-e527b7896f22",
+    "fields": {
+      "node": "137d1aae-3a26-5ae3-a9dc-7434e8ca8b0a",
+      "attribute_def": [
+        "survey_question",
+        "max_value",
+        "number"
+      ],
+      "value_number": "100.0000000000"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "0bb0eb31-936b-5486-b76d-7b40ce07d2da",
+    "fields": {
+      "node": "1a7f6f8b-7218-547c-9e84-8c65a8bf5a74",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "When did you last visit?"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "f2bfb400-ed9b-5da7-8e0f-ba272755da5a",
+    "fields": {
+      "node": "1a7f6f8b-7218-547c-9e84-8c65a8bf5a74",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": false
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "493c230a-85f8-53cf-91db-7c9dc4db95ae",
+    "fields": {
+      "node": "1a7f6f8b-7218-547c-9e84-8c65a8bf5a74",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "date"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "40673a9d-7c1f-5748-94d3-bf24314929da",
+    "fields": {
+      "node": "846d02ce-3cb5-5442-8a10-32ba69ad26f5",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": true
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "3e29a8cb-1091-5b0b-8e20-3dd661fc9bf3",
+    "fields": {
+      "node": "846d02ce-3cb5-5442-8a10-32ba69ad26f5",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "Would you recommend us to a friend?"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "1b03b3d1-e85c-536d-93b8-10835b23c4f3",
+    "fields": {
+      "node": "846d02ce-3cb5-5442-8a10-32ba69ad26f5",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "boolean"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "5b0a02ce-fb9e-5da3-8055-6d1a9e10c34c",
+    "fields": {
+      "node": "67a511be-9a1a-591f-9858-f5479d1351e1",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "email"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "cddb0a9f-12b0-5962-86e8-a783903ba165",
+    "fields": {
+      "node": "67a511be-9a1a-591f-9858-f5479d1351e1",
+      "attribute_def": [
+        "survey_question",
+        "help_text",
+        null
+      ],
+      "value_string": "We will never share your email"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "59aa523d-566e-5400-94ed-17630c227bdb",
+    "fields": {
+      "node": "67a511be-9a1a-591f-9858-f5479d1351e1",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": true
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "54061903-9a07-5e60-b05f-4d2a72c3f29c",
+    "fields": {
+      "node": "67a511be-9a1a-591f-9858-f5479d1351e1",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "Email address"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "344d1a31-b6b6-5cf2-9879-1066fef25996",
+    "fields": {
+      "node": "67a511be-9a1a-591f-9858-f5479d1351e1",
+      "attribute_def": [
+        "survey_question",
+        "placeholder",
+        null
+      ],
+      "value_string": "john@example.com"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "0ad407f0-adfe-51f9-8414-ef10672a18eb",
+    "fields": {
+      "node": "1fdc6144-e253-54c9-938c-0e97a12fc330",
+      "attribute_def": [
+        "survey_question",
+        "placeholder",
+        null
+      ],
+      "value_string": "Tell us more..."
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "d1be888c-06b3-5abb-92b0-4c45d2d0c39e",
+    "fields": {
+      "node": "1fdc6144-e253-54c9-938c-0e97a12fc330",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "Any additional comments?"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "4ee1aa06-164c-57d7-bb32-d225cc322deb",
+    "fields": {
+      "node": "1fdc6144-e253-54c9-938c-0e97a12fc330",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "textarea"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "c5d9ffce-0404-5457-9fc8-7eb23647288e",
+    "fields": {
+      "node": "1fdc6144-e253-54c9-938c-0e97a12fc330",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": false
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "599867ae-c025-5362-8b74-aa3f5de70c6c",
+    "fields": {
+      "node": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "attribute_def": [
+        "survey",
+        "response_count",
+        null
+      ],
+      "value_number": "0E-10"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "98778196-bed6-5fcf-b349-e956f290f3c8",
+    "fields": {
+      "node": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "attribute_def": [
+        "survey",
+        "anonymous",
+        null
+      ],
+      "value_bool": true
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "39a9874e-8df6-52a1-a21c-8012fafedf8a",
+    "fields": {
+      "node": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "attribute_def": [
+        "survey",
+        "description",
+        null
+      ],
+      "value_string": "Help us improve by sharing your experience"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "415853f5-6959-5d8b-bd65-dc15a35ea473",
+    "fields": {
+      "node": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "attribute_def": [
+        "survey",
+        "status",
+        null
+      ],
+      "value_string": "draft"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "c1e67cf7-cce3-59ef-8245-a373a6e92d99",
+    "fields": {
+      "node": "a656a176-1f31-5572-96c8-6269d01116d0",
+      "attribute_def": [
+        "survey",
+        "title",
+        null
+      ],
+      "value_string": "Customer Satisfaction Survey 2026"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "765a7687-22f6-57ba-ada2-18d80df6c3d9",
+    "fields": {
+      "node": "66dcb186-2c55-5f8a-bd94-a4b73fc0ea9e",
+      "attribute_def": [
+        "survey_section",
+        "title",
+        null
+      ],
+      "value_string": "About You"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "308542f8-cd36-5aa4-ba40-ca254659d3b9",
+    "fields": {
+      "node": "66dcb186-2c55-5f8a-bd94-a4b73fc0ea9e",
+      "attribute_def": [
+        "survey_section",
+        "description",
+        null
+      ],
+      "value_string": "Basic information"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "fd8d8407-c857-52d6-ab63-955a4a8d7589",
+    "fields": {
+      "node": "cd23fa9b-523e-5233-b7bb-1bb98c0d006b",
+      "attribute_def": [
+        "survey_question",
+        "max_value",
+        "rating"
+      ],
+      "value_number": "5.0000000000"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "b838758b-3123-555e-b1ce-c8eb76c9cda9",
+    "fields": {
+      "node": "cd23fa9b-523e-5233-b7bb-1bb98c0d006b",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "rating"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "105af158-2583-5053-be22-e396c840eb2f",
+    "fields": {
+      "node": "cd23fa9b-523e-5233-b7bb-1bb98c0d006b",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": true
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "bbcdd135-f33c-57b5-9811-d2223f033d18",
+    "fields": {
+      "node": "cd23fa9b-523e-5233-b7bb-1bb98c0d006b",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "How satisfied are you with our service?"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "19b9a6c6-b6e4-5eff-8aef-73717f421139",
+    "fields": {
+      "node": "cd23fa9b-523e-5233-b7bb-1bb98c0d006b",
+      "attribute_def": [
+        "survey_question",
+        "min_value",
+        "rating"
+      ],
+      "value_number": "1.0000000000"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "7d7cdab7-0690-502a-983a-763fcbb4bd8a",
+    "fields": {
+      "node": "94184e17-99a7-506b-98cb-66bbbae2e8ef",
+      "attribute_def": [
+        "survey_question",
+        "placeholder",
+        null
+      ],
+      "value_string": "John Doe"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "899a69cd-3a95-524b-acf0-e3105546699d",
+    "fields": {
+      "node": "94184e17-99a7-506b-98cb-66bbbae2e8ef",
+      "attribute_def": [
+        "survey_question",
+        "required",
+        null
+      ],
+      "value_bool": true
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "ac12c3ee-e28f-5dbe-993c-9bfe749aae79",
+    "fields": {
+      "node": "94184e17-99a7-506b-98cb-66bbbae2e8ef",
+      "attribute_def": [
+        "survey_question",
+        "label",
+        null
+      ],
+      "value_string": "What is your name?"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "fd5fa2ad-ca83-514a-8063-5b3b0832d4c2",
+    "fields": {
+      "node": "94184e17-99a7-506b-98cb-66bbbae2e8ef",
+      "attribute_def": [
+        "survey_question",
+        "type",
+        null
+      ],
+      "value_string": "text"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "119af1b4-e35c-57f9-ab5f-a329d4985012",
+    "fields": {
+      "node": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "attribute_def": [
+        "survey_section",
+        "description",
+        null
+      ],
+      "value_string": "Rate our services"
+    }
+  },
+  {
+    "model": "schemas.nodeattribute",
+    "pk": "c645b671-d438-5841-8c93-828041011287",
+    "fields": {
+      "node": "6bf82865-258f-599f-a669-c09ae150ba3e",
+      "attribute_def": [
+        "survey_section",
+        "title",
+        null
+      ],
+      "value_string": "Your Experience"
+    }
+  }
+]

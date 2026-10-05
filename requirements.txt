@@ -1,9 +1,14 @@
-Django>=5.0,<6.0
+Django>=6.1,<7.0
 
-djangorestframework>=3.14,<4.0
+djangorestframework>=3.18,<4.0
 
-psycopg[binary]>=3.1
+psycopg[binary]>=3.3
 python-dotenv>=1.0
 
 whitenoise>=6.0
 gunicorn>=21.0
+
+# Optional SAST scanner for uploaded editor extensions — Linux/macOS only.
+# The marker skips it on Windows dev installs; the service falls back to the
+# built-in pattern denylist when the binary is absent.
+semgrep>=1.90,<2.0 ; sys_platform != "win32"

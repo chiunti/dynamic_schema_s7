@@ -5,7 +5,14 @@ from django.utils import timezone
 import uuid
 
 
+class OrganizationManager(models.Manager):
+    def get_by_natural_key(self, slug):
+        return self.get(slug=slug)
+
+
 class Organization(models.Model):
+    objects = OrganizationManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -25,6 +32,9 @@ class Organization(models.Model):
             models.Index(fields=["slug"], name="idx_orgs_slug"),
             models.Index(fields=["is_active"], name="idx_orgs_active"),
         ]
+
+    def natural_key(self):
+        return (self.slug,)
 
     def __str__(self):
         return self.name
@@ -73,7 +83,14 @@ class OrganizationMember(models.Model):
         return f"{self.user} — {self.organization} ({self.role})"
 
 
+class ProjectManager(models.Manager):
+    def get_by_natural_key(self, organization_slug, slug):
+        return self.get(organization__slug=organization_slug, slug=slug)
+
+
 class Project(models.Model):
+    objects = ProjectManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -112,6 +129,9 @@ class Project(models.Model):
             models.Index(fields=["created_by"], name="idx_projects_creator"),
         ]
 
+    def natural_key(self):
+        return (self.organization.slug, self.slug)
+
     def __str__(self):
         return self.name
 
@@ -145,7 +165,14 @@ class ProjectAPICredential(models.Model):
         return f"{self.project_id}:{self.name}"
 
 
+class NodeTypeManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
+
 class NodeType(models.Model):
+    objects = NodeTypeManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -163,6 +190,9 @@ class NodeType(models.Model):
 
     class Meta:
         db_table = "schema_node_types"
+
+    def natural_key(self):
+        return (self.name,)
 
     def __str__(self):
         return self.name
@@ -226,8 +256,14 @@ class Schema(Node):
         app_label = 'schemas'
 
 
+class DataTypeManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
 
 class DataType(models.Model):
+    objects = DataTypeManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -258,11 +294,21 @@ class DataType(models.Model):
     class Meta:
         db_table = "schema_data_types"
 
+    def natural_key(self):
+        return (self.name,)
+
     def __str__(self):
         return self.name
 
 
+class DomainManager(models.Manager):
+    def get_by_natural_key(self, domain_name):
+        return self.get(domain_name=domain_name)
+
+
 class Domain(models.Model):
+    objects = DomainManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -275,11 +321,21 @@ class Domain(models.Model):
     class Meta:
         db_table = "schema_domains"
 
+    def natural_key(self):
+        return (self.domain_name,)
+
     def __str__(self):
         return self.domain_name
 
 
+class DomainItemManager(models.Manager):
+    def get_by_natural_key(self, domain_name, value):
+        return self.get(domain__domain_name=domain_name, value=value)
+
+
 class DomainItem(models.Model):
+    objects = DomainItemManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -296,11 +352,27 @@ class DomainItem(models.Model):
             models.UniqueConstraint(fields=["domain", "value"], name="uq_sdomain_items_value"),
         ]
 
+    def natural_key(self):
+        return (self.domain.domain_name, self.value)
+
     def __str__(self):
         return f"{self.domain.domain_name}:{self.value}"
 
 
+class NodeTypeVariantManager(models.Manager):
+    def get_by_natural_key(
+        self, node_type_name, variant_key, discriminator_attr,
+    ):
+        return self.get(
+            node_type__name=node_type_name,
+            variant_key=variant_key,
+            discriminator_attr=discriminator_attr,
+        )
+
+
 class NodeTypeVariant(models.Model):
+    objects = NodeTypeVariantManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -331,11 +403,24 @@ class NodeTypeVariant(models.Model):
             models.UniqueConstraint(fields=["node_type", "variant_key", "discriminator_attr"], name="uq_snode_type_variants_nt_key_disc"),
         ]
 
+    def natural_key(self):
+        return (self.node_type.name, self.variant_key, self.discriminator_attr)
+
     def __str__(self):
         return f"{self.node_type.name}:{self.variant_key}"
 
 
+class AttributeDefManager(models.Manager):
+    def get_by_natural_key(self, node_type_name, json_key, variant_key):
+        qs = self.filter(json_key=json_key, variant_key=variant_key)
+        if node_type_name is None:
+            return qs.get(node_type__isnull=True)
+        return qs.get(node_type__name=node_type_name)
+
+
 class AttributeDef(models.Model):
+    objects = AttributeDefManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -369,6 +454,12 @@ class AttributeDef(models.Model):
             ),
         ]
 
+    def natural_key(self):
+        return (
+            self.node_type.name if self.node_type_id else None,
+            self.json_key, self.variant_key,
+        )
+
     def __str__(self):
         if self.node_type_id:
             if self.variant_key:
@@ -401,7 +492,7 @@ class NodeAttribute(models.Model):
             models.UniqueConstraint(fields=["node", "attribute_def"], name="uq_snode_attrs_node_attr"),
             models.CheckConstraint(
                 name="chk_single_value",
-                check=(
+                condition=(
                     # Exactly one value field is non-null
                     (Q(value_string__isnull=False) & Q(value_number__isnull=True) & Q(value_bool__isnull=True) & Q(value_json__isnull=True))
                     | (Q(value_string__isnull=True) & Q(value_number__isnull=False) & Q(value_bool__isnull=True) & Q(value_json__isnull=True))
@@ -417,7 +508,20 @@ class NodeAttribute(models.Model):
         return f"{self.node.name or str(self.node.id)}:{self.attribute_def.name}"
 
 
+class NodeTypeCompositionManager(models.Manager):
+    def get_by_natural_key(
+        self, parent_type_name, child_type_name, collection_key,
+    ):
+        return self.get(
+            parent_type__name=parent_type_name,
+            child_type__name=child_type_name,
+            collection_key=collection_key,
+        )
+
+
 class NodeTypeComposition(models.Model):
+    objects = NodeTypeCompositionManager()
+
     id = models.UUIDField(
         primary_key=True,
         editable=False,
@@ -435,6 +539,12 @@ class NodeTypeComposition(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["parent_type", "child_type", "collection_key"], name="uq_snode_type_comps"),
         ]
+
+    def natural_key(self):
+        return (
+            self.parent_type.name, self.child_type.name,
+            self.collection_key,
+        )
 
     def __str__(self):
         return f"{self.parent_type.name} -> {self.child_type.name}"
@@ -524,3 +634,88 @@ class ComponentPropertiesProxy(Domain):
         proxy = True
         verbose_name = "Component Properties"
         verbose_name_plural = "Component Properties"
+
+
+class EditorExtensionManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
+
+class FixtureLoadManager(models.Manager):
+    def get_by_natural_key(self, name):
+        return self.get(name=name)
+
+
+class FixtureLoad(models.Model):
+    """Provenance of a fixture load through the admin loader.
+
+    Records the file's SHA-256 at load time so the loader page can tell an
+    already-applied fixture (up to date) from one whose file changed since
+    (reload offered).
+    """
+
+    objects = FixtureLoadManager()
+
+    id = models.UUIDField(
+        primary_key=True,
+        editable=False,
+        default=uuid.uuid4,
+        db_default=models.Func(function="gen_random_uuid"),
+    )
+    name = models.CharField(max_length=100, unique=True)
+    sha256 = models.CharField(max_length=64)
+    object_count = models.IntegerField(default=0)
+    loaded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "schema_fixture_loads"
+
+    def natural_key(self):
+        return (self.name,)
+
+    def __str__(self):
+        return self.name
+
+
+class EditorExtension(models.Model):
+    """Registry of visual node-editor JS extensions.
+
+    Extensions are either static files shipped in
+    ``static/admin/js/extensions_editor/`` (source='static') or code uploaded
+    through the admin dashboard and stored in ``content`` (source='db').
+    """
+
+    SOURCE_STATIC = 'static'
+    SOURCE_DB = 'db'
+    SOURCE_CHOICES = (
+        (SOURCE_STATIC, 'Static file'),
+        (SOURCE_DB, 'Uploaded'),
+    )
+
+    objects = EditorExtensionManager()
+
+    id = models.UUIDField(
+        primary_key=True,
+        editable=False,
+        default=uuid.uuid4,
+        db_default=models.Func(function="gen_random_uuid"),
+    )
+    name = models.CharField(max_length=100, unique=True)
+    filename = models.CharField(max_length=150)
+    source = models.CharField(
+        max_length=10, choices=SOURCE_CHOICES, default=SOURCE_DB,
+    )
+    content = models.TextField(null=True, blank=True)
+    is_enabled = models.BooleanField(default=True)
+    description = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "schema_editor_extensions"
+
+    def natural_key(self):
+        return (self.name,)
+
+    def __str__(self):
+        return self.name

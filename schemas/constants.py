@@ -172,3 +172,40 @@ VALID_SCHEMA_STATUSES = (STATUS_DRAFT, STATUS_PUBLISHED, STATUS_ARCHIVED)
 ROLE_ADMIN = "admin"
 ROLE_EDITOR = "editor"
 ROLE_VIEWER = "viewer"
+
+# --------------------------------------------------------------------------- #
+# Editor-extension source scanning
+# --------------------------------------------------------------------------- #
+# (regex, reason) pairs applied by EditorExtensionService.validate_source.
+# BLOCKED entries reject the upload; WARN entries are surfaced to the admin
+# but allowed — network APIs are warning-level because same-origin calls can
+# be legitimate extension behavior.
+BLOCKED_JS_PATTERNS = (
+    (r"\beval\s*\(", "eval() executes dynamically-built code"),
+    (r"\bnew\s+Function\s*\(", "new Function() executes dynamic code"),
+    (
+        r"\b(?:setTimeout|setInterval)\s*\(\s*[\"'`]",
+        "string argument to setTimeout/setInterval evaluates as code",
+    ),
+    (r"\bdocument\.cookie\b", "document.cookie access (session theft risk)"),
+    (
+        r"\b(?:localStorage|sessionStorage)\b",
+        "web storage access (credential exfiltration risk)",
+    ),
+    (r"\bimport\s*\(", "dynamic import() loads remote code"),
+    (r"<\s*script\b", "script tag injection"),
+)
+
+WARN_JS_PATTERNS = (
+    (
+        r"\b(?:fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource)\s*\(",
+        "network egress — verify the destination",
+    ),
+    (
+        r"\binnerHTML\s*=|insertAdjacentHTML|document\.write",
+        "HTML injection sink",
+    ),
+    (r"\b(?:atob|unescape)\s*\(", "decoder call (possible obfuscation)"),
+    (r"\bpostMessage\s*\(", "postMessage cross-frame communication"),
+    (r"[A-Za-z0-9+/]{400,}={0,2}", "large base64 blob (possible payload)"),
+)

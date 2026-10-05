@@ -9,6 +9,7 @@ Zero code changes. The admin auto-discovers root types from the DB at runtime.
 """
 
 import logging
+import time
 
 from django.contrib import admin
 from django.contrib.admin.views.main import IncorrectLookupParameters
@@ -17,10 +18,12 @@ from django.http import JsonResponse, HttpResponseRedirect, QueryDict
 from django.shortcuts import render
 from django.urls import path, reverse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 
 from ..models import Schema
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..repositories.project_repository import ProjectRepository
+from ..services.fixture_service import FixtureService
 from ..services.schema_service import SchemaService
 from ..services.schema_import_service import SchemaImportService
 from ..services.node_service import NodeService
@@ -290,15 +293,105 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
 
     def get_urls(self):
         urls = super().get_urls()
-        urls.insert(
-            0,
+        custom = [
             path(
                 "import/",
                 self.admin_site.admin_view(self.import_view),
                 name="schemas_schema_import",
             ),
+            path(
+                "fixtures/",
+                self.admin_site.admin_view(self.fixture_loader_view),
+                name="schemas_fixture_loader",
+            ),
+            path(
+                "fixtures/load/",
+                self.admin_site.admin_view(self.fixture_load_view),
+                name="schemas_fixture_load",
+            ),
+            path(
+                "fixtures/upload/",
+                self.admin_site.admin_view(self.fixture_upload_view),
+                name="schemas_fixture_upload",
+            ),
+        ]
+        return custom + urls
+
+    # ------------------------------------------------------------------ #
+    # Fixture loader                                                      #
+    # ------------------------------------------------------------------ #
+
+    def fixture_loader_view(self, request):
+        """List fixture files on disk with per-row load status."""
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Fixture Loader",
+            "fixtures": FixtureService().list_fixtures(),
+            "opts": self.model._meta,
+        }
+        return render(
+            request, "admin/schemas/schema/fixture_loader.html", context,
         )
-        return urls
+
+    @staticmethod
+    def _fixture_loader_redirect():
+        # The timestamp busts browser back/forward-cache so post-action
+        # redirects always re-render the list from disk, not a snapshot.
+        return HttpResponseRedirect(
+            f'{reverse("admin:schemas_fixture_loader")}?_={int(time.time())}',
+        )
+
+    def fixture_load_view(self, request):
+        """POST: load one fixture via loaddata, then redirect back."""
+        if request.method != "POST":
+            return JsonResponse(
+                {"error": ERR_METHOD_NOT_ALLOWED}, status=405,
+            )
+
+        service = FixtureService()
+        name = request.POST.get("fixture", "")
+        try:
+            result = service.load_fixture(name)
+            messages.success(
+                request,
+                f"Fixture '{result['name']}' loaded: {result['output']}",
+            )
+        except ValueError as e:
+            messages.error(request, str(e))
+        except Exception as e:
+            logger.exception("Fixture load failed")
+            messages.error(request, f"Fixture load failed: {e}")
+
+        return self._fixture_loader_redirect()
+
+    def fixture_upload_view(self, request):
+        """POST: validate and store an uploaded fixture JSON on disk."""
+        if request.method != "POST":
+            return JsonResponse(
+                {"error": ERR_METHOD_NOT_ALLOWED}, status=405,
+            )
+
+        upload = request.FILES.get("fixture_file")
+        if upload is None:
+            messages.error(request, "Choose a .json fixture file to upload.")
+            return self._fixture_loader_redirect()
+
+        try:
+            result = FixtureService().save_fixture_file(
+                upload.name, upload.read(),
+            )
+            messages.success(
+                request,
+                f"Fixture '{result['name']}' saved ({result['total']} "
+                "objects) — press Load to install it.",
+            )
+        except ValueError as e:
+            messages.error(request, str(e))
+        except OSError as e:
+            logger.exception("Fixture upload failed")
+            messages.error(request, f"Could not write fixture file: {e}")
+
+        return self._fixture_loader_redirect()
 
     def import_view(self, request):
         if request.method == "GET":
@@ -363,7 +456,7 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
                 obj.project.organization.name if obj.project.organization else "N/A",
                 obj.project.name
             )
-        return format_html('<span style="color:#999;">—</span>')
+        return mark_safe('<span style="color:#999;">—</span>')
 
     @admin.display(description="Type")
     def schema_type_display(self, obj):

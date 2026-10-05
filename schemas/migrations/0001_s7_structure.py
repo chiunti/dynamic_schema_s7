@@ -171,6 +171,35 @@ class Migration(migrations.Migration):
             index=models.Index(fields=["created_by"], name="idx_projects_creator"),
         ),
         # ------------------------------
+        # ProjectAPICredential
+        # ------------------------------
+        migrations.CreateModel(
+            name='ProjectAPICredential',
+            fields=[
+                ('id', models.UUIDField(primary_key=True, serialize=False, editable=False,
+                                        default=uuid.uuid4, db_default=Func(function='gen_random_uuid'))),
+                ('name', models.CharField(max_length=255)),
+                ('token_digest', models.CharField(max_length=64, unique=True)),
+                ('can_read', models.BooleanField(default=False)),
+                ('can_import', models.BooleanField(default=False)),
+                ('can_publish', models.BooleanField(default=False)),
+                ('expires_at', models.DateField()),
+                ('revoked_at', models.DateTimeField(null=True, blank=True)),
+                ('created_at', models.DateTimeField(default=timezone.now)),
+                ('project', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='api_credentials',
+                                              to='schemas.project')),
+            ],
+            options={
+                'db_table': 'schema_project_api_credentials',
+                'verbose_name': 'Project API credential',
+                'verbose_name_plural': 'Project API credentials',
+            },
+        ),
+        migrations.AddIndex(
+            model_name='projectapicredential',
+            index=models.Index(fields=['project', 'revoked_at'], name='idx_project_tokens_active'),
+        ),
+        # ------------------------------
         # NodeType
         # ------------------------------
         migrations.CreateModel(
@@ -529,7 +558,7 @@ class Migration(migrations.Migration):
             model_name="nodeattribute",
             constraint=models.CheckConstraint(
                 name="chk_single_value",
-                check=(
+                condition=(
                     (Q(value_string__isnull=False) & Q(value_number__isnull=True) & Q(value_bool__isnull=True) & Q(value_json__isnull=True))
                     | (Q(value_string__isnull=True) & Q(value_number__isnull=False) & Q(value_bool__isnull=True) & Q(value_json__isnull=True))
                     | (Q(value_string__isnull=True) & Q(value_number__isnull=True) & Q(value_bool__isnull=False) & Q(value_json__isnull=True))
@@ -745,6 +774,67 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="schemacache",
             constraint=models.UniqueConstraint(fields=["key", "version", "project"], name="uq_schema_cache_key_version_project"),
+        ),
+        # ------------------------------
+        # Admin tooling
+        # ------------------------------
+        migrations.CreateModel(
+            name="EditorExtension",
+            fields=[
+                (
+                    "id",
+                    models.UUIDField(
+                        db_default=models.Func(function="gen_random_uuid"),
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                ("name", models.CharField(max_length=100, unique=True)),
+                ("filename", models.CharField(max_length=150)),
+                (
+                    "source",
+                    models.CharField(
+                        choices=[
+                            ("static", "Static file"),
+                            ("db", "Uploaded"),
+                        ],
+                        default="db",
+                        max_length=10,
+                    ),
+                ),
+                ("content", models.TextField(blank=True, null=True)),
+                ("is_enabled", models.BooleanField(default=True)),
+                ("description", models.CharField(blank=True, max_length=255)),
+                ("created_at", models.DateTimeField(default=timezone.now)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+            ],
+            options={
+                "db_table": "schema_editor_extensions",
+            },
+        ),
+        migrations.CreateModel(
+            name="FixtureLoad",
+            fields=[
+                (
+                    "id",
+                    models.UUIDField(
+                        db_default=models.Func(function="gen_random_uuid"),
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                ("name", models.CharField(max_length=100, unique=True)),
+                ("sha256", models.CharField(max_length=64)),
+                ("object_count", models.IntegerField(default=0)),
+                ("loaded_at", models.DateTimeField(auto_now=True)),
+            ],
+            options={
+                "db_table": "schema_fixture_loads",
+            },
         ),
         # ------------------------------
         # Proxy models

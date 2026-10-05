@@ -6,6 +6,7 @@
  * - Button to open URL in new tab
  *
  * Pattern is detected by data_type === 'url'.
+ * @s7-editor url_editor
  * This extension is registered for individual properties, not for all properties.
  */
 

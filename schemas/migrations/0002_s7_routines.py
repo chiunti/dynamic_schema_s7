@@ -176,6 +176,7 @@ DECLARE
   v_natural_attrs   JSONB;
   v_children_json   JSONB;
   v_keyed_children  JSONB;
+  v_map_children    JSONB;
   v_result          JSONB;
   v_slots           JSONB;
   v_node_type_name  TEXT;
@@ -218,6 +219,15 @@ BEGIN
   WHERE na.node_id = p_node_id
     AND dt.name NOT LIKE 'natural_%'
     AND dt.name <> 'internal';
+
+  IF EXISTS (
+    SELECT 1 FROM s7.schema_node_types
+    WHERE name = v_node_type_name AND json_scalar_attribute IS NOT NULL
+  ) THEN
+    RETURN v_attrs -> (
+      SELECT json_scalar_attribute FROM s7.schema_node_types WHERE name = v_node_type_name
+    );
+  END IF;
 
   -- Build natural field overrides from schema_nodes columns, driven by AttributeDef definitions.
   -- Only include natural fields that are explicitly defined as AttributeDefs for this node's type.
@@ -265,6 +275,7 @@ BEGIN
     JOIN s7.schema_nodes ch
       ON ch.parent_id = parent.id
       AND ch.node_type_id = ntc.child_type_id
+      AND NOT EXISTS (SELECT 1 FROM s7.schema_node_types mapped WHERE mapped.id = ch.node_type_id AND mapped.is_json_map)
       AND (
         -- For singleton slots: key must match collection_key exactly
         (ntc.max_children = 1 AND ch.key = ntc.collection_key)
@@ -292,6 +303,7 @@ BEGIN
   JOIN s7.schema_nodes parent ON parent.id = p_node_id
     AND ntc.parent_type_id = parent.node_type_id
   WHERE ch.parent_id = p_node_id
+    AND ch_nt.is_json_map = FALSE
     AND (
       ntc.collection_key IS NULL
       OR (ntc.max_children = 1 AND ch.key <> ntc.collection_key)
@@ -312,6 +324,14 @@ BEGIN
 
   -- Strip empty objects (e.g., "props": {}, "layout": {}) from the final JSON
   v_result := s7_strip_empty_values(v_result);
+
+  SELECT jsonb_object_agg(ch.key, s7_build_node_json(ch.id))
+  INTO v_map_children
+  FROM s7.schema_nodes ch
+  JOIN s7.schema_node_types nt ON nt.id = ch.node_type_id
+  WHERE ch.parent_id = p_node_id
+    AND nt.is_json_map = TRUE;
+  v_result := v_result || COALESCE(v_map_children, '{}'::jsonb);
 
   RETURN v_result;
 END;
@@ -1694,6 +1714,106 @@ SET search_path TO s7, public;
 # """
 
 
+# ------------------------------
+# Project-scoped routine variants
+#
+# Scoped routines are derived from the base SQL text above; if the base SQL
+# drifts the derivation fails loudly instead of shipping a silent no-op.
+# ------------------------------
+
+def _derive(sql: str, *pairs: tuple[str, str]) -> str:
+    """Apply ``str.replace`` pairs that must all match."""
+    for old, new in pairs:
+        if old not in sql:
+            raise RuntimeError(
+                "scoped routine derivation failed: fragment not found "
+                f"in base SQL: {old[:80]!r}..."
+            )
+        sql = sql.replace(old, new)
+    return sql
+
+
+SCOPED_IMPORT_SQL = _derive(
+    FN_IMPORT_SCHEMA_JSON_SQL,
+    (
+        'CREATE OR REPLACE FUNCTION s7_import_schema(',
+        'CREATE OR REPLACE FUNCTION s7_import_schema_scoped(',
+    ),
+    (
+        "  RAISE NOTICE 's7_import_schema: key=%, version=%, status=%, project=%, org=%',\n"
+        "    p_key, p_version, p_status, p_project_id, p_organization_id;",
+        '',
+    ),
+    (
+        "  IF p_schema IS NULL OR p_schema = 'null'::jsonb THEN",
+        """  IF p_project_id IS NULL OR p_organization_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM schema_projects
+    WHERE id = p_project_id AND organization_id = p_organization_id
+  ) THEN
+    RAISE EXCEPTION 'Project and organization do not match';
+  END IF;
+
+  IF p_schema IS NULL OR p_schema = 'null'::jsonb THEN""",
+    ),
+    (
+        '  v_existing_root_id := s7_find_schema_node_id(v_key_eff, v_version_eff);',
+        '''  SELECT id INTO v_existing_root_id FROM schema_nodes
+  WHERE key = v_key_eff AND version = v_version_eff
+    AND project_id = p_project_id AND parent_id IS NULL
+  LIMIT 1;''',
+    ),
+    (
+        '        AND version = v_version_eff \n        AND parent_id IS NULL',
+        '        AND version = v_version_eff \n        AND project_id = p_project_id\n        AND parent_id IS NULL',
+    ),
+    (
+        '  -- Create root node with project_id and organization_id',
+        '''  DELETE FROM schema_cache
+  WHERE key = v_key_eff AND version = v_version_eff AND project_id = p_project_id;
+  UPDATE schema_build_state SET dirty = TRUE
+  WHERE key = v_key_eff AND version = v_version_eff AND project_id = p_project_id;
+
+  -- Create root node with project_id and organization_id''',
+    ),
+)
+
+SCOPED_CACHE_SQL = _derive(
+    FN_BUILD_SCHEMA_CACHED_SQL,
+    (
+        'CREATE OR REPLACE FUNCTION s7_build_schema_cached(',
+        'CREATE OR REPLACE FUNCTION s7_build_schema_cached_scoped(',
+    ),
+    (
+        '  p_schema_type TEXT DEFAULT NULL\n)',
+        '  p_schema_type TEXT,\n  p_project_id UUID\n)',
+    ),
+    (
+        '    AND f.parent_id IS NULL\n  LIMIT 1;',
+        '    AND f.parent_id IS NULL\n    AND f.project_id = p_project_id\n  LIMIT 1;',
+    ),
+)
+
+SCOPED_PUBLISH_SQL = _derive(
+    FN_PUBLISH_SCHEMA_SQL,
+    (
+        'CREATE OR REPLACE FUNCTION s7_publish_schema(p_key TEXT, p_version TEXT)',
+        'CREATE OR REPLACE FUNCTION s7_publish_schema_scoped(p_key TEXT, p_version TEXT, p_project_id UUID)',
+    ),
+    (
+        '    AND f.parent_id IS NULL\n  LIMIT 1;',
+        '    AND f.parent_id IS NULL\n    AND f.project_id = p_project_id\n  LIMIT 1;',
+    ),
+    (
+        "    AND f.parent_id IS NULL\n    AND na.value_string = 'published';",
+        "    AND f.parent_id IS NULL\n    AND f.project_id = p_project_id\n    AND na.value_string = 'published';",
+    ),
+    (
+        '  PERFORM s7_build_schema_cached(p_key, p_version);',
+        '  PERFORM s7_build_schema_cached_scoped(p_key, p_version, NULL, p_project_id);',
+    ),
+)
+
+
 class Migration(migrations.Migration):
     dependencies = [
         ("schemas", "0001_s7_structure"),
@@ -1735,6 +1855,14 @@ class Migration(migrations.Migration):
         migrations.RunSQL(FN_PUBLISH_SCHEMA_SQL),
         migrations.RunSQL(FN_IMPORT_SCHEMA_TEXT_SQL),
         migrations.RunSQL(FN_IMPORT_SCHEMA_JSON_SQL),
+
+        # Project-scoped variants (depend on the base functions above)
+        migrations.RunSQL(SCOPED_IMPORT_SQL,
+                          reverse_sql='DROP FUNCTION IF EXISTS s7.s7_import_schema_scoped(JSONB, TEXT, TEXT, TEXT, BOOLEAN, UUID, UUID);'),
+        migrations.RunSQL(SCOPED_CACHE_SQL,
+                          reverse_sql='DROP FUNCTION IF EXISTS s7.s7_build_schema_cached_scoped(TEXT, TEXT, TEXT, UUID);'),
+        migrations.RunSQL(SCOPED_PUBLISH_SQL,
+                          reverse_sql='DROP FUNCTION IF EXISTS s7.s7_publish_schema_scoped(TEXT, TEXT, UUID);'),
 
         # Triggers
         migrations.RunSQL(TRG_PREVENT_CYCLES_SQL),

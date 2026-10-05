@@ -1,0 +1,108 @@
+# Semgrep ruleset for uploaded editor extensions.
+#
+# Vendored locally so scans are deterministic and offline — no registry
+# pull at runtime. ERROR findings block the upload; WARNING findings are
+# surfaced to the admin. Only consulted when a `semgrep` binary exists in
+# PATH (optional dependency — see EditorExtensionService._semgrep_findings).
+rules:
+  # -------------------------- BLOCKERS (ERROR) -------------------------- #
+  - id: s7-ext-eval
+    languages: [javascript]
+    severity: ERROR
+    message: eval() executes dynamically-built code
+    pattern: eval(...)
+
+  - id: s7-ext-function-ctor
+    languages: [javascript]
+    severity: ERROR
+    message: new Function() executes dynamically-built code
+    pattern: new Function(...)
+
+  - id: s7-ext-string-timer
+    languages: [javascript]
+    severity: ERROR
+    message: string argument to setTimeout/setInterval evaluates as code
+    pattern-either:
+      - pattern: setTimeout("...", ...)
+      - pattern: setInterval("...", ...)
+
+  - id: s7-ext-cookie-access
+    languages: [javascript]
+    severity: ERROR
+    message: document.cookie access — session theft risk
+    pattern: document.cookie
+
+  - id: s7-ext-web-storage
+    languages: [javascript]
+    severity: ERROR
+    message: web storage access — credential exfiltration risk
+    pattern-either:
+      - pattern: localStorage.$M(...)
+      - pattern: sessionStorage.$M(...)
+      - pattern: localStorage.$K = $V
+      - pattern: sessionStorage.$K = $V
+      - pattern: localStorage[$K] = $V
+      - pattern: sessionStorage[$K] = $V
+      - pattern: $X = localStorage.$K
+      - pattern: $X = sessionStorage.$K
+      - pattern: $X = localStorage[$K]
+      - pattern: $X = sessionStorage[$K]
+
+  - id: s7-ext-dynamic-import
+    languages: [javascript]
+    severity: ERROR
+    message: dynamic import() can load remote code
+    pattern: import(...)
+
+  - id: s7-ext-script-element
+    languages: [javascript]
+    severity: ERROR
+    message: programmatic <script> element injection
+    pattern-either:
+      - pattern: document.createElement("script")
+      - pattern: document.createElement('script')
+      - pattern: $EL.src = $URL
+
+  - id: s7-ext-proto-pollution
+    languages: [javascript]
+    severity: ERROR
+    message: prototype pollution primitive
+    pattern-either:
+      - pattern: $O.__proto__
+      - pattern: $O.constructor.prototype
+
+  # -------------------------- WARNINGS (WARNING) ------------------------ #
+  - id: s7-ext-network-egress
+    languages: [javascript]
+    severity: WARNING
+    message: network egress — verify the destination is expected
+    pattern-either:
+      - pattern: fetch(...)
+      - pattern: new XMLHttpRequest(...)
+      - pattern: navigator.sendBeacon(...)
+      - pattern: new WebSocket(...)
+      - pattern: new EventSource(...)
+
+  - id: s7-ext-html-sink
+    languages: [javascript]
+    severity: WARNING
+    message: HTML injection sink — sanitize interpolated values
+    pattern-either:
+      - pattern: $EL.innerHTML = $V
+      - pattern: $EL.outerHTML = $V
+      - pattern: $EL.insertAdjacentHTML(...)
+      - pattern: document.write(...)
+
+  - id: s7-ext-decoder
+    languages: [javascript]
+    severity: WARNING
+    message: decoder call — possible obfuscation
+    pattern-either:
+      - pattern: atob(...)
+      - pattern: unescape(...)
+
+  - id: s7-ext-postmessage
+    languages: [javascript]
+    severity: WARNING
+    message: postMessage — cross-frame data flow
+    pattern: $W.postMessage(...)

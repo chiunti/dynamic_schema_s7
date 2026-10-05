@@ -1,0 +1,97 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' 'schemas' %}">Schemas</a>
+    &rsaquo; Fixture Loader
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <p class="help" style="margin-bottom: 16px;">
+        Fixtures are declarative JSON files under <code>schemas/fixtures/</code>.
+        Loading runs <code>loaddata</code>: it upserts rows by deterministic PK
+        and never deletes rows absent from the fixture. Reloading a fixture
+        already loaded re-applies the file — use it to push edits to the DB.
+    </p>
+
+    <form method="post"
+          action="{% url 'admin:schemas_fixture_upload' %}"
+          enctype="multipart/form-data"
+          style="margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+        {% csrf_token %}
+        <strong>Upload fixture</strong>
+        <input type="file" name="fixture_file" accept=".json" required />
+        <button type="submit" class="button">Save fixture</button>
+        <p class="help" style="margin: 6px 0 0;">
+            The file is validated (JSON shape, model whitelist, resolvable
+            references) and stored in <code>schemas/fixtures/</code>. It is
+            not loaded until you press Load.
+        </p>
+    </form>
+
+    {% if fixtures %}
+    <table id="result_list" style="width: 100%;">
+        <thead>
+            <tr>
+                <th>Fixture</th>
+                <th>Objects</th>
+                <th>Models</th>
+                <th>In DB</th>
+                <th>Status</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for fixture in fixtures %}
+            <tr>
+                <td><code>{{ fixture.name }}.json</code></td>
+                <td>{{ fixture.total }}</td>
+                <td style="font-size: 12px;">
+                    {% for model, count in fixture.by_model.items %}
+                        {{ model }}: {{ count }}{% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+                <td>{{ fixture.existing }}/{{ fixture.total }}</td>
+                <td>
+                    {% if fixture.status == 'loaded' %}
+                        {% if fixture.file_changed %}
+                            <span style="color: #9a6700; font-weight: bold;">loaded — file changed</span>
+                        {% else %}
+                            <span style="color: #1a7f37; font-weight: bold;">up to date</span>
+                        {% endif %}
+                    {% elif fixture.status == 'partial' %}
+                        <span style="color: #9a6700; font-weight: bold;">partial</span>
+                    {% else %}
+                        <span style="color: #666;">not loaded</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if fixture.status == 'loaded' and not fixture.file_changed %}
+                        <span style="color: #999;">—</span>
+                    {% else %}
+                    <form method="post" action="{% url 'admin:schemas_fixture_load' %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="fixture" value="{{ fixture.name }}" />
+                        {% if fixture.status == 'loaded' %}
+                            <button type="submit" class="button">Reload</button>
+                        {% elif fixture.status == 'partial' %}
+                            <button type="submit" class="button">Resume</button>
+                        {% else %}
+                            <button type="submit" class="button">Load</button>
+                        {% endif %}
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No fixture files found in <code>schemas/fixtures/</code>.</p>
+    {% endif %}
+</div>
+{% endblock %}

@@ -6,6 +6,7 @@
  * - Example: [{ "label": "Option 1", "value": "option1" }, ...]
  *
  * Pattern is detected by data_type === 'options_field'.
+ * @s7-editor options_editor
  * This extension is registered for individual properties, not for all properties.
  */
 

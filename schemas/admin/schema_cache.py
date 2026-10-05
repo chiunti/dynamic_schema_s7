@@ -4,6 +4,7 @@ SchemaCacheAdmin with dynamic tabs for filtering by node type
 
 from django.contrib import admin
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.http import QueryDict
 
 from ..models import SchemaCache
@@ -56,7 +57,7 @@ class SchemaCacheAdmin(admin.ModelAdmin):
                 obj.project.organization.name if obj.project.organization else "N/A",
                 obj.project.name
             )
-        return format_html('<span style="color:#999;">—</span>')
+        return mark_safe('<span style="color:#999;">—</span>')
 
     @admin.display(description="Type")
     def schema_type(self, obj):

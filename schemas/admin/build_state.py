@@ -6,6 +6,7 @@ from django.contrib import admin
 from django.http import JsonResponse, HttpResponseRedirect
 from django.urls import path, reverse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.contrib.admin.views.main import IncorrectLookupParameters
 
 from ..models import BuildState
@@ -128,17 +129,17 @@ class BuildStateAdmin(admin.ModelAdmin):
                 obj.project.organization.name if obj.project.organization else "N/A",
                 obj.project.name
             )
-        return format_html('<span style="color:#999;">—</span>')
+        return mark_safe('<span style="color:#999;">—</span>')
 
-    @admin.display(description=format_html("Current<br>Build"))
+    @admin.display(description=mark_safe("Current<br>Build"))
     def current_build_display(self, obj):
         return obj.current_build
 
-    @admin.display(description=format_html("Last<br>Cached<br>Build"))
+    @admin.display(description=mark_safe("Last<br>Cached<br>Build"))
     def last_cached_build_display(self, obj):
         if obj.last_cached_build is not None:
             return obj.last_cached_build
-        return format_html('<span style="color:#999;">—</span>')
+        return mark_safe('<span style="color:#999;">—</span>')
 
     @admin.display(description="Type")
     def schema_type(self, obj):

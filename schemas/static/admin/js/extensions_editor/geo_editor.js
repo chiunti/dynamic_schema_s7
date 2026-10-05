@@ -6,6 +6,7 @@
  * - JSON storage format: {lat: number, lng: number}
  * 
  * Pattern is detected by data_type === 'geo_point'.
+ * @s7-editor geo_editor
  */
 
 // Detect if props contain geo_point properties.

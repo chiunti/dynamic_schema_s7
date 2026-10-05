@@ -8,6 +8,7 @@ from django.db import transaction
 from django.urls import path, reverse
 from django.http import HttpResponseRedirect, JsonResponse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 
 from ..models import (
     NodeAttribute,
@@ -175,9 +176,9 @@ class RootNodeAdminMixin:
         if key_value and version_value:
             build_state = self.repository.get_build_state(key_value, version_value)
             if build_state and build_state.dirty:
-                return format_html('<span style="color: orange;">Modified</span>')
+                return mark_safe('<span style="color: orange;">Modified</span>')
             elif build_state:
-                return format_html('<span style="color: green;">Clean</span>')
+                return mark_safe('<span style="color: green;">Clean</span>')
         return "-"
 
     def _collect_required_warnings(self, node_id):
@@ -193,11 +194,11 @@ class RootNodeAdminMixin:
         """Display warning indicator if schema has missing required properties."""
         status_value = self._get_attr_value(obj, 'status')
         if status_value != STATUS_DRAFT:
-            return format_html('<span style="color:#999;">—</span>')
+            return mark_safe('<span style="color:#999;">—</span>')
         
         warnings = self._collect_required_warnings(obj.id)
         if not warnings:
-            return format_html('<span style="color:green;">✓ Complete</span>')
+            return mark_safe('<span style="color:green;">✓ Complete</span>')
         
         total_props = sum(len(w['missing']) for w in warnings)
         return format_html(
@@ -242,7 +243,7 @@ class RootNodeAdminMixin:
                 draft_url = reverse(f"admin:{self.url_prefix}_draft")
                 buttons.append(format_html('<a href="{}?node_id={}" class="button">Draft</a>', draft_url, obj.id))
 
-        return format_html(' '.join(buttons))
+        return mark_safe(' '.join(buttons))
 
     def get_urls(self):
         urls = super().get_urls()

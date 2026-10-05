@@ -1,0 +1,242 @@
+[
+  {
+    "model": "schemas.datatype",
+    "pk": "fd750654-beaf-5a21-8e1c-4be55e3fa8f3",
+    "fields": {
+      "name": "auto_uuid",
+      "description": "Auto-generated UUID (stored in value_string, auto-assigned)",
+      "primary_storage_type": "string",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "3a773985-ac5d-51f5-bcf5-37edb6b1a85a",
+    "fields": {
+      "name": "bool",
+      "description": "Boolean (stored in value_bool)",
+      "primary_storage_type": "bool",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "58bc9930-82dd-55a1-ac91-c713c16f09c6",
+    "fields": {
+      "name": "color",
+      "description": "CSS / hex color string (stored in value_string)",
+      "primary_storage_type": "string",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "358c6595-6235-5562-be46-af0c56c93f08",
+    "fields": {
+      "name": "conditional",
+      "description": "Conditional logic structure (stored in value_json)",
+      "primary_storage_type": "json",
+      "editor_extension": "conditional_editor"
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "0fa09b33-732c-54e1-978d-11711b594b5a",
+    "fields": {
+      "name": "date",
+      "description": "Date stored as ISO string (stored in value_string)",
+      "primary_storage_type": "string",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "f97c28db-b330-5aa2-9500-d8aa0a054d6a",
+    "fields": {
+      "name": "dict",
+      "description": "Arbitrary dictionary (stored in value_json object)",
+      "primary_storage_type": "json",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "68ed3dff-ce4f-589c-ad07-c1604ba2ab31",
+    "fields": {
+      "name": "display_order",
+      "description": "Maps to schema_nodes.sort_order column — bidirectional sync with JSON export (1-based for human readability)",
+      "primary_storage_type": "",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "3bd7c82c-60ee-58d1-a86c-def7047d7d91",
+    "fields": {
+      "name": "domain_list",
+      "description": "List of domain item values (stored in value_json array, validated against domain)",
+      "primary_storage_type": "json",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "209cab81-1c12-54b8-97c7-940772aeafe9",
+    "fields": {
+      "name": "float",
+      "description": "Decimal / float (stored in value_number)",
+      "primary_storage_type": "number",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "1575f4af-0c18-59bf-b37b-13784efb3971",
+    "fields": {
+      "name": "int",
+      "description": "Integer (stored in value_number)",
+      "primary_storage_type": "number",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "8d6922bc-c724-5340-81a8-0aa9fb6019da",
+    "fields": {
+      "name": "internal",
+      "description": "Internal discriminator stored in value_string — never included in JSON export",
+      "primary_storage_type": "string",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "bc7a4096-abdd-5216-a7f2-20d4326a06b1",
+    "fields": {
+      "name": "int_tuple",
+      "description": "Fixed-length array of integers (stored in value_json)",
+      "primary_storage_type": "json",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "9d7dec24-3768-5763-8021-da33410f350d",
+    "fields": {
+      "name": "json",
+      "description": "Arbitrary JSONB (stored in value_json)",
+      "primary_storage_type": "json",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "a5e4ebc0-363f-50ac-a955-dfbf45dcb757",
+    "fields": {
+      "name": "list_int",
+      "description": "List of integers (stored in value_json array)",
+      "primary_storage_type": "json",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "d9d78382-fa72-5ece-bae2-5f5e78cb42ea",
+    "fields": {
+      "name": "list_string",
+      "description": "List of strings (stored in value_json array)",
+      "primary_storage_type": "json",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "0563d9b8-fe00-5008-b153-93261a568e9b",
+    "fields": {
+      "name": "natural_key",
+      "description": "Maps to schema_nodes.key column — bidirectional sync with JSON export",
+      "primary_storage_type": "",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "f0d08030-75d3-54f1-8711-fa6f114ac14a",
+    "fields": {
+      "name": "natural_order",
+      "description": "Maps to schema_nodes.sort_order column — bidirectional sync with JSON export (0-based)",
+      "primary_storage_type": "",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "a23c6786-0db5-54a6-8b7a-ef1bcfc66a9c",
+    "fields": {
+      "name": "natural_uuid",
+      "description": "Maps to schema_nodes.id (primary key UUID) — read-only in JSON export",
+      "primary_storage_type": "",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "44d0f133-e563-55f0-a6b1-30e37279938c",
+    "fields": {
+      "name": "natural_version",
+      "description": "Maps to schema_nodes.version column — bidirectional sync with JSON export, enforces key+version uniqueness",
+      "primary_storage_type": "",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "60feac38-fb70-5bcf-a712-679d58789f59",
+    "fields": {
+      "name": "number",
+      "description": "Decimal number (stored in value_number)",
+      "primary_storage_type": "number",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "fa162a04-afa9-5a7d-97f5-0da383a41576",
+    "fields": {
+      "name": "options_field",
+      "description": "Array of label/value objects for select options (stored in value_json)",
+      "primary_storage_type": "json",
+      "editor_extension": "options_editor"
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "90099e69-abf6-5ad3-a723-4078567d911f",
+    "fields": {
+      "name": "string",
+      "description": "Text (stored in value_string)",
+      "primary_storage_type": "string",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "068c275a-a5fc-5592-9cdf-4472ed7f04ac",
+    "fields": {
+      "name": "url",
+      "description": "URL string (stored in value_string)",
+      "primary_storage_type": "string",
+      "editor_extension": "url_editor"
+    }
+  },
+  {
+    "model": "schemas.datatype",
+    "pk": "5760c97c-67eb-5b92-86a5-765784d92dbd",
+    "fields": {
+      "name": "uuid",
+      "description": "UUID string (stored in value_string)",
+      "primary_storage_type": "string",
+      "editor_extension": "uuid_editor"
+    }
+  }
+]

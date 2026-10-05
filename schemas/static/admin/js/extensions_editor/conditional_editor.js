@@ -13,6 +13,7 @@
  *   }
  *
  * Pattern is detected by data_type === 'conditional'.
+ * @s7-editor conditional_editor
  * This extension is registered for individual properties, not for all properties.
  */
 

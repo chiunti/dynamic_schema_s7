@@ -6,6 +6,7 @@
  * - Button to generate a new random UUID
  * - Button to copy UUID to clipboard
  * 
+ * @s7-editor uuid_editor
  * Pattern is detected by data_type === 'uuid'.
  */
 

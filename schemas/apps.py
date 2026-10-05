@@ -17,3 +17,20 @@ class SchemasConfig(AppConfig):
         admin.site.site_header = "Structure Seven (S7) Admin"
         admin.site.site_title = "S7 Admin"
         admin.site.index_title = "S7 Administration"
+
+        # Register static editor-extension files after each migrate so the
+        # registry reflects what ships on disk without waiting for the
+        # node editor's first manifest request.
+        from django.db.models.signals import post_migrate
+
+        post_migrate.connect(
+            self._sync_editor_extensions, sender=self,
+            dispatch_uid='schemas.sync_editor_extensions',
+        )
+
+    @staticmethod
+    def _sync_editor_extensions(sender, **kwargs):
+        from .services.editor_extension_service import (
+            EditorExtensionService,
+        )
+        EditorExtensionService().sync_static()

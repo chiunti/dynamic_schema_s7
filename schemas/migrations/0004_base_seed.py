@@ -1,68 +1,36 @@
+import json
+from pathlib import Path
+
+from django.core.management import call_command
 from django.db import migrations
 
 
-# Base seed: Universal DataTypes only.
-# No NodeTypes, NodeTypeCompositions, Domains, or AttributeDefs here — those
-# belong to the domain-specific seeds (survey example, forms, sdui, ...).
+# Base seed: universal DataTypes only, loaded from the canonical fixture
+# schemas/fixtures/base_datatypes.json.
 #
-# With only 0001-0004 applied the database is fully operational for any
-# schema type; domain seeds are additive on top.
+# No NodeTypes, NodeTypeCompositions, Domains, or AttributeDefs here — those
+# belong to the domain-specific fixtures (example survey, forms, sdui, ...).
+# With 0001-0004 applied the database is fully operational for any schema type;
+# domain fixtures are additive on top.
 
-DATA_TYPES = [
-    # (name, description, primary_storage_type, editor_extension)
-    ('string',      'Text (stored in value_string)',          'string', ''),
-    ('number',      'Decimal number (stored in value_number)', 'number', ''),
-    ('bool',        'Boolean (stored in value_bool)',         'bool',   ''),
-    ('json',        'Arbitrary JSONB (stored in value_json)', 'json',   ''),
-    ('date',        'Date stored as ISO string (stored in value_string)', 'string', ''),
-    ('list_string', 'List of strings (stored in value_json array)', 'json', ''),
-    # Phase-0 semantic extensions
-    ('int',         'Integer (stored in value_number)',       'number', ''),
-    ('float',       'Decimal / float (stored in value_number)', 'number', ''),
-    ('color',       'CSS / hex color string (stored in value_string)', 'string', ''),
-    ('int_tuple',   'Fixed-length array of integers (stored in value_json)', 'json', ''),
-    ('dict',        'Arbitrary dictionary (stored in value_json object)', 'json', ''),
-    ('list_int',    'List of integers (stored in value_json array)', 'json', ''),
-    ('domain_list', 'List of domain item values (stored in value_json array, validated against domain)', 'json', ''),
-    ('url',         'URL string (stored in value_string)',    'string', 'url_editor'),
-    ('options_field', 'Array of label/value objects for select options (stored in value_json)', 'json', 'options_editor'),
-    ('conditional', 'Conditional logic structure (stored in value_json)', 'json', 'conditional_editor'),
-    # UUID types
-    ('uuid',        'UUID string (stored in value_string)',    'string', 'uuid_editor'),
-    ('auto_uuid',   'Auto-generated UUID (stored in value_string, auto-assigned)', 'string', ''),
-    # Natural column mappings — these datatypes map directly to internal schema_nodes columns.
-    # No row is created in schema_node_attributes; s7_build_node_json reads the column directly.
-    ('natural_uuid',     'Maps to schema_nodes.id (primary key UUID) — read-only in JSON export', '', ''),
-    ('natural_key',      'Maps to schema_nodes.key column — bidirectional sync with JSON export', '', ''),
-    ('natural_version',  'Maps to schema_nodes.version column — bidirectional sync with JSON export, enforces key+version uniqueness', '', ''),
-    ('natural_order',    'Maps to schema_nodes.sort_order column — bidirectional sync with JSON export (0-based)', '', ''),
-    ('display_order',    'Maps to schema_nodes.sort_order column — bidirectional sync with JSON export (1-based for human readability)', '', ''),
-    # Internal routing/discriminator values — stored in value_string but never emitted in JSON output.
-    ('internal',         'Internal discriminator stored in value_string — never included in JSON export', 'string', ''),
-]
-
-# No domain-specific seeds here — those belong to each domain seed migration.
-# This migration only creates the universal DataTypes.
+FIXTURE_NAME = 'base_datatypes'
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / 'fixtures'
+    / f'{FIXTURE_NAME}.json'
+)
 
 
 def seed_base_data(apps, schema_editor):
-    DataType = apps.get_model('schemas', 'DataType')
-
-    for name, description, storage_type, editor_extension in DATA_TYPES:
-        DataType.objects.update_or_create(
-            name=name,
-            defaults={
-                'description': description,
-                'primary_storage_type': storage_type,
-                'editor_extension': editor_extension,
-            },
-        )
+    call_command('loaddata', FIXTURE_NAME, app_label='schemas')
 
 
 def remove_base_data(apps, schema_editor):
+    """Delete the rows owned by the fixture (matched by their fixture PKs)."""
     DataType = apps.get_model('schemas', 'DataType')
-
-    DataType.objects.filter(name__in=[dt[0] for dt in DATA_TYPES]).delete()
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding='utf-8'))
+    DataType.objects.filter(
+        id__in=[o['pk'] for o in fixture if o['model'] == 'schemas.datatype'],
+    ).delete()
 
 
 class Migration(migrations.Migration):

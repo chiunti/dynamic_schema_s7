@@ -14,13 +14,12 @@ services (NodeService, SchemaValidationService).
 
 import json
 import logging
-import os
 
-from django.http import JsonResponse
+from django.http import HttpResponse, HttpResponseNotFound, JsonResponse
 from django.urls import path
 from django.shortcuts import render
-from django.conf import settings
 
+from ..services.editor_extension_service import EditorExtensionService
 from ..services.node_service import NodeService
 from ..services.node_json_service import NodeJsonService
 from ..services.schema_validation_service import SchemaValidationService
@@ -53,6 +52,7 @@ class NodeEditorMixin:
         self.validation_service = SchemaValidationService()
         self.node_service = NodeService()
         self.node_json_service = NodeJsonService()
+        self.extension_service = EditorExtensionService()
 
     def get_urls(self):
         urls = super().get_urls()
@@ -69,6 +69,7 @@ class NodeEditorMixin:
             path("editor/api/reorder/", self.admin_site.admin_view(self.api_reorder), name="schemas_node_editor_reorder"),
             path("editor/api/node-json/", self.admin_site.admin_view(self.api_node_json), name="schemas_node_editor_node_json"),
             path("editor/api/extensions/", self.admin_site.admin_view(self.api_editor_extensions), name="schemas_node_editor_extensions"),
+            path("editor/api/extensions/<str:name>", self.admin_site.admin_view(self.api_editor_extension_source), name="schemas_node_editor_extension_source"),
         ]
         return custom_urls + urls
 
@@ -326,40 +327,27 @@ class NodeEditorMixin:
         return self.node_json_service.build_node_line_map(json_text, root_id)
 
     def api_editor_extensions(self, request):
-        """List all JavaScript files in the extensions_editor directory."""
+        """Manifest of enabled extensions — each entry carries its serve URL."""
         if request.method != "GET":
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            # In development, use STATICFILES_DIRS (source files)
-            # In production, use STATIC_ROOT (collected files)
-            static_dirs = getattr(settings, 'STATICFILES_DIRS', [])
-            static_root = getattr(settings, 'STATIC_ROOT', None)
-
-            # Try STATICFILES_DIRS first (development)
-            extensions_dir = None
-            for static_dir in static_dirs:
-                potential_path = os.path.join(static_dir, 'admin', 'js', 'extensions_editor')
-                if os.path.exists(potential_path):
-                    extensions_dir = potential_path
-                    break
-
-            # If not found in STATICFILES_DIRS, try STATIC_ROOT (production)
-            if not extensions_dir and static_root:
-                potential_path = os.path.join(static_root, 'admin', 'js', 'extensions_editor')
-                if os.path.exists(potential_path):
-                    extensions_dir = potential_path
-
-            if not extensions_dir or not os.path.exists(extensions_dir):
-                return JsonResponse({"extensions": []})
-
-            # List all .js files in the directory
-            extensions = []
-            for filename in os.listdir(extensions_dir):
-                if filename.endswith('.js') and not filename.startswith('.'):
-                    extensions.append(filename)
-
-            return JsonResponse({"extensions": extensions})
+            manifest = self.extension_service.list_manifest(request.path)
+            return JsonResponse({"extensions": manifest})
         except Exception as e:
             logging.error(f"Error listing editor extensions: {e}", exc_info=True)
             return JsonResponse({"extensions": []})
+
+    def api_editor_extension_source(self, request, name):
+        """Serve an enabled extension's JS source (static file or DB)."""
+        if request.method != "GET":
+            return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
+
+        stem = name[:-3] if name.endswith('.js') else name
+        source = self.extension_service.get_source(stem)
+        if source is None:
+            return HttpResponseNotFound(
+                '// extension not found or disabled\n',
+                content_type='application/javascript',
+            )
+        return HttpResponse(source, content_type='application/javascript')

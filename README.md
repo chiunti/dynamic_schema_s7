@@ -456,7 +456,8 @@ Schema endpoints use project service credentials; organization/project administr
 | `POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `POSTGRES_PORT` | `5432` | PostgreSQL port |
 | `POSTGRES_SCHEMA` | `public` | PostgreSQL search path — must include `s7` (e.g. `s7,public`) |
-| `S7_SKIP_EXAMPLE_SEED` | — | When truthy (`1`, `true`, `yes`, `on`), `0005_example_seed` inserts no demo data; `docker-compose.prod.yml` sets it to `1` |
+| `S7_SKIP_EXAMPLE_SEED` | — | When truthy (`1`, `true`, `yes`, `on`), `0005_example_seed` loads no demo data; `docker-compose.prod.yml` sets it to `1` |
+| `S7_EXTENSION_SCAN` | `strict` | Uploaded editor-extension scanning: `strict` blocks uploads on semgrep `ERROR` findings, `warn` downgrades them to admin warnings, `off` skips the scanner. The built-in pattern denylist always applies; `semgrep` is an optional binary — scans only run when it is on `PATH` |
 
 Timezone and language are not configurable via environment — they are hardcoded to `UTC` / `en-us` in `config/settings/base.py`. Likewise, `S7_PROJECT_TOKEN` is intentionally absent: this application never reads it. It is the suggested environment variable name for the Bearer credential in *consuming* services (see [Authentication](#authentication)).
 
@@ -588,6 +589,37 @@ if (window.s7Editors) {
 
 Extensions are auto-discovered via the `/editor/api/extensions/` endpoint which returns a list of extension files to load.
 
+**Managing extensions (admin dashboard):**
+
+Every extension is registered as an `EditorExtension` row with a source of
+`static` (file shipped under `extensions_editor/`) or `db` (uploaded through
+the admin, served from the database). Under **Admin → Schemas → Tools →
+Editor Extensions** you can:
+
+- Enable/disable extensions in bulk — disabled ones are dropped from the
+  manifest and their source is never served.
+- Upload a `.js` file or paste source — name and filename are derived
+  automatically (an optional `@s7-editor <name>` tag in the source header
+  wins over the filename); no filesystem access needed, so this is the way
+  to ship an extension without a redeploy. Uploading over an existing
+  extension upserts it (e.g. converts a static file to DB-sourced).
+- Static files keep auto-registering (enabled) when the editor loads —
+  dropping a file in `extensions_editor/` still works.
+
+**Upload validation.** Extension source passes a layered check before it is
+stored:
+
+1. Name/filename pattern, UTF-8, non-empty, ≤ 256 KB.
+2. Must reference `window.s7Editors` — the registration contract.
+3. A built-in denylist blocks `eval()`, `new Function()`, string-eval
+   timers, `document.cookie`, web storage, dynamic `import()` and script
+   injection; risky-but-legitimate APIs (network egress, HTML sinks,
+   decoders, `postMessage`) surface as admin warnings.
+4. Optional [semgrep](https://semgrep.dev/) SAST scan against the vendored
+   ruleset `schemas/security/js_rules.yml` — runs only when a `semgrep`
+   binary is on `PATH`. `S7_EXTENSION_SCAN` controls severity:
+   `strict` (default, ERROR findings block), `warn`, `off`.
+
 ---
 
 ## Deployment
@@ -649,7 +681,8 @@ dynamic_schema_s7/
 │   └── wsgi.py             # WSGI entry point
 ├── schemas/                # Core application
 │   ├── admin/              # Admin interface customizations (incl. project_credential.py)
-│   ├── migrations/         # Database migrations (0001–0007 ship in this repo)
+│   ├── fixtures/           # Seed fixtures loaded via `loaddata` (base datatypes, survey example)
+│   ├── migrations/         # Database migrations (0001–0005 ship in this repo)
 │   ├── repositories/       # Data access layer
 │   ├── services/           # Business logic (incl. node_json_service, schema_read_service, project_credential_service)
 │   ├── static/             # Static files (admin UI)
@@ -678,7 +711,7 @@ dynamic_schema_s7/
 
 ### Customer Satisfaction Survey (Included Example)
 
-The project includes a complete **Survey System** example in `0005_example_seed.py` demonstrating how to model a real-world data-collection use case end-to-end. This is one of many possible applications of the dynamic schema engine.
+The project includes a complete **Survey System** example in the `schemas/fixtures/example_survey.json` fixture (loaded by `0005_example_seed`) demonstrating how to model a real-world data-collection use case end-to-end. This is one of many possible applications of the dynamic schema engine.
 
 #### What Gets Created
 
@@ -749,15 +782,29 @@ The migration sequence is designed for clean first-time deployment:
 
 | Migration | Description |
 |-----------|-------------|
-| `0001_s7_structure.py` | Core models, constraints, indexes |
-| `0002_s7_routines.py` | PostgreSQL functions, triggers |
+| `0001_s7_structure.py` | Core models, constraints, indexes, project API credentials |
+| `0002_s7_routines.py` | PostgreSQL functions, triggers, project-scoped routines |
 | `0003_s7_views.py` | Database views |
-| `0004_base_seed.py` | Base seed data (universal DataTypes) |
-| `0005_example_seed.py` | Survey System example (organization, project, full survey) |
-| `0006_project_credentials.py` | Project-scoped API credentials (digest storage, scopes) |
-| `0007_project_scoped_routines.py` | Project-scoped s7 routines (import, build cache, publish) |
+| `0004_base_seed.py` | Loads `fixtures/base_datatypes.json` (universal DataTypes) |
+| `0005_example_seed.py` | Loads `fixtures/example_survey.json` (skipped when `S7_SKIP_EXAMPLE_SEED` is truthy) |
 
-The public release includes migrations 0001-0007. Additional domain-specific migrations (forms, SDUI, design tokens, etc.) can be created privately and numbered from `0008` onwards.
+Migrations `0004`/`0005` are thin `loaddata` wrappers: seed data lives as
+declarative JSON fixtures, not as code inside migrations. Fixtures use
+deterministic UUIDs (uuid5 by natural key), so `loaddata` is idempotent per
+row — it upserts by PK and never deletes rows absent from the fixture.
+
+The public release includes migrations 0001-0005 and the two public fixtures.
+Additional domain-specific catalogs can be shipped as fixtures and loaded
+manually with `python manage.py loaddata <fixture>` — or through the admin
+**Fixture Loader** page (Schemas → Tools → Fixture Loader), which lists every
+`schemas/fixtures/*.json` with per-row load status, loads each one on demand,
+and accepts new fixture uploads (validated JSON shape, model whitelist and
+in-fixture reference resolution) without shell access.
+
+Each successful load records the file's SHA-256 in `FixtureLoad`, so the page
+only offers **Reload** when the JSON on disk actually changed since it was
+applied — an unchanged, fully-loaded fixture shows *up to date* with no
+action button.
 
 ---
 
@@ -801,3 +848,6 @@ See code comments and docstrings for detailed conventions.
 ---
 
 **Made with ❤️ for better software**
+
+
+**Propiedad de Agencia de Tecnologías del Estado de Oaxaca**

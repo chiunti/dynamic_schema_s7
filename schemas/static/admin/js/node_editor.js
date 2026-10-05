@@ -83,11 +83,10 @@
       }
       
       const data = await response.json();
-      const extensionBaseUrl = '/static/admin/js/extensions_editor/';
-      
-      data.extensions.forEach(extensionFile => {
-        const src = extensionBaseUrl + extensionFile + '?v=' + Date.now();
-        if (!document.querySelector(`script[src^="${extensionBaseUrl}${extensionFile}"]`)) {
+
+      data.extensions.forEach(extension => {
+        const src = extension.url + '?v=' + Date.now();
+        if (!document.querySelector(`script[src^="${extension.url}"]`)) {
           const script = document.createElement('script');
           script.src = src;
           document.head.appendChild(script);

@@ -1,0 +1,10 @@
+# Local override for docker-compose.prod.yml — publishes the app port on the
+# host. Production (Coolify/Traefik) routes to the container port via `expose`
+# and never publishes to the host, so keep `ports:` out of the prod file.
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d --build
+
+services:
+  web:
+    ports:
+      - "${WEB_PORT:-8000}:8000"

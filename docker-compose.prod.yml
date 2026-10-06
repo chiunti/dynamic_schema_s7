@@ -38,6 +38,7 @@ services:
       POSTGRES_PORT: 5432
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY is required}
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,${DJANGO_ALLOWED_HOSTS:?DJANGO_ALLOWED_HOSTS is required}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:?DJANGO_CSRF_TRUSTED_ORIGINS is required (e.g. https://s7.example.com)}
       DJANGO_SETTINGS_MODULE: config.settings.production
       # 0005_example_seed is demo data; skip it in production by default
       S7_SKIP_EXAMPLE_SEED: ${S7_SKIP_EXAMPLE_SEED:-1}

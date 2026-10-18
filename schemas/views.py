@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import CanImportSchema, CanPublishSchema, CanReadSchema, ProjectTokenAuthentication
+from .constants import STATUS_DRAFT
 from .serializers import SchemaImportSerializer
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
@@ -47,7 +48,12 @@ class SchemaView(APIView):
 
 
 class SchemaImportView(APIView):
-    """DRF endpoint to import a schema JSON using project credentials."""
+    """DRF endpoint to import a schema JSON using project credentials.
+
+    Credential imports are persisted as ``draft`` unless the credential
+    carries publish scope; publishing remains exclusive to the publish
+    endpoint.
+    """
 
     authentication_classes = [ProjectTokenAuthentication]
     permission_classes = [CanImportSchema]
@@ -65,7 +71,11 @@ class SchemaImportView(APIView):
         data['project_id'] = request.user.project_id
         data['organization_id'] = request.user.organization_id
         try:
-            schema_id, warning = SchemaImportService().import_from_request(data, None)
+            # Credentials without publish scope import as draft; publishing requires /publish/.
+            enforced_status = None if getattr(request.auth, "can_publish", False) else STATUS_DRAFT
+            schema_id, warning, requested_status = SchemaImportService().import_from_request(
+                data, user=None, enforced_status=enforced_status
+            )
         except PermissionError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except (ValueError, RuntimeError) as exc:
@@ -76,10 +86,10 @@ class SchemaImportView(APIView):
                 {"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        return Response(
-            {"schema_id": str(schema_id), "warning": warning or ""},
-            status=status.HTTP_201_CREATED,
-        )
+        payload = {"schema_id": str(schema_id), "warning": warning or ""}
+        if enforced_status is not None and requested_status != enforced_status:
+            payload["forced_status"] = enforced_status
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class SchemaPublishView(APIView):

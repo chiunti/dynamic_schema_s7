@@ -429,7 +429,7 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
                 "project_id": project_id,
             }
             try:
-                schema_id, warning = SchemaImportService().import_from_request(data, user=None)
+                schema_id, warning, _ = SchemaImportService().import_from_request(data, user=None)
             except ValueError as e:
                 return JsonResponse({"error": ERR_INVALID_SCHEMA, "detail": str(e)}, status=400)
             except Exception as e:

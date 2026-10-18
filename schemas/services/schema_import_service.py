@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from django.db import transaction
 
-from ..constants import STATUS_DRAFT, VALID_SCHEMA_STATUSES
+from ..constants import ERR_SCHEMA_STATUS_MUST_BE_VALID, STATUS_DRAFT, VALID_SCHEMA_STATUSES
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..repositories.project_repository import ProjectRepository
 from ..services.schema_service import SchemaService
@@ -85,10 +85,16 @@ class SchemaImportService:
         return result if result else default
 
     @transaction.atomic
-    def import_from_request(self, data: dict, user) -> tuple[uuid.UUID, str]:
+    def import_from_request(
+        self, data: dict, user, enforced_status: Optional[str] = None
+    ) -> tuple[uuid.UUID, str, str]:
         """Import a schema from validated API request data.
 
-        Returns the imported schema root node ID and a warning string.
+        ``enforced_status`` (when not ``None``) replaces the caller-requested
+        status; ``None`` persists the requested status as-is.
+
+        Returns the imported schema root node ID, a warning string, and the
+        status originally requested by the caller (before enforcement).
         """
         schema_text = data["schema_text"]
         try:
@@ -122,14 +128,15 @@ class SchemaImportService:
             "",
         )
 
-        schema_status = self._extract_string(
+        requested_status = self._extract_string(
             data.get("schema_status") or inner.get("status"),
             STATUS_DRAFT,
         )
-        if schema_status not in self.VALID_STATUSES:
-            raise ValueError(
-                f"schema_status must be one of: {', '.join(self.VALID_STATUSES)}"
-            )
+        if requested_status not in self.VALID_STATUSES:
+            raise ValueError(ERR_SCHEMA_STATUS_MUST_BE_VALID)
+        if enforced_status is not None and enforced_status not in self.VALID_STATUSES:
+            raise ValueError(ERR_SCHEMA_STATUS_MUST_BE_VALID)
+        schema_status = enforced_status or requested_status
 
         overwrite = bool(data.get("overwrite", False))
         project_id: Optional[uuid.UUID] = data.get("project_id")
@@ -161,4 +168,4 @@ class SchemaImportService:
             else:
                 warning = str(version_warning)
 
-        return schema_id, warning
+        return schema_id, warning, requested_status

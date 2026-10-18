@@ -399,7 +399,7 @@ Provision a separate high-entropy secret per backend service through a secret ma
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/schema/{node_type}/{key}/{version}/` | Get published schema for the authenticated project |
-| POST | `/api/schema/import/` | Import a schema JSON (`import` scope) |
+| POST | `/api/schema/import/` | Import a schema JSON (`import` scope) — persists as `draft` unless the credential has `publish` scope; response adds `"forced_status": "draft"` when the requested status was downgraded |
 | POST | `/api/schema/{node_type}/{key}/{version}/publish/` | Publish a schema (`publish` scope) |
 
 **Schema Response Format:**

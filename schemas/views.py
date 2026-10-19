@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import CanImportSchema, CanPublishSchema, CanReadSchema, ProjectTokenAuthentication
-from .constants import STATUS_DRAFT
+from .constants import ERR_INTERNAL_SERVER_ERROR, ERR_INVALID_REQUEST, STATUS_DRAFT
 from .serializers import SchemaImportSerializer
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
@@ -74,7 +74,7 @@ class SchemaImportView(APIView):
             # Credentials without publish scope import as draft; publishing requires /publish/.
             enforced_status = None if getattr(request.auth, "can_publish", False) else STATUS_DRAFT
             schema_id, warning, requested_status = SchemaImportService().import_from_request(
-                data, user=None, enforced_status=enforced_status
+                data, user=None, enforced_status=enforced_status, strict_keys=True
             )
         except PermissionError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
@@ -90,6 +90,67 @@ class SchemaImportView(APIView):
         if enforced_status is not None and requested_status != enforced_status:
             payload["forced_status"] = enforced_status
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class SchemaValidateView(APIView):
+    """DRF endpoint to validate a schema JSON without persisting it.
+
+    Runs the import pipeline as a dry-run and returns the structured
+    ``{valid, errors, warnings}`` envelope so programmatic consumers can
+    iterate on a payload before importing it.
+    """
+
+    authentication_classes = [ProjectTokenAuthentication]
+    permission_classes = [CanImportSchema]
+
+    def post(self, request):
+        serializer = SchemaImportSerializer(data=request.data)
+        if not serializer.is_valid():
+            errors = []
+            for field, field_errors in serializer.errors.items():
+                received = request.data.get(field) if isinstance(request.data, dict) else None
+                errors.append({
+                    "code": ERR_INVALID_REQUEST,
+                    "message": f"{field}: {field_errors[0]}",
+                    "path": f"$.{field}",
+                    "expected": None,
+                    # Truncate: schema_text can be a whole JSON document.
+                    "received": str(received)[:200] if received is not None else None,
+                })
+            return Response(
+                {"valid": False, "errors": errors, "warnings": []},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = serializer.validated_data
+        if ((data.get('project_id') and data['project_id'] != request.user.project_id)
+                or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
+            return Response({'error': 'Project credential does not match request'},
+                            status=status.HTTP_403_FORBIDDEN)
+        data['project_id'] = request.user.project_id
+        data['organization_id'] = request.user.organization_id
+        try:
+            result = SchemaImportService().validate_from_request(data)
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except Exception:
+            logger.exception("Schema validation failed")
+            return Response(
+                {
+                    "valid": False,
+                    "errors": [{
+                        "code": ERR_INTERNAL_SERVER_ERROR,
+                        "message": "Internal server error",
+                        "path": None,
+                        "expected": None,
+                        "received": None,
+                    }],
+                    "warnings": [],
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class SchemaPublishView(APIView):

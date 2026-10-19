@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import SchemaView, SchemaImportView, SchemaPublishView
+from .views import SchemaView, SchemaImportView, SchemaPublishView, SchemaValidateView
 from .api_views import (
     OrganizationListCreateView,
     OrganizationDetailView,
@@ -13,6 +13,7 @@ app_name = 'schemas'
 
 urlpatterns = [
     path('schema/import/', SchemaImportView.as_view(), name='schema-import'),
+    path('schema/validate/', SchemaValidateView.as_view(), name='schema-validate'),
     path(
         'schema/<str:node_type>/<str:key>/<str:version>/publish/',
         SchemaPublishView.as_view(),

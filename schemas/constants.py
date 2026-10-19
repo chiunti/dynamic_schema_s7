@@ -135,6 +135,15 @@ ERR_INVALID_SCHEMA_TYPE = "invalid_schema_type"
 ERR_INVALID_SCHEMA = "invalid_schema"
 ERR_IMPORT_FAILED = "import_failed"
 
+# Schema validate endpoint codes — envelope {valid, errors, warnings} of
+# POST /api/schema/validate/ (views.SchemaValidateView)
+ERR_INVALID_REQUEST = "invalid_request"
+ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
+ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"
+ERR_INVALID_DOMAIN_VALUE = "invalid_domain_value"
+WARN_IMPORT = "import_warning"
+WARN_MISSING_REQUIRED_ATTRIBUTES = "missing_required_attributes"
+
 # Logging error messages
 ERR_INVALID_JSON_MSG = "Invalid JSON: {error}"
 ERR_ERROR_IN_SCHEMA_VIEW = "Error in schema_view: {error}"

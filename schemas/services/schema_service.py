@@ -14,6 +14,7 @@ from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
 from .datatype_plugins import validate_datatype_value, get_storage_defaults
+from .exceptions import SchemaValidationError
 from .schema_validation_service import SchemaValidationService
 from ..constants import (
     ERR_VERSION_NOT_SET,
@@ -41,6 +42,10 @@ from ..constants import (
     ERR_NOT_A_ROOT_NODE,
     ERR_SCHEMA_NOT_FOUND,
     ERR_PROJECT_ID_REQUIRED,
+    ERR_INVALID_SCHEMA,
+    ERR_UNDECLARED_JSON_KEY,
+    ERR_INVALID_COLLECTION_VALUE,
+    ERR_INVALID_DOMAIN_VALUE,
     MAX_VERSION_AUTO_INCREMENT_ATTEMPTS,
     SCHEMA_KEY_SUFFIX,
     SCHEMA_METADATA_SUFFIX,
@@ -142,8 +147,18 @@ class SchemaService:
         project_id: Optional[uuid.UUID] = None,
         organization_id: Optional[uuid.UUID] = None,
         user=None,
+        strict_keys: bool = False,
+        path: str = "$",
     ) -> tuple[uuid.UUID, dict]:
-        """Import a schema with validation"""
+        """Import a schema with validation.
+
+        ``strict_keys`` enables strict mode (credential imports / validate
+        dry-run): undeclared JSON keys, non-collection values on declared
+        collection keys and out-of-domain scalar values raise
+        ``SchemaValidationError`` instead of being silently tolerated.
+        ``path`` is the JSON path prefix used to locate errors inside the
+        payload; the root schema object is addressed as ``$``.
+        """
         if project_id:
             project = ProjectRepository().get_project_by_id(project_id)
             if not project or project.organization_id != organization_id or not project.organization.is_active:
@@ -168,7 +183,14 @@ class SchemaService:
         )
         
         # Process the complete JSON structure to create child nodes
-        self._process_schema_structure(validated_schema, schema_id, project_id, organization_id)
+        self._process_schema_structure(
+            validated_schema,
+            schema_id,
+            project_id,
+            organization_id,
+            strict_keys=strict_keys,
+            path=path,
+        )
         
         # Sync Node.version from child nodes that have natural_version attributes
         # This allows schemas like 'screen' to define their version in metadata.version
@@ -344,12 +366,13 @@ class SchemaService:
                 {'value_string': schema_status}
             )
     
-    def _process_schema_structure(self, schema: dict, root_id: uuid.UUID, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID]):
+    def _process_schema_structure(self, schema: dict, root_id: uuid.UUID, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], strict_keys: bool = False, path: str = "$"):
         """Process the complete schema JSON structure and create child nodes recursively.
 
         Delegates the entire root object to _process_node_attributes, which contains
         the unified dispatch logic for all cases (scalars, collections, shorthand sections,
-        and composition-inferred child nodes).
+        and composition-inferred child nodes). Error paths address the root object's
+        members relative to ``path`` (the envelope root key is not part of it).
         """
         root_key = next(iter(schema.keys())) if schema else None
         if not root_key:
@@ -360,7 +383,15 @@ class SchemaService:
         root_node = self.repository.get_node_by_id(root_id)
         root_node_type = root_node.node_type
 
-        self._process_node_attributes(root_id, root_node_type, root_obj, project_id, organization_id)
+        self._process_node_attributes(
+            root_id,
+            root_node_type,
+            root_obj,
+            project_id,
+            organization_id,
+            strict_keys=strict_keys,
+            path=path,
+        )
     
     def _resolve_child_type_for_item(self, item: dict, compositions):
         """Select the correct child NodeType for a JSON item from a set of candidate compositions.
@@ -410,7 +441,7 @@ class SchemaService:
 
         return compositions[0].child_type
 
-    def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0):
+    def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0, strict_keys: bool = False, path: str = "$"):
         """Process a collection of items as child nodes using NodeTypeComposition"""
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
@@ -424,9 +455,11 @@ class SchemaService:
             # No composition declares this collection_key for the parent type —
             # refuse to guess child types by name (name-mangling is forbidden by
             # the Declarative Variant Model).
-            raise ValueError(
+            raise SchemaValidationError(
                 f"No NodeTypeComposition declares collection_key '{collection_key}' "
-                f"for parent node type '{parent_node_type.name}'"
+                f"for parent node type '{parent_node_type.name}'",
+                code=ERR_INVALID_SCHEMA,
+                path=f"{path}.{collection_key}",
             )
 
         # Pre-build field maps per child_type to avoid repeated DB queries
@@ -442,7 +475,13 @@ class SchemaService:
         
         for idx, item in enumerate(items):
             if not isinstance(item, dict):
+                if strict_keys:
+                    raise self._invalid_collection_value_error(
+                        parent_node_type, f"{collection_key}[{idx}]", item, path
+                    )
                 continue
+
+            item_path = f"{path}.{collection_key}[{idx}]"
 
             # Validate conditional structures within the item
             for item_key, item_value in item.items():
@@ -450,7 +489,11 @@ class SchemaService:
                     try:
                         validate_conditional_structure(item_value)
                     except Exception as e:
-                        raise ValueError(f"Invalid conditional structure for '{item_key}' in item {idx} of '{collection_key}': {str(e)}")
+                        raise SchemaValidationError(
+                            f"Invalid conditional structure for '{item_key}' in item {idx} of '{collection_key}': {str(e)}",
+                            code=ERR_INVALID_SCHEMA,
+                            path=f"{item_path}.{item_key}",
+                        ) from e
 
             child_node_type = self._resolve_child_type_for_item(item, compositions)
             _, json_key_to_field_map = field_maps[child_node_type.id]
@@ -491,7 +534,15 @@ class SchemaService:
             )
 
             # Process attributes for this node (recursion into children is handled inside)
-            self._process_node_attributes(child_node.id, child_node_type, item, project_id, organization_id)
+            self._process_node_attributes(
+                child_node.id,
+                child_node_type,
+                item,
+                project_id,
+                organization_id,
+                strict_keys=strict_keys,
+                path=item_path,
+            )
     
     def _build_json_key_to_field_map(self, attr_defs):
         """Build a mapping from json_key to Node field names based on AttributeDefs"""
@@ -546,16 +597,24 @@ class SchemaService:
         
         return node_fields
     
-    def _process_single_child_node(self, parent_id: uuid.UUID, json_key: str, value: dict, child_type, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, index: Optional[int] = None, sort_order: int = 0, inherited_variant: Optional[str] = None):
+    def _process_single_child_node(self, parent_id: uuid.UUID, json_key: str, value: dict, child_type, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, index: Optional[int] = None, sort_order: int = 0, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
         """Process a single child node from a dict value (composition without collection_key)"""
         from schemas.models import Node, AttributeDef
+
+        # JSON path of this child node within the payload (indexed when the
+        # child comes from a list slot).
+        child_path = f"{path}.{json_key}" if index is None else f"{path}.{json_key}[{index}]"
 
         # Validate conditional structure if value has conditional structure
         if self._is_conditional_structure(value):
             try:
                 validate_conditional_structure(value)
             except Exception as e:
-                raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+                raise SchemaValidationError(
+                    f"Invalid conditional structure for '{json_key}': {str(e)}",
+                    code=ERR_INVALID_SCHEMA,
+                    path=child_path,
+                ) from e
 
         # Generate unique name/key based on index
         if index is not None:
@@ -600,7 +659,15 @@ class SchemaService:
             None
         )
         if usage_attr_def:
-            self._set_node_attribute(child_node.id, 'usage', json_key, child_type, inherited_variant)
+            self._set_node_attribute(
+                child_node.id,
+                'usage',
+                json_key,
+                child_type,
+                inherited_variant,
+                strict_keys=strict_keys,
+                path=child_path,
+            )
 
         # Process the dict as attributes and nested structures.
         # For props nodes, pass inherited_variant to _process_node_attributes
@@ -618,9 +685,18 @@ class SchemaService:
                 # Inject discriminator for variant resolution in _process_node_attributes,
                 # but it should NOT be stored as a NodeAttribute.
                 value = dict(value, **{parent_discriminator: inherited_variant})
-        self._process_node_attributes(child_node.id, child_type, value, project_id, organization_id, inherited_variant)
+        self._process_node_attributes(
+            child_node.id,
+            child_type,
+            value,
+            project_id,
+            organization_id,
+            inherited_variant,
+            strict_keys=strict_keys,
+            path=child_path,
+        )
     
-    def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None):
+    def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
         """Set a node attribute value, creating AttributeDef if needed"""
         # Disable triggers to bypass s7 validation
         self.repository.disable_triggers()
@@ -651,7 +727,11 @@ class SchemaService:
                 try:
                     validate_conditional_structure(value)
                 except Exception as e:
-                    raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+                    raise SchemaValidationError(
+                        f"Invalid conditional structure for '{json_key}': {str(e)}",
+                        code=ERR_INVALID_SCHEMA,
+                        path=f"{path}.{json_key}",
+                    ) from e
 
             # Decide whether to create as universal or variant-specific
             final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -664,7 +744,20 @@ class SchemaService:
             )
 
             if not attr_def:
-                # Create AttributeDef with the determined variant_key
+                # Strict mode: the key must be declared for this node type and
+                # applicable to the node's active variant (variant_key param).
+                declaration = None
+                if strict_keys:
+                    declaration = self.attribute_def_repository.get_attribute_def_declaration(
+                        node_type,
+                        json_key,
+                        variant_key
+                    )
+                    if declaration is None:
+                        raise self._undeclared_key_error(node_type, json_key, variant_key, path)
+                # Create AttributeDef with the determined variant_key,
+                # inheriting the declaration's domain so it keeps enforcing
+                # after materialization.
                 is_common = (final_variant_key is None)
                 attr_def = self.attribute_def_repository.create_attribute_def(
                     name=json_key,
@@ -674,11 +767,29 @@ class SchemaService:
                     data_type=data_type,
                     node_type=node_type,
                     variant_key=final_variant_key,
+                    domain=declaration.domain if declaration else None,
                 )
 
             if attr_def and value is not None:
                 # Run any datatype-specific plugin validators (e.g. conditional).
-                validate_datatype_value(attr_def.data_type, value)
+                try:
+                    validate_datatype_value(attr_def.data_type, value)
+                except Exception as e:
+                    raise SchemaValidationError(
+                        f"Invalid value for '{json_key}': {str(e)}",
+                        code=ERR_INVALID_SCHEMA,
+                        path=f"{path}.{json_key}",
+                    ) from e
+
+                # Strict mode: scalar values must belong to the declared domain.
+                if strict_keys and isinstance(value, (str, int, float, bool)):
+                    check_domain = self._effective_domain(
+                        node_type, json_key, variant_key, attr_def
+                    )
+                    if check_domain and not self.attribute_def_repository.domain_item_exists(
+                        check_domain, self._domain_lookup_value(value)
+                    ):
+                        raise self._invalid_domain_value_error(json_key, check_domain, value, path)
 
                 # Store the value in the column declared by primary_storage_type.
                 defaults = get_storage_defaults(attr_def.data_type, value)
@@ -687,8 +798,13 @@ class SchemaService:
             # Re-enable triggers
             self.repository.enable_triggers()
     
-    def _process_keyed_map(self, node_id: uuid.UUID, node_type, entries: dict, compositions, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID]) -> None:
-        """Store arbitrary JSON object keys as individually editable child nodes."""
+    def _process_keyed_map(self, node_id: uuid.UUID, node_type, entries: dict, compositions, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], strict_keys: bool = False, path: str = "$") -> None:
+        """Store arbitrary JSON object keys as individually editable child nodes.
+
+        Map keys are data (map semantics), so strict mode does not reject
+        undeclared keys here; strict checks apply to each entry's attributes
+        via the recursive _process_node_attributes call.
+        """
         candidates = [comp.child_type for comp in compositions if comp.collection_key is None]
         typed_objects = [
             (candidate, {
@@ -700,24 +816,41 @@ class SchemaService:
         object_map = next((candidate for candidate in candidates if candidate.is_json_map), None)
         scalar = next((candidate for candidate in candidates if candidate.json_scalar_attribute), None)
         for index, (key, value) in enumerate(entries.items()):
+            entry_path = f"{path}.{key}"
             if not isinstance(key, str) or not key or len(key) > 255:
-                raise ValueError('Map keys must be non-empty strings of at most 255 characters')
+                raise SchemaValidationError(
+                    'Map keys must be non-empty strings of at most 255 characters',
+                    code=ERR_INVALID_SCHEMA,
+                    path=entry_path,
+                )
             if isinstance(value, dict):
                 child_type = next((candidate for candidate, required in typed_objects if required and required <= value.keys()), object_map)
             else:
                 child_type = scalar
             if child_type is None:
-                raise ValueError(f'Unsupported value for key {key!r} in {node_type.name}')
+                raise SchemaValidationError(
+                    f'Unsupported value for key {key!r} in {node_type.name}',
+                    code=ERR_INVALID_SCHEMA,
+                    path=entry_path,
+                )
             child = self.repository.create_child_node(
                 child_type, node_id, key, name=key, sort_order=index,
                 project_id=project_id, organization_id=organization_id,
             )
             child_attributes = value if isinstance(value, dict) else {child_type.json_scalar_attribute: value}
-            self._process_node_attributes(child.id, child_type, child_attributes, project_id, organization_id)
+            self._process_node_attributes(
+                child.id,
+                child_type,
+                child_attributes,
+                project_id,
+                organization_id,
+                strict_keys=strict_keys,
+                path=entry_path,
+            )
 
-    def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None):
+    def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
         """Process attributes for a node, creating AttributeDefs dynamically if needed.
-        
+
         Dispatch priority for each json_key in attributes:
           1. List value whose key matches a composition collection_key -> _process_collection
              Also: dict value whose key matches a collection_key with max_children=1 -> wrapped as [value]
@@ -727,10 +860,14 @@ class SchemaService:
              (composition without collection_key; child_type.default_json_key or
              child_type.name) -> _process_single_child_node
           4. Scalar/dict value with no composition match -> store as NodeAttribute
-        
+
         Args:
             inherited_variant: Variant key inherited from the parent node
                 (for child node types declared as a parent's props_node_type)
+            strict_keys: Reject undeclared JSON keys / invalid collection and
+                domain values with SchemaValidationError (validate dry-run).
+            path: JSON path of this node's attributes object within the
+                payload; errors are reported as ``{path}.{json_key}``.
         """
         from schemas.models import AttributeDef, DataType, NodeAttribute, NodeTypeComposition, DomainItem, Node
 
@@ -739,7 +876,16 @@ class SchemaService:
 
         compositions = self.composition_repository.get_compositions_by_parent_type_select_related(node_type)
         if getattr(node_type, 'is_json_map', False) is True:
-            self._process_keyed_map(node_id, node_type, attributes, compositions, project_id, organization_id)
+            self._process_keyed_map(
+                node_id,
+                node_type,
+                attributes,
+                compositions,
+                project_id,
+                organization_id,
+                strict_keys=strict_keys,
+                path=path,
+            )
             return
         
         # Case 1 — collection keys (list or singleton dict values)
@@ -820,194 +966,227 @@ class SchemaService:
 
             # Process ALL attributes (no filtering of empty/null/zero values)
             for json_key, value in attributes.items():
-                # Skip Node model fields (handled separately), except sort_order which
-                # may be expressed explicitly in JSON and must be stored as an attribute
-                # when no display_order AttributeDef is present on this node type.
-                if json_key in node_field_names and json_key != 'sort_order':
-                    continue
-                # Skip natural type attributes (natural_version, natural_key, etc.)
-                # These are mapped to node columns and handled separately
-                attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
-                    node_type,
-                    json_key,
-                    None
-                )
-                if attr_def and attr_def.data_type.name.startswith('natural_'):
-                    continue
-                if json_key == 'sort_order':
-                    # If a display_order AttributeDef exists, skip: the value is driven by
-                    # node.sort_order (loop index) and reconstructed as sort_order+1 in SQL.
-                    has_display_order = self.attribute_def_repository.attribute_def_exists_with_display_order(
-                        node_type,
-                        'sort_order'
-                    )
-                    if has_display_order:
+                try:
+                    # Skip Node model fields (handled separately), except sort_order which
+                    # may be expressed explicitly in JSON and must be stored as an attribute
+                    # when no display_order AttributeDef is present on this node type.
+                    if json_key in node_field_names and json_key != 'sort_order':
                         continue
-
-                # Skip the injected parent-discriminator key on props nodes
-                if injected_discriminator and json_key == injected_discriminator:
-                    continue
-                
-                # Case 1: value whose key matches a composition collection_key
-                if json_key in collection_keys:
-                    if isinstance(value, list):
-                        self._process_collection(json_key, value, node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order)
-                        child_sort_order += len(value)
-                    elif isinstance(value, dict):
-                        # Singleton dict: only dispatch if composition allows exactly one child (max_children=1)
-                        comp = collection_key_to_comp.get(json_key)
-                        if comp and comp.max_children == 1:
-                            # Inject discriminator value if this slot has a shorthand mapping
-                            # (e.g. section_key='body' for the 'body' slot of screen_section)
-                            if json_key in shorthand_map:
-                                _, discriminator_json_key = shorthand_map[json_key]
-                                item = dict(value)
-                                item.setdefault(discriminator_json_key, json_key)
-                            else:
-                                item = value
-                            self._process_collection(json_key, [item], node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order)
-                            child_sort_order += 1
-                    continue
-                
-                # Case 2: shorthand discriminator (e.g. 'body' dict -> screen_section node)
-                if json_key in shorthand_map and isinstance(value, dict):
-                    child_type, discriminator_json_key = shorthand_map[json_key]
-                    name = value.get('id') or json_key
-                    child_node = self.repository.create_child_node(
-                        child_type,
-                        node_id,
-                        json_key,
-                        project_id=project_id,
-                        organization_id=organization_id,
-                        sort_order=child_sort_order,
-                        name=name,
-                    )
-                    child_sort_order += 1
-                    item_with_discriminator = dict(value)
-                    item_with_discriminator.setdefault(discriminator_json_key, json_key)
-                    self._process_node_attributes(child_node.id, child_type, item_with_discriminator, project_id, organization_id)
-                    continue
-                
-                # Case 3: structural match -> composition without collection_key
-                # (e.g. a props child node, or other named sub-structures)
-                if json_key in json_key_to_child_type:
-                    child_type = json_key_to_child_type[json_key]
-                    # For props node types (declared via NodeTypeVariant.props_node_type),
-                    # pass the parent's variant so the child can resolve
-                    # variant-scoped AttributeDefs (keyed by the parent's variant).
-                    child_inherited_variant = (
-                        node_variant
-                        if self.node_type_repository.is_props_node_type(child_type)
-                        else None
-                    )
-                    if isinstance(value, dict):
-                        self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant)
-                        child_sort_order += 1
-                    elif isinstance(value, list):
-                        for idx, item in enumerate(value):
-                            if isinstance(item, dict):
-                                self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant)
-                                child_sort_order += 1
-                    continue
-                
-                # Handle nested objects: if value is a dict with a single key that matches a pattern like {field: "x"} or {value: "y"}
-                # Expand it to flat attributes: {left_kind: "field", left_field_key: "x"}
-                if isinstance(value, dict) and len(value) == 1:
-                    kind_key = list(value.keys())[0]
-                    kind_value = value[kind_key]
-                    # Check if there are AttributeDefs that match the pattern {json_key}_kind and {json_key}_{kind_key}_key or {json_key}_{kind_key}
-                    kind_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
-                        node_type,
-                        f'{json_key}_kind',
-                        None
-                    )
-                    if kind_attr_def:
-                        # This is a nested object that should be expanded
-                        # Set the kind attribute
-                        self._set_node_attribute(node_id, f'{json_key}_kind', kind_key, node_type, node_variant)
-                        # Set the value attribute based on the kind
-                        # Try both patterns: {json_key}_{kind_key}_key (for field) and {json_key}_{kind_key} (for value)
-                        value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
-                            node_type,
-                            f'{json_key}_{kind_key}_key',
-                            None
-                        )
-                        if not value_attr_def:
-                            value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
-                                node_type,
-                                f'{json_key}_{kind_key}',
-                                None
-                            )
-                        if value_attr_def:
-                            self._set_node_attribute(node_id, value_attr_def.json_key, kind_value, node_type, node_variant)
-                        continue
-                
-                # Try to find existing AttributeDef
-                # First, try the variant-specific one (based on 'type' attribute)
-                attr_def = None
-                if node_variant:
+                    # Skip natural type attributes (natural_version, natural_key, etc.)
+                    # These are mapped to node columns and handled separately
                     attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
                         node_type,
                         json_key,
-                        node_variant
+                        None
                     )
-
-                # If not found, try the generic one (variant_key=None, is_common=True only)
-                # Catalog entries (is_common=False) are templates, not real properties
-                if not attr_def:
-                    attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant_common(
-                        node_type,
-                        json_key,
-                        None,
-                        True
-                    )
-
-                # If not found, create AttributeDef dynamically
-                if not attr_def:
-                    attr_def = self._create_attribute_def(node_type, json_key, value, node_variant)
-                
-                if attr_def:
-                    # Validate conditional structures recursively in the value
-                    # Do this before the try-except to ensure validation errors propagate
-                    if isinstance(value, (list, dict)):
-                        try:
-                            self._validate_conditional_recursively(value, json_key)
-                        except Exception as e:
-                            raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
-                    
-                    # Set the attribute value using direct ORM to bypass s7 validation
-                    try:
-                        if value is None:
-                            # Skip None values (no attribute row needed)
+                    if attr_def and attr_def.data_type.name.startswith('natural_'):
+                        continue
+                    if json_key == 'sort_order':
+                        # If a display_order AttributeDef exists, skip: the value is driven by
+                        # node.sort_order (loop index) and reconstructed as sort_order+1 in SQL.
+                        has_display_order = self.attribute_def_repository.attribute_def_exists_with_display_order(
+                            node_type,
+                            'sort_order'
+                        )
+                        if has_display_order:
                             continue
 
-                        # Run datatype-specific plugin validators (e.g. conditional structures).
-                        validate_datatype_value(attr_def.data_type, value)
+                    # Skip the injected parent-discriminator key on props nodes
+                    if injected_discriminator and json_key == injected_discriminator:
+                        continue
 
-                        # Store the value in the column declared by primary_storage_type.
-                        if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            from decimal import Decimal
-                            value = Decimal(str(value))
-                        defaults = get_storage_defaults(attr_def.data_type, value)
-                        self.repository.update_or_create_node_attribute(
+                    # Case 1: value whose key matches a composition collection_key
+                    if json_key in collection_keys:
+                        if isinstance(value, list):
+                            self._process_collection(json_key, value, node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path)
+                            child_sort_order += len(value)
+                        elif isinstance(value, dict):
+                            # Singleton dict: only dispatch if composition allows exactly one child (max_children=1)
+                            comp = collection_key_to_comp.get(json_key)
+                            if comp and comp.max_children == 1:
+                                # Inject discriminator value if this slot has a shorthand mapping
+                                # (e.g. section_key='body' for the 'body' slot of screen_section)
+                                if json_key in shorthand_map:
+                                    _, discriminator_json_key = shorthand_map[json_key]
+                                    item = dict(value)
+                                    item.setdefault(discriminator_json_key, json_key)
+                                else:
+                                    item = value
+                                self._process_collection(json_key, [item], node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path)
+                                child_sort_order += 1
+                            elif strict_keys:
+                                raise self._invalid_collection_value_error(node_type, json_key, value, path)
+                        elif strict_keys:
+                            raise self._invalid_collection_value_error(node_type, json_key, value, path)
+                        continue
+
+                    # Case 2: shorthand discriminator (e.g. 'body' dict -> screen_section node)
+                    if json_key in shorthand_map and isinstance(value, dict):
+                        child_type, discriminator_json_key = shorthand_map[json_key]
+                        name = value.get('id') or json_key
+                        child_node = self.repository.create_child_node(
+                            child_type,
                             node_id,
-                            attribute_def=attr_def,
-                            defaults=defaults
+                            json_key,
+                            project_id=project_id,
+                            organization_id=organization_id,
+                            sort_order=child_sort_order,
+                            name=name,
                         )
-                    except Exception:
-                        # Log error but continue processing other attributes
-                        pass
+                        child_sort_order += 1
+                        item_with_discriminator = dict(value)
+                        item_with_discriminator.setdefault(discriminator_json_key, json_key)
+                        self._process_node_attributes(child_node.id, child_type, item_with_discriminator, project_id, organization_id, strict_keys=strict_keys, path=f"{path}.{json_key}")
+                        continue
+
+                    # Case 3: structural match -> composition without collection_key
+                    # (e.g. a props child node, or other named sub-structures)
+                    if json_key in json_key_to_child_type:
+                        child_type = json_key_to_child_type[json_key]
+                        # For props node types (declared via NodeTypeVariant.props_node_type),
+                        # pass the parent's variant so the child can resolve
+                        # variant-scoped AttributeDefs (keyed by the parent's variant).
+                        child_inherited_variant = (
+                            node_variant
+                            if self.node_type_repository.is_props_node_type(child_type)
+                            else None
+                        )
+                        if isinstance(value, dict):
+                            self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path)
+                            child_sort_order += 1
+                        elif isinstance(value, list):
+                            for idx, item in enumerate(value):
+                                if isinstance(item, dict):
+                                    self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path)
+                                    child_sort_order += 1
+                        continue
+
+                    # Handle nested objects: if value is a dict with a single key that matches a pattern like {field: "x"} or {value: "y"}
+                    # Expand it to flat attributes: {left_kind: "field", left_field_key: "x"}
+                    if isinstance(value, dict) and len(value) == 1:
+                        kind_key = list(value.keys())[0]
+                        kind_value = value[kind_key]
+                        # Check if there are AttributeDefs that match the pattern {json_key}_kind and {json_key}_{kind_key}_key or {json_key}_{kind_key}
+                        kind_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                            node_type,
+                            f'{json_key}_kind',
+                            None
+                        )
+                        if kind_attr_def:
+                            # This is a nested object that should be expanded
+                            # Set the kind attribute
+                            self._set_node_attribute(node_id, f'{json_key}_kind', kind_key, node_type, node_variant, strict_keys=strict_keys, path=path)
+                            # Set the value attribute based on the kind
+                            # Try both patterns: {json_key}_{kind_key}_key (for field) and {json_key}_{kind_key} (for value)
+                            value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                                node_type,
+                                f'{json_key}_{kind_key}_key',
+                                None
+                            )
+                            if not value_attr_def:
+                                value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                                    node_type,
+                                    f'{json_key}_{kind_key}',
+                                    None
+                                )
+                            if value_attr_def:
+                                self._set_node_attribute(node_id, value_attr_def.json_key, kind_value, node_type, node_variant, strict_keys=strict_keys, path=path)
+                            continue
+
+                    # Try to find existing AttributeDef
+                    # First, try the variant-specific one (based on 'type' attribute)
+                    attr_def = None
+                    if node_variant:
+                        attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                            node_type,
+                            json_key,
+                            node_variant
+                        )
+
+                    # If not found, try the generic one (variant_key=None, is_common=True only)
+                    # Catalog entries (is_common=False) are templates, not real properties
+                    if not attr_def:
+                        attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant_common(
+                            node_type,
+                            json_key,
+                            None,
+                            True
+                        )
+
+                    # If not found, create AttributeDef dynamically
+                    if not attr_def:
+                        attr_def = self._create_attribute_def(node_type, json_key, value, node_variant, strict_keys=strict_keys, path=path)
+
+                    if attr_def:
+                        # Validate conditional structures recursively in the value
+                        # Do this before the try-except to ensure validation errors propagate
+                        if isinstance(value, (list, dict)):
+                            try:
+                                self._validate_conditional_recursively(value, json_key)
+                            except Exception as e:
+                                raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+
+                        # Strict mode: scalar values must belong to the declared domain.
+                        if (strict_keys and value is not None
+                                and isinstance(value, (str, int, float, bool))):
+                            check_domain = self._effective_domain(
+                                node_type, json_key, node_variant, attr_def
+                            )
+                            if check_domain and not self.attribute_def_repository.domain_item_exists(
+                                check_domain, self._domain_lookup_value(value)
+                            ):
+                                raise self._invalid_domain_value_error(json_key, check_domain, value, path)
+
+                        # Set the attribute value using direct ORM to bypass s7 validation
+                        try:
+                            if value is None:
+                                # Skip None values (no attribute row needed)
+                                continue
+
+                            # Run datatype-specific plugin validators (e.g. conditional structures).
+                            validate_datatype_value(attr_def.data_type, value)
+
+                            # Store the value in the column declared by primary_storage_type.
+                            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                                from decimal import Decimal
+                                value = Decimal(str(value))
+                            defaults = get_storage_defaults(attr_def.data_type, value)
+                            self.repository.update_or_create_node_attribute(
+                                node_id,
+                                attribute_def=attr_def,
+                                defaults=defaults
+                            )
+                        except Exception:
+                            # Log error but continue processing other attributes
+                            pass
+                except SchemaValidationError:
+                    raise
+                except ValueError as exc:
+                    # Any pipeline error inherits the path of the key being
+                    # dispatched, even when the raise site is not instrumented.
+                    # RuntimeError (infrastructure) propagates unwrapped so
+                    # callers keep mapping it to 5xx rather than invalid_schema.
+                    raise SchemaValidationError(
+                        str(exc),
+                        code=ERR_INVALID_SCHEMA,
+                        path=f"{path}.{json_key}",
+                    ) from exc
         finally:
             # Re-enable triggers
             self.repository.enable_triggers()
 
-    def _create_attribute_def(self, node_type, json_key: str, value, variant_key=None):
+    def _create_attribute_def(self, node_type, json_key: str, value, variant_key=None, strict_keys: bool = False, path: str = "$"):
         """Create an AttributeDef dynamically based on the value type
 
         New properties are created as variant-specific by default (for the current node variant).
         Only create as universal if:
         1. A universal version already exists (is_common=True, variant_key=None)
         2. A catalog template exists (is_common=False, variant_key=None) - then convert to universal
+
+        Under ``strict_keys``, keys with no AttributeDef declaration for the
+        node type and the node's active variant are rejected instead of
+        auto-creating catalog entries, and non-collection values on declared
+        collection keys raise instead of being silently dropped.
         """
         from schemas.models import AttributeDef, DataType
 
@@ -1017,7 +1196,34 @@ class SchemaService:
             json_key
         )
         if composition_exists:
+            if strict_keys:
+                raise self._invalid_collection_value_error(node_type, json_key, value, path)
             return None
+
+        # Strict mode: the key must be declared for this node type and
+        # applicable to the node's active variant before auto-creating an
+        # AttributeDef in the shared catalog. Node field names (e.g.
+        # 'sort_order' — the only Node column allowed to reach attribute
+        # processing) count as structurally declared.
+        declaration = None
+        if strict_keys:
+            declaration = self.attribute_def_repository.get_attribute_def_declaration(
+                node_type,
+                json_key,
+                variant_key
+            )
+            if declaration is None and json_key not in self.repository.get_node_field_names():
+                raise self._undeclared_key_error(node_type, json_key, variant_key, path)
+            # The resolved declaration may be a catalog template whose domain
+            # is enforced here so out-of-domain scalars are rejected before
+            # creation; the domain is also copied below so the materialized
+            # def keeps enforcing it afterwards.
+            if (declaration is not None and declaration.domain
+                    and isinstance(value, (str, int, float, bool))
+                    and not self.attribute_def_repository.domain_item_exists(
+                        declaration.domain, self._domain_lookup_value(value)
+                    )):
+                raise self._invalid_domain_value_error(json_key, declaration.domain, value, path)
 
         # Determine data type from value
         data_type_name = self._infer_data_type(value)
@@ -1035,7 +1241,11 @@ class SchemaService:
             try:
                 validate_conditional_structure(value)
             except Exception as e:
-                raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+                raise SchemaValidationError(
+                    f"Invalid conditional structure for '{json_key}': {str(e)}",
+                    code=ERR_INVALID_SCHEMA,
+                    path=f"{path}.{json_key}",
+                ) from e
 
         # Decide whether to create as universal or variant-specific
         final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -1050,7 +1260,9 @@ class SchemaService:
         if existing:
             return existing
 
-        # Create AttributeDef with the determined variant_key
+        # Create AttributeDef with the determined variant_key, inheriting
+        # the declaration's domain so the materialized def keeps enforcing
+        # it on subsequent writes.
         is_common = (final_variant_key is None)
         attr_def = self.attribute_def_repository.create_attribute_def(
             name=json_key,
@@ -1060,9 +1272,82 @@ class SchemaService:
             data_type=data_type,
             node_type=node_type,
             variant_key=final_variant_key,
+            domain=declaration.domain if declaration else None,
         )
 
         return attr_def
+
+    def _undeclared_key_error(self, node_type, json_key: str, variant_key: Optional[str], path: str) -> SchemaValidationError:
+        """Build the structured error for a JSON key not declared on a node type.
+
+        ``variant_key`` is the node's active variant; when the key is declared
+        only under other variants, those variants are reported in the message
+        to help fix the payload or the catalog.
+        """
+        expected = f"attribute declared on node type '{node_type.name}'"
+        message = f"JSON key '{json_key}' is not declared on node type '{node_type.name}'"
+        if variant_key:
+            expected += f" for variant '{variant_key}'"
+            message += f" for variant '{variant_key}'"
+        declared_variants = [
+            vk
+            for vk in self.attribute_def_repository.get_variant_keys_for_json_key(node_type, json_key)
+            if vk is not None and vk != variant_key
+        ]
+        if declared_variants:
+            message += f" (declared for variants: {declared_variants})"
+        return SchemaValidationError(
+            message,
+            code=ERR_UNDECLARED_JSON_KEY,
+            path=f"{path}.{json_key}",
+            expected=expected,
+            received=json_key,
+        )
+
+    def _invalid_collection_value_error(self, node_type, json_key: str, value, path: str) -> SchemaValidationError:
+        """Build the structured error for a non-collection value on a collection_key."""
+        return SchemaValidationError(
+            f"Key '{json_key}' is declared as a child collection on node type '{node_type.name}'",
+            code=ERR_INVALID_COLLECTION_VALUE,
+            path=f"{path}.{json_key}",
+            expected="array of objects (or object for a singleton slot)",
+            received=type(value).__name__,
+        )
+
+    @staticmethod
+    def _domain_lookup_value(value) -> str:
+        """Coerce a scalar to the string form stored in ``DomainItem.value``.
+
+        ``value`` is a CharField: bools are stored lowercase ('true'/'false'),
+        so passing the raw Python value would miss the lookup.
+        """
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    def _effective_domain(self, node_type, json_key: str, variant_key: Optional[str], attr_def):
+        """Resolve the domain that governs strict scalar checks for an attribute.
+
+        Materialized defs may carry no ``domain`` (created before the catalog
+        template declared one, or via a permissive import), so fall back to
+        the AttributeDef declaration for this node type and variant.
+        """
+        if attr_def.domain:
+            return attr_def.domain
+        declaration = self.attribute_def_repository.get_attribute_def_declaration(
+            node_type, json_key, variant_key
+        )
+        return declaration.domain if declaration else None
+
+    def _invalid_domain_value_error(self, json_key: str, domain, value, path: str) -> SchemaValidationError:
+        """Build the structured error for a scalar value outside its declared domain."""
+        return SchemaValidationError(
+            f"Value {value!r} for '{json_key}' is not a member of domain '{domain.domain_name}'",
+            code=ERR_INVALID_DOMAIN_VALUE,
+            path=f"{path}.{json_key}",
+            expected=f"one of the '{domain.domain_name}' domain values",
+            received=value,
+        )
 
     def _determine_variant_key(self, node_type, json_key: str, requested_variant_key) -> Optional[str]:
         """Determine whether a property should be universal (None) or variant-specific

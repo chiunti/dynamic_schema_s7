@@ -6,10 +6,21 @@ from typing import Any, Optional
 
 from django.db import transaction
 
-from ..constants import ERR_SCHEMA_STATUS_MUST_BE_VALID, STATUS_DRAFT, VALID_SCHEMA_STATUSES
+from ..constants import (
+    ERR_INVALID_JSON,
+    ERR_INVALID_REQUEST,
+    ERR_INVALID_SCHEMA,
+    ERR_SCHEMA_STATUS_MUST_BE_VALID,
+    STATUS_DRAFT,
+    VALID_SCHEMA_STATUSES,
+    WARN_IMPORT,
+    WARN_MISSING_REQUIRED_ATTRIBUTES,
+)
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..repositories.project_repository import ProjectRepository
-from ..services.schema_service import SchemaService
+from .exceptions import SchemaValidationError
+from .schema_service import SchemaService
+from .schema_validation_service import SchemaValidationService
 
 
 class SchemaImportService:
@@ -21,6 +32,7 @@ class SchemaImportService:
         self.node_type_repository = NodeTypeRepository()
         self.project_repository = ProjectRepository()
         self.schema_service = SchemaService()
+        self.validation_service = SchemaValidationService()
 
     def get_import_form_options(self) -> dict:
         """Return the options needed to render the schema import form.
@@ -42,7 +54,13 @@ class SchemaImportService:
                 node_type_value
             )
         if not node_type or not node_type.is_root:
-            raise ValueError(f"Root node type not found for '{node_type_value}'")
+            raise SchemaValidationError(
+                f"Root node type not found for '{node_type_value}'",
+                code=ERR_INVALID_SCHEMA,
+                path="$.node_type",
+                expected="existing root node type name or json_scope",
+                received=node_type_value,
+            )
         return node_type
 
     def _resolve_schema(self, raw_schema: Any, node_type) -> dict:
@@ -86,29 +104,64 @@ class SchemaImportService:
 
     @transaction.atomic
     def import_from_request(
-        self, data: dict, user, enforced_status: Optional[str] = None
+        self, data: dict, user, enforced_status: Optional[str] = None, strict_keys: bool = False
     ) -> tuple[uuid.UUID, str, str]:
         """Import a schema from validated API request data.
 
         ``enforced_status`` (when not ``None``) replaces the caller-requested
         status; ``None`` persists the requested status as-is.
 
+        ``strict_keys`` enables strict mode for credential imports and the
+        validate dry-run: the pipeline rejects undeclared JSON keys,
+        non-collection values on collection keys and out-of-domain scalars
+        with ``SchemaValidationError`` carrying a JSON path.
+
         Returns the imported schema root node ID, a warning string, and the
         status originally requested by the caller (before enforcement).
         """
-        schema_text = data["schema_text"]
+        schema_text = data.get("schema_text")
+        if not isinstance(schema_text, str):
+            raise SchemaValidationError(
+                "schema_text is required and must be a string",
+                code=ERR_INVALID_REQUEST,
+                path="$.schema_text",
+                expected="non-empty string containing a JSON object",
+            )
         try:
             raw_schema = json.loads(schema_text)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid JSON in schema_text: {exc}") from exc
+            raise SchemaValidationError(
+                f"Invalid JSON in schema_text: {exc}",
+                code=ERR_INVALID_JSON,
+                path="$.schema_text",
+            ) from exc
 
-        node_type = self._resolve_node_type(data["node_type"].strip())
-        resolved_schema = self._resolve_schema(raw_schema, node_type)
+        node_type_value = data.get("node_type")
+        if not isinstance(node_type_value, str) or not node_type_value.strip():
+            raise SchemaValidationError(
+                "node_type is required",
+                code=ERR_INVALID_REQUEST,
+                path="$.node_type",
+                expected="existing root node type name or json_scope",
+            )
+        node_type = self._resolve_node_type(node_type_value.strip())
+        try:
+            resolved_schema = self._resolve_schema(raw_schema, node_type)
+        except SchemaValidationError:
+            raise
+        except ValueError as exc:
+            raise SchemaValidationError(
+                str(exc), code=ERR_INVALID_SCHEMA, path="$.schema_text"
+            ) from exc
 
         root_key = next(iter(resolved_schema.keys()))
         inner = resolved_schema[root_key]
         if not isinstance(inner, dict):
-            raise ValueError("The schema root value must be a JSON object")
+            raise SchemaValidationError(
+                "The schema root value must be a JSON object",
+                code=ERR_INVALID_SCHEMA,
+                path="$.schema_text",
+            )
 
         schema_key = self._extract_string(
             data.get("schema_key") or inner.get("key"),
@@ -119,8 +172,11 @@ class SchemaImportService:
             # schema_nodes.key column limit (30 chars).
             schema_key = self._extract_string(inner.get("name") or inner.get("id"), "")[:30]
         if not schema_key:
-            raise ValueError(
-                "schema_key is required and cannot be determined from the schema"
+            raise SchemaValidationError(
+                "schema_key is required and cannot be determined from the schema",
+                code=ERR_INVALID_SCHEMA,
+                path="$.schema_key",
+                expected="non-empty schema key",
             )
 
         schema_version = self._extract_string(
@@ -157,6 +213,7 @@ class SchemaImportService:
             project_id=project_id,
             organization_id=organization_id,
             user=user,
+            strict_keys=strict_keys,
         )
 
         warning = ""
@@ -169,3 +226,105 @@ class SchemaImportService:
                 warning = str(version_warning)
 
         return schema_id, warning, requested_status
+
+    def validate_from_request(self, data: dict, user=None) -> dict:
+        """Dry-run a schema import and return the structured validation envelope.
+
+        Runs the real import pipeline inside a transaction that is always
+        rolled back, so nothing is persisted. The dry-run forces
+        ``overwrite=True`` and ``schema_status='draft'`` (it measures
+        structural validity, not identity/publication conflicts) and enables
+        strict-key mode, as every credential-facing import does.
+
+        Returns:
+            ``{"valid": bool, "errors": [...], "warnings": [...]}`` where each
+            error carries ``code``, ``message``, ``path``, ``expected`` and
+            ``received`` (``None`` when not applicable).
+        """
+        schema_text = data.get("schema_text")
+        if not isinstance(schema_text, str):
+            return self._failure(
+                code=ERR_INVALID_REQUEST,
+                message="schema_text is required and must be a string",
+                path="$.schema_text",
+                expected="non-empty string containing a JSON object",
+            )
+        try:
+            json.loads(schema_text)
+        except json.JSONDecodeError as exc:
+            return self._failure(
+                code=ERR_INVALID_JSON,
+                message=str(exc),
+                path="$.schema_text",
+                expected="valid JSON object",
+            )
+
+        errors: list[dict] = []
+        warnings: list[dict] = []
+        with transaction.atomic():
+            try:
+                schema_id, warning, _requested_status = self.import_from_request(
+                    dict(data, overwrite=True),
+                    user,
+                    enforced_status=STATUS_DRAFT,
+                    strict_keys=True,
+                )
+            except SchemaValidationError as exc:
+                errors.append(exc.to_dict())
+            except ValueError as exc:
+                errors.append(
+                    {
+                        "code": ERR_INVALID_SCHEMA,
+                        "message": str(exc),
+                        "path": None,
+                        "expected": None,
+                        "received": None,
+                    }
+                )
+            else:
+                if warning:
+                    warnings.append({"code": WARN_IMPORT, "message": warning})
+                # collect_required_warnings reads the tree built above; the
+                # inner atomic of import_from_request acted as a savepoint,
+                # so the outer transaction is still usable after a managed
+                # failure as well.
+                for item in self.validation_service.collect_required_warnings(schema_id):
+                    warnings.append(
+                        {
+                            "code": WARN_MISSING_REQUIRED_ATTRIBUTES,
+                            "node_id": item["node_id"],
+                            "node_name": item["node_name"],
+                            "node_type": item["node_type"],
+                            "missing": item["missing"],
+                            "message": f"Missing required attributes: {', '.join(item['missing'])}",
+                        }
+                    )
+            # Dry-run: never persist — discard everything written above, on
+            # success and on managed failure alike. Unhandled exceptions
+            # propagate and roll back implicitly.
+            transaction.set_rollback(True)
+
+        return {"valid": not errors, "errors": errors, "warnings": warnings}
+
+    def _failure(
+        self,
+        code: str,
+        message: str,
+        path: Optional[str] = None,
+        expected: Any = None,
+        received: Any = None,
+    ) -> dict:
+        """Build a failed validation envelope holding a single structured error."""
+        return {
+            "valid": False,
+            "errors": [
+                {
+                    "code": code,
+                    "message": message,
+                    "path": path,
+                    "expected": expected,
+                    "received": received,
+                }
+            ],
+            "warnings": [],
+        }

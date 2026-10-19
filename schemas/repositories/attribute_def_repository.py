@@ -587,3 +587,55 @@ class AttributeDefRepository:
             variant_key__isnull=True,
             is_common=True
         ).exists()
+
+    def get_attribute_def_declaration(
+        self,
+        node_type: NodeType,
+        json_key: str,
+        variant_key: Optional[str],
+    ) -> Optional[AttributeDef]:
+        """
+        Return the AttributeDef declaring ``(node_type, json_key)`` applicable
+        to ``variant_key``, or None.
+
+        ``variant_key=None`` rows cover both common attributes (is_common=True)
+        and catalog templates (is_common=False) — templates are declarations
+        that the import pipeline materializes variant-scoped. A key declared
+        only under a different variant_key does NOT apply here. When both an
+        exact-variant and a ``variant_key=None`` declaration exist, the exact
+        one wins (more specific).
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+            variant_key: Variant key of the current node context (None allowed)
+
+        Returns:
+            The applicable AttributeDef declaration, or None
+        """
+        qs = AttributeDef.objects.filter(node_type=node_type, json_key=json_key)
+        if variant_key is not None:
+            declared = qs.filter(variant_key=variant_key).first()
+            if declared:
+                return declared
+        return qs.filter(variant_key__isnull=True).first()
+
+    def get_variant_keys_for_json_key(self, node_type: NodeType, json_key: str) -> list:
+        """
+        Return the distinct variant_keys under which (node_type, json_key) is
+        declared (None entries meaning common/catalog declarations). Used to
+        enrich 'undeclared key' error details.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+
+        Returns:
+            List of variant_key values (may contain None)
+        """
+        return list(
+            AttributeDef.objects.filter(node_type=node_type, json_key=json_key)
+            .order_by("variant_key")
+            .values_list("variant_key", flat=True)
+            .distinct()
+        )

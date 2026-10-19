@@ -1,7 +1,8 @@
 """
 Repository for NodeType-related database operations.
 
-This repository centralizes all NodeType data access operations to eliminate
+This repository centralizes all NodeType data access operations — including
+root-scope lookups and NodeTypeComposition graph traversal — to eliminate
 direct model access from views and admin classes, following the four-layer
 architecture pattern.
 """
@@ -11,11 +12,11 @@ from typing import Optional
 
 from django.db.models import QuerySet
 
-from ..models import NodeType
+from ..models import NodeType, NodeTypeComposition
 
 
 class NodeTypeRepository:
-    """Repository for NodeType-related database operations"""
+    """Repository for NodeType lookups and NodeTypeComposition graph traversal."""
 
     def get_root_node_type_by_scope(self, scope: str) -> Optional[NodeType]:
         """
@@ -28,6 +29,28 @@ class NodeTypeRepository:
             NodeType instance or None if not found
         """
         return NodeType.objects.filter(json_scope=scope, is_root=True).first()
+
+    def get_node_type_ids_for_scope(self, scope: str) -> list[uuid.UUID]:
+        """Return all NodeType IDs reachable from the root type with the given json_scope via BFS."""
+        root = self.get_root_node_type_by_scope(scope)
+        if not root:
+            return []
+        return self.get_node_type_ids_for_root(root.id)
+
+    def get_node_type_ids_for_root(self, root_id: uuid.UUID) -> list[uuid.UUID]:
+        """Return all NodeType IDs reachable from the given root type ID via BFS."""
+        visited = set()
+        queue = [root_id]
+        while queue:
+            current_id = queue.pop()
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            children = NodeTypeComposition.objects.filter(
+                parent_type_id=current_id
+            ).values_list("child_type_id", flat=True)
+            queue.extend(children)
+        return list(visited)
 
     def get_node_type_by_name(self, name: str) -> Optional[NodeType]:
         """
@@ -53,7 +76,7 @@ class NodeTypeRepository:
         """
         return NodeType.objects.filter(id=node_type_id).first()
 
-    def get_all_root_node_types(self):
+    def get_all_root_node_types(self) -> QuerySet:
         """
         Get all root node types.
 

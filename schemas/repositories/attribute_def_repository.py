@@ -19,45 +19,14 @@ from ..models import (
 class AttributeDefRepository:
     """Repository for attribute definition and component property data access."""
 
-    def get_node_type_ids_for_scope(self, scope: str) -> list[uuid.UUID]:
-        """Return all NodeType IDs reachable from the root type with the given json_scope via BFS."""
-        root = self.get_root_node_type_by_scope(scope)
-        if not root:
-            return []
-        return self.get_node_type_ids_for_root(root.id)
-
-    def get_node_type_ids_for_root(self, root_id: uuid.UUID) -> list[uuid.UUID]:
-        """Return all NodeType IDs reachable from the given root type ID via BFS."""
-        visited = set()
-        queue = [root_id]
-        while queue:
-            current_id = queue.pop()
-            if current_id in visited:
-                continue
-            visited.add(current_id)
-            children = NodeTypeComposition.objects.filter(
-                parent_type_id=current_id
-            ).values_list("child_type_id", flat=True)
-            queue.extend(children)
-        return list(visited)
-
-    def get_root_node_type_by_scope(self, scope: str) -> Optional[NodeType]:
-        """Return the root NodeType for a given json_scope, or None."""
-        return NodeType.objects.filter(json_scope=scope, is_root=True).first()
-
-    def get_all_root_node_types(self) -> list[NodeType]:
-        """Return all root NodeTypes ordered by name."""
-        return list(NodeType.objects.filter(is_root=True).order_by("name"))
-
-    def get_type_attribute_def_for_scope(self, scope: str) -> Optional[AttributeDef]:
-        """Return the first domain-bound discriminator AttributeDef reachable from scope.
+    def get_type_attribute_def_for_type_ids(self, type_ids: list[uuid.UUID]) -> Optional[AttributeDef]:
+        """Return the first domain-bound discriminator AttributeDef for the given node type IDs.
 
         The discriminator json_keys are read from the declarative
-        NodeTypeVariant.discriminator_attr values of the node types in
-        scope (usually a single key, e.g. 'type'), instead of assuming a
+        NodeTypeVariant.discriminator_attr values of the given node types
+        (usually a single key, e.g. 'type'), instead of assuming a
         fixed attribute name.
         """
-        type_ids = self.get_node_type_ids_for_scope(scope)
         discriminator_keys = (
             NodeTypeVariant.objects
             .filter(node_type_id__in=type_ids, discriminator_attr__isnull=False)
@@ -103,11 +72,10 @@ class AttributeDefRepository:
         """Bulk create DomainItem instances."""
         DomainItem.objects.bulk_create(items)
 
-    def get_all_variants(self, scope: str = "") -> list[dict]:
-        """Return all NodeTypeVariants, optionally filtered to node types reachable from scope."""
+    def get_all_variants(self, type_ids: Optional[list[uuid.UUID]] = None) -> list[dict]:
+        """Return all NodeTypeVariants, optionally filtered to the given node type IDs."""
         qs = NodeTypeVariant.objects.select_related("node_type").order_by("node_type__name", "variant_key")
-        if scope:
-            type_ids = self.get_node_type_ids_for_scope(scope)
+        if type_ids is not None:
             qs = qs.filter(node_type_id__in=type_ids)
         return list(qs.values("id", "variant_key", "node_type__name"))
 

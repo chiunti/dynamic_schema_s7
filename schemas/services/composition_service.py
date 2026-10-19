@@ -7,7 +7,6 @@ from typing import Optional, Dict, Any
 
 from django.db import transaction
 
-from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..constants import (
@@ -21,7 +20,6 @@ class CompositionService:
     """Service for managing composition relationships between node types."""
 
     def __init__(self):
-        self.repository = AttributeDefRepository()
         self.composition_repository = CompositionRepository()
         self.node_type_repository = NodeTypeRepository()
 
@@ -33,10 +31,10 @@ class CompositionService:
         across every root scope.
         """
         if scope:
-            return self.repository.get_node_type_ids_for_scope(scope)
+            return self.node_type_repository.get_node_type_ids_for_scope(scope)
         all_ids = []
-        for nt in self.repository.get_all_root_node_types():
-            all_ids.extend(self.repository.get_node_type_ids_for_scope(nt.json_scope))
+        for nt in self.node_type_repository.get_all_root_node_types():
+            all_ids.extend(self.node_type_repository.get_node_type_ids_for_scope(nt.json_scope))
         return list(set(all_ids))
 
     def get_graph_data(self, scope: Optional[str], composition_model) -> Dict[str, Any]:

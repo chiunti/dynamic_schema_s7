@@ -93,7 +93,7 @@ class NodeTypeAdmin(admin.ModelAdmin):
 
 
 # NOTE: the BFS helper that used to live here (_get_tree_node_type_ids) was
-# equivalent to AttributeDefRepository.get_node_type_ids_for_scope — same
+# equivalent to NodeTypeRepository.get_node_type_ids_for_scope — same
 # root-scope lookup, same child_type_id walk — so it was removed. Callers
 # now go through CompositionService.get_scope_node_type_ids.
 

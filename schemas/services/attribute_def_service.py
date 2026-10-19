@@ -36,11 +36,11 @@ class AttributeDefService:
         if not scope:
             raise ValueError(ERR_SCOPE_REQUIRED)
 
-        attr_def = self.repository.get_type_attribute_def_for_scope(scope)
+        type_ids = self.node_type_repository.get_node_type_ids_for_scope(scope)
+        if not type_ids:
+            raise LookupError(ERR_SCOPE_NOT_FOUND)
+        attr_def = self.repository.get_type_attribute_def_for_type_ids(type_ids)
         if not attr_def:
-            root = self.repository.get_root_node_type_by_scope(scope)
-            if not root:
-                raise LookupError(ERR_SCOPE_NOT_FOUND)
             raise LookupError(ERR_COMPONENT_TYPE_DOMAIN_NOT_FOUND)
 
         component_types = self.repository.get_component_types_for_domain(attr_def.domain)
@@ -116,7 +116,8 @@ class AttributeDefService:
 
     def get_variants_for_scope(self, scope: str) -> dict:
         """Return all NodeTypeVariants reachable from a given root scope."""
-        variants = self.repository.get_all_variants(scope)
+        type_ids = self.node_type_repository.get_node_type_ids_for_scope(scope) if scope else None
+        variants = self.repository.get_all_variants(type_ids)
         return {"variants": variants}
 
     def get_variants_for_node_type(self, node_type_id: str) -> list[str]:
@@ -219,12 +220,10 @@ class AttributeDefService:
         
         Uses NodeTypeVariant.props_node_type to determine which type holds the catalog.
         """
-        from ..models import NodeTypeVariant
-        
         scope_type_ids = []
         target_names = None
         if scope:
-            scope_type_ids = self.repository.get_node_type_ids_for_scope(scope)
+            scope_type_ids = self.node_type_repository.get_node_type_ids_for_scope(scope)
             target_names = self.repository.get_node_type_names_for_ids(scope_type_ids)
 
         # All node_type_ids that carry this variant_key (e.g. sdui_props + sdui_widget for 'text_label')
@@ -293,7 +292,7 @@ class AttributeDefService:
         """
         target_names = None
         if scope:
-            type_ids = self.repository.get_node_type_ids_for_scope(scope)
+            type_ids = self.node_type_repository.get_node_type_ids_for_scope(scope)
             target_names = self.repository.get_node_type_names_for_ids(type_ids)
 
         node_type_ids = self.repository.get_node_type_ids_for_variant(variant_key, target_names)

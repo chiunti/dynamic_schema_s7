@@ -62,7 +62,7 @@ class CatalogService:
         if root is None:
             raise LookupError(ERR_SCOPE_NOT_FOUND)
 
-        type_ids = self.attribute_def_repository.get_node_type_ids_for_root(root.id)
+        type_ids = self.node_type_repository.get_node_type_ids_for_root(root.id)
         node_types = list(self.node_type_repository.get_node_types_by_ids(type_ids))
         variant_rows = self.node_type_repository.get_node_type_variants_by_node_type_ids(type_ids)
         attr_rows = self.attribute_def_repository.get_attribute_defs_by_node_type_ids(type_ids)

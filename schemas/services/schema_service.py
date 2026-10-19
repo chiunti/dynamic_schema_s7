@@ -92,6 +92,17 @@ class SchemaService:
             return None
         return self._generate_json_example(root_node_type)
 
+    def generate_json_example_for_root(self, node_type: NodeType) -> dict:
+        """Generate a JSON example from an already-resolved root NodeType.
+
+        Same output as generate_json_example, but skips the json_scope
+        lookup for callers that already hold the root instance.
+
+        Returns:
+            Example dict.
+        """
+        return self._generate_json_example(node_type)
+
     def _generate_json_example(self, node_type: NodeType) -> dict:
         """Generate JSON example from NodeType definitions (only root level with required fields)"""
         example = {}

@@ -21,11 +21,15 @@ class AttributeDefRepository:
 
     def get_node_type_ids_for_scope(self, scope: str) -> list[uuid.UUID]:
         """Return all NodeType IDs reachable from the root type with the given json_scope via BFS."""
-        root = NodeType.objects.filter(json_scope=scope, is_root=True).first()
+        root = self.get_root_node_type_by_scope(scope)
         if not root:
             return []
+        return self.get_node_type_ids_for_root(root.id)
+
+    def get_node_type_ids_for_root(self, root_id: uuid.UUID) -> list[uuid.UUID]:
+        """Return all NodeType IDs reachable from the given root type ID via BFS."""
         visited = set()
-        queue = [root.id]
+        queue = [root_id]
         while queue:
             current_id = queue.pop()
             if current_id in visited:

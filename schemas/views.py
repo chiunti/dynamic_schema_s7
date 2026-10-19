@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from .authentication import CanImportSchema, CanPublishSchema, CanReadSchema, ProjectTokenAuthentication
 from .constants import ERR_INTERNAL_SERVER_ERROR, ERR_INVALID_REQUEST, STATUS_DRAFT
 from .serializers import SchemaImportSerializer
+from .services.catalog_service import CatalogService
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
 from .services.schema_read_service import SchemaReadService
@@ -175,3 +176,39 @@ class SchemaPublishView(APIView):
             )
 
         return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class CatalogScopeView(APIView):
+    """Serve the resolved catalog for a json_scope to project credentials."""
+
+    authentication_classes = [ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema]
+
+    def get(self, request, scope):
+        try:
+            catalog = CatalogService().get_resolved_catalog(scope)
+        except LookupError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except Exception:
+            logger.exception("Catalog retrieval failed")
+            return Response(
+                {"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        return Response(catalog, status=status.HTTP_200_OK)
+
+
+class CatalogDatatypesView(APIView):
+    """Serve the universal DataType catalog to project credentials."""
+
+    authentication_classes = [ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema]
+
+    def get(self, request):
+        try:
+            datatypes = CatalogService().get_datatypes()
+        except Exception:
+            logger.exception("Datatypes catalog retrieval failed")
+            return Response(
+                {"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        return Response(datatypes, status=status.HTTP_200_OK)

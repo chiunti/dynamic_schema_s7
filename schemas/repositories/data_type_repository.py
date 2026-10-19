@@ -34,3 +34,16 @@ class DataTypeRepository:
             DataType instance or None
         """
         return DataType.objects.filter(name='string').first()
+
+    def list_data_types(self) -> list[dict]:
+        """
+        Get all DataTypes ordered by name.
+
+        Returns:
+            List of dicts with name, description and primary_storage_type
+        """
+        return list(
+            DataType.objects.order_by("name").values(
+                "name", "description", "primary_storage_type"
+            )
+        )

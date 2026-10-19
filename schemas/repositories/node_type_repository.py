@@ -8,6 +8,9 @@ architecture pattern.
 
 import uuid
 from typing import Optional
+
+from django.db.models import QuerySet
+
 from ..models import NodeType
 
 
@@ -83,7 +86,7 @@ class NodeTypeRepository:
         """
         return NodeType.objects.filter(json_scope__endswith=suffix)
 
-    def get_node_types_by_ids(self, type_ids):
+    def get_node_types_by_ids(self, type_ids: list[uuid.UUID]) -> QuerySet:
         """
         Get node types by IDs.
 
@@ -91,9 +94,19 @@ class NodeTypeRepository:
             type_ids: List of node type IDs
 
         Returns:
-            QuerySet of NodeType instances
+            Values QuerySet of dicts with id, name, label, is_root,
+            is_container, json_scope, default_json_key, is_json_map and
+            json_scalar_attribute, ordered by name
         """
-        return NodeType.objects.filter(id__in=type_ids).values("id", "name", "label", "is_root", "is_container", "json_scope").order_by("name")
+        return (
+            NodeType.objects.filter(id__in=type_ids)
+            .values(
+                "id", "name", "label", "is_root", "is_container",
+                "json_scope", "default_json_key", "is_json_map",
+                "json_scalar_attribute",
+            )
+            .order_by("name")
+        )
 
     def has_parent_inferred_variants(self, node_type):
         """
@@ -264,4 +277,25 @@ class NodeTypeRepository:
             .filter(node_type_id__in=node_type_ids, discriminator_attr__isnull=False)
             .values_list("node_type_id", "discriminator_attr")
             .distinct()
+        )
+
+    def get_node_type_variants_by_node_type_ids(self, node_type_ids: list[uuid.UUID]) -> list[dict]:
+        """
+        Get all NodeTypeVariant rows for the given node type IDs.
+
+        Args:
+            node_type_ids: List of node type IDs
+
+        Returns:
+            List of dicts with node_type_id, variant_key, discriminator_attr
+            and props_node_type__name, ordered by node_type_id then variant_key
+        """
+        from ..models import NodeTypeVariant
+        return list(
+            NodeTypeVariant.objects.filter(node_type_id__in=node_type_ids)
+            .order_by("node_type_id", "variant_key")
+            .values(
+                "node_type_id", "variant_key", "discriminator_attr",
+                "props_node_type__name",
+            )
         )

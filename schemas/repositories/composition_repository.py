@@ -5,6 +5,8 @@ Repository for NodeTypeComposition data access.
 import uuid
 from typing import Optional, Type, Any
 
+from django.db.models import QuerySet
+
 from ..models import NodeType
 
 
@@ -113,9 +115,31 @@ class CompositionRepository:
             composition_model: Model class (NodeTypeComposition)
 
         Returns:
-            QuerySet of compositions
+            QuerySet of compositions with parent_type and child_type
+            select_related
         """
-        return composition_model.objects.filter(parent_type_id__in=parent_type_ids).order_by("parent_type__name", "child_type__name")
+        return (
+            composition_model.objects
+            .select_related("parent_type", "child_type")
+            .filter(parent_type_id__in=parent_type_ids)
+            .order_by("parent_type__name", "child_type__name")
+        )
+
+    def get_compositions_with_child_types_by_parent_ids(self, parent_type_ids: list[uuid.UUID]) -> QuerySet:
+        """
+        Get compositions for many parent types with child_type select_related.
+
+        Same result as get_compositions_by_parent_type_ids without requiring
+        the caller to pass the model class.
+
+        Args:
+            parent_type_ids: List of parent NodeType IDs
+
+        Returns:
+            QuerySet of NodeTypeComposition instances
+        """
+        from ..models import NodeTypeComposition
+        return self.get_compositions_by_parent_type_ids(parent_type_ids, NodeTypeComposition)
 
     def get_child_type_ids_by_parent_type_id(self, parent_type_id: uuid.UUID, composition_model: Type[Any]) -> list[uuid.UUID]:
         """

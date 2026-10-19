@@ -234,6 +234,29 @@ class AttributeDefRepository:
             .values("id", "json_key", "name", "node_type__name", "is_required", "variant_key", "is_common")
         )
 
+    def get_attribute_defs_by_node_type_ids(self, node_type_ids: list[uuid.UUID]) -> list[dict]:
+        """
+        Get all AttributeDefs for the given node types (any variant_key),
+        with data type and domain names resolved.
+
+        Args:
+            node_type_ids: List of node type IDs
+
+        Returns:
+            List of dicts with node_type_id, json_key, name, is_required,
+            is_common, variant_key, data_type__name, domain__domain_name and
+            group, ordered by node_type_id, json_key then variant_key
+            (NULL variant_key rows sort first)
+        """
+        return list(
+            AttributeDef.objects.filter(node_type_id__in=node_type_ids)
+            .order_by("node_type_id", "json_key", "variant_key")
+            .values(
+                "node_type_id", "json_key", "name", "is_required", "is_common",
+                "variant_key", "data_type__name", "domain__domain_name", "group",
+            )
+        )
+
     def get_active_variant_ids(self, variant_key: str) -> set[str]:
         """Return a set of string IDs for AttributeDefs assigned to a variant_key."""
         return set(
@@ -358,6 +381,23 @@ class AttributeDefRepository:
             QuerySet of DomainItem instances ordered by domain_id and value
         """
         return DomainItem.objects.filter(domain_id__in=domain_ids).order_by("domain_id", "value")
+
+    def get_domain_items_by_domain_names(self, domain_names: list[str]) -> list[dict]:
+        """
+        Get DomainItems for the given domain names.
+
+        Args:
+            domain_names: List of Domain.domain_name values
+
+        Returns:
+            List of dicts with domain__domain_name, value and label,
+            ordered by domain name then value
+        """
+        return list(
+            DomainItem.objects.filter(domain__domain_name__in=domain_names)
+            .order_by("domain__domain_name", "value")
+            .values("domain__domain_name", "value", "label")
+        )
 
     def get_or_create_attribute_def(self, node_type, json_key, variant_key, defaults):
         """

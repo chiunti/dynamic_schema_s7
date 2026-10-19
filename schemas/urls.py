@@ -1,5 +1,12 @@
 from django.urls import path
-from .views import SchemaView, SchemaImportView, SchemaPublishView, SchemaValidateView
+from .views import (
+    CatalogDatatypesView,
+    CatalogScopeView,
+    SchemaImportView,
+    SchemaPublishView,
+    SchemaValidateView,
+    SchemaView,
+)
 from .api_views import (
     OrganizationListCreateView,
     OrganizationDetailView,
@@ -20,6 +27,9 @@ urlpatterns = [
         name='schema-publish',
     ),
     path('schema/<str:node_type>/<str:key>/<str:version>/', SchemaView.as_view(), name='schema'),
+    # Catalog — 'datatypes' must precede '<str:scope>' so it is not captured as a scope
+    path('catalog/datatypes/', CatalogDatatypesView.as_view(), name='catalog-datatypes'),
+    path('catalog/<str:scope>/', CatalogScopeView.as_view(), name='catalog-scope'),
     # Organizations
     path('organizations/', OrganizationListCreateView.as_view(), name='organization-list'),
     path('organizations/<uuid:org_id>/', OrganizationDetailView.as_view(), name='organization-detail'),

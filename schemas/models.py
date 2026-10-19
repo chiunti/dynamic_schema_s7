@@ -195,6 +195,7 @@ class NodeType(models.Model):
                 fields=["json_scope"],
                 condition=Q(is_root=True),
                 name="uq_snode_types_root_scope",
+                nulls_distinct=False,
             ),
         ]
 

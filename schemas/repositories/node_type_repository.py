@@ -85,6 +85,23 @@ class NodeTypeRepository:
         """
         return NodeType.objects.filter(is_root=True)
 
+    def get_scopeless_root_node_type(self) -> Optional[NodeType]:
+        """
+        Get the root node type without a json_scope (json_scope IS NULL).
+
+        At most one is expected — the uq_snode_types_root_scope constraint
+        enforces it (NULLS NOT DISTINCT); the order_by keeps the pick
+        deterministic even if that invariant is violated.
+
+        Returns:
+            NodeType instance or None if not found
+        """
+        return (
+            NodeType.objects.filter(is_root=True, json_scope__isnull=True)
+            .order_by("name")
+            .first()
+        )
+
     def get_node_types_by_scope(self, scope: str):
         """
         Get node types by json_scope.

@@ -190,6 +190,13 @@ class NodeType(models.Model):
 
     class Meta:
         db_table = "schema_node_types"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["json_scope"],
+                condition=Q(is_root=True),
+                name="uq_snode_types_root_scope",
+            ),
+        ]
 
     def natural_key(self):
         return (self.name,)

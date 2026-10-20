@@ -17,7 +17,7 @@ from .node_type_repository import NodeTypeRepository
 from .organization_repository import OrganizationRepository
 from .project_repository import ProjectCredentialRepository, ProjectRepository
 from .schema_repository import NodeRepository, SchemaRepository
-from .user_repository import UserRepository
+from .user_repository import UserMCPTokenRepository, UserRepository
 
 __all__ = [
     "AttributeDefRepository",
@@ -32,5 +32,6 @@ __all__ = [
     "ProjectCredentialRepository",
     "ProjectRepository",
     "SchemaRepository",
+    "UserMCPTokenRepository",
     "UserRepository",
 ]

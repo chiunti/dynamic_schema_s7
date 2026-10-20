@@ -43,6 +43,7 @@ from .schema_cache import SchemaCacheAdmin
 from .organization import OrganizationAdmin, OrganizationMemberInline
 from .project import ProjectAdmin
 from .project_credential import ProjectAPICredentialAdmin
+from .user_mcp_token import UserMCPTokenAdmin
 from .editor_extension import EditorExtensionAdmin
 
 __all__ = [
@@ -73,6 +74,7 @@ __all__ = [
     'OrganizationMemberInline',
     'ProjectAdmin',
     'ProjectAPICredentialAdmin',
+    'UserMCPTokenAdmin',
     # Tooling
     'EditorExtensionAdmin',
 ]

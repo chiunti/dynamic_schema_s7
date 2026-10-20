@@ -5,8 +5,21 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .authentication import CanImportSchema, CanPublishSchema, CanReadSchema, ProjectTokenAuthentication
-from .constants import ERR_INTERNAL_SERVER_ERROR, ERR_INVALID_REQUEST, STATUS_DRAFT
+from .authentication import (
+    CanImportSchema,
+    CanPublishSchema,
+    CanReadSchema,
+    ProjectPrincipal,
+    ProjectTokenAuthentication,
+    UserMCPTokenAuthentication,
+    UserMCPTokenPermission,
+)
+from .constants import (
+    ERR_INTERNAL_SERVER_ERROR,
+    ERR_INVALID_REQUEST,
+    ERR_PROJECT_ID_REQUIRED,
+    STATUS_DRAFT,
+)
 from .serializers import SchemaImportSerializer
 from .services.catalog_service import CatalogService
 from .services.schema_import_service import SchemaImportService
@@ -49,15 +62,16 @@ class SchemaView(APIView):
 
 
 class SchemaImportView(APIView):
-    """DRF endpoint to import a schema JSON using project credentials.
+    """DRF endpoint to import a schema JSON via project credential or user MCP token.
 
     Credential imports are persisted as ``draft`` unless the credential
-    carries publish scope; publishing remains exclusive to the publish
-    endpoint.
+    carries publish scope; user MCP token imports are always persisted as
+    ``draft`` — MCP never publishes. Publishing remains exclusive to the
+    publish endpoint.
     """
 
-    authentication_classes = [ProjectTokenAuthentication]
-    permission_classes = [CanImportSchema]
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanImportSchema | UserMCPTokenPermission]
 
     def post(self, request):
         serializer = SchemaImportSerializer(data=request.data)
@@ -65,17 +79,28 @@ class SchemaImportView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
-        if ((data.get('project_id') and data['project_id'] != request.user.project_id)
-                or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
-            return Response({'error': 'Project credential does not match request'},
-                            status=status.HTTP_403_FORBIDDEN)
-        data['project_id'] = request.user.project_id
-        data['organization_id'] = request.user.organization_id
-        try:
+        if isinstance(request.user, ProjectPrincipal):
+            if ((data.get('project_id') and data['project_id'] != request.user.project_id)
+                    or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
+                return Response({'error': 'Project credential does not match request'},
+                                status=status.HTTP_403_FORBIDDEN)
+            data['project_id'] = request.user.project_id
+            data['organization_id'] = request.user.organization_id
             # Credentials without publish scope import as draft; publishing requires /publish/.
             enforced_status = None if getattr(request.auth, "can_publish", False) else STATUS_DRAFT
+            user = None
+        else:
+            # User MCP tokens delegate to the real user: project_id is required
+            # (the service derives the organization from it and checks edit
+            # permission) and MCP never publishes — always forced to draft.
+            if not data.get('project_id'):
+                return Response({'error': ERR_PROJECT_ID_REQUIRED},
+                                status=status.HTTP_400_BAD_REQUEST)
+            enforced_status = STATUS_DRAFT
+            user = request.user
+        try:
             schema_id, warning, requested_status = SchemaImportService().import_from_request(
-                data, user=None, enforced_status=enforced_status, strict_keys=True
+                data, user=user, enforced_status=enforced_status, strict_keys=True
             )
         except PermissionError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
@@ -101,8 +126,8 @@ class SchemaValidateView(APIView):
     iterate on a payload before importing it.
     """
 
-    authentication_classes = [ProjectTokenAuthentication]
-    permission_classes = [CanImportSchema]
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanImportSchema | UserMCPTokenPermission]
 
     def post(self, request):
         serializer = SchemaImportSerializer(data=request.data)
@@ -124,14 +149,23 @@ class SchemaValidateView(APIView):
             )
 
         data = serializer.validated_data
-        if ((data.get('project_id') and data['project_id'] != request.user.project_id)
-                or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
-            return Response({'error': 'Project credential does not match request'},
-                            status=status.HTTP_403_FORBIDDEN)
-        data['project_id'] = request.user.project_id
-        data['organization_id'] = request.user.organization_id
+        if isinstance(request.user, ProjectPrincipal):
+            if ((data.get('project_id') and data['project_id'] != request.user.project_id)
+                    or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
+                return Response({'error': 'Project credential does not match request'},
+                                status=status.HTTP_403_FORBIDDEN)
+            data['project_id'] = request.user.project_id
+            data['organization_id'] = request.user.organization_id
+            user = None
+        else:
+            # User MCP tokens delegate to the real user; project_id is required
+            # so the dry-run can evaluate org edit permission on the target.
+            if not data.get('project_id'):
+                return Response({'error': ERR_PROJECT_ID_REQUIRED},
+                                status=status.HTTP_400_BAD_REQUEST)
+            user = request.user
         try:
-            result = SchemaImportService().validate_from_request(data)
+            result = SchemaImportService().validate_from_request(data, user=user)
         except PermissionError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except Exception:
@@ -179,10 +213,10 @@ class SchemaPublishView(APIView):
 
 
 class CatalogScopeView(APIView):
-    """Serve the resolved catalog for a json_scope to project credentials."""
+    """Serve the resolved catalog for a json_scope to project credentials or user MCP tokens."""
 
-    authentication_classes = [ProjectTokenAuthentication]
-    permission_classes = [CanReadSchema]
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema | UserMCPTokenPermission]
 
     def get(self, request, scope):
         try:
@@ -198,10 +232,10 @@ class CatalogScopeView(APIView):
 
 
 class CatalogDatatypesView(APIView):
-    """Serve the universal DataType catalog to project credentials."""
+    """Serve the universal DataType catalog to project credentials or user MCP tokens."""
 
-    authentication_classes = [ProjectTokenAuthentication]
-    permission_classes = [CanReadSchema]
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema | UserMCPTokenPermission]
 
     def get(self, request):
         try:

@@ -122,6 +122,9 @@ class SchemaPayloadTests(unittest.TestCase):
             set(payload),
             {"schema_text", "node_type", "schema_key", "schema_version"},
         )
+        # Tenancy fields stay out of the tool-built payload: project_id (when
+        # configured) is injected by the client from S7_PROJECT_ID downstream,
+        # never from agent-controlled tool input.
         for forbidden in ("schema_status", "project_id", "organization_id"):
             self.assertNotIn(forbidden, payload)
 
@@ -131,6 +134,8 @@ class SchemaPayloadTests(unittest.TestCase):
         path, payload = self._posted()
         self.assertEqual(path, "schema/import/")
         self.assertIs(payload["overwrite"], True)
+        # Same rule as validate: project_id comes from S7_PROJECT_ID via the
+        # client, never from the tool surface.
         for forbidden in ("schema_status", "project_id", "organization_id", "status"):
             self.assertNotIn(forbidden, payload)
 

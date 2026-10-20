@@ -53,6 +53,8 @@ def _schema_payload(node_type: str, schema: dict | str,
     ``schema`` may arrive as a JSON object or as a raw JSON string; objects are
     dumped to ``schema_text`` as the endpoint expects. No ``schema_status`` is
     ever sent — credential imports are persisted as ``draft`` by the backend.
+    ``project_id`` is not part of the tool surface either: the client injects
+    it from ``S7_PROJECT_ID`` when that variable is configured.
     """
     payload: dict[str, Any] = {
         "schema_text": schema if isinstance(schema, str) else json.dumps(schema),

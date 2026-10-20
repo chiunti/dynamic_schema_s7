@@ -5,10 +5,16 @@ server module — and therefore tool/resource registration — succeeds even whe
 the environment variables are not set yet.
 
 Required: ``S7_BASE_URL`` (backend base URL; API paths resolve under
-``{S7_BASE_URL}/api/``) and ``S7_TOKEN`` (bearer token of a
-``ProjectAPICredential`` with ``can_read`` + ``can_import`` scopes).
-Optional: ``S7_MAX_PAYLOAD_KB`` (default 512) and ``S7_TIMEOUT_S``
-(default 30).
+``{S7_BASE_URL}/api/``) and ``S7_TOKEN`` (bearer token of a ``UserMCPToken``
+— a per-user credential provisioned by a superuser in the admin; level 1 is
+schema authoring, level 2 catalog authoring). ``ProjectAPICredential``
+remains as the B2B channel, but the MCP authoring tools assume a user token.
+Optional: ``S7_MAX_PAYLOAD_KB`` (default 512), ``S7_TIMEOUT_S`` (default 30)
+and ``S7_PROJECT_ID`` — the target project UUID injected as ``project_id``
+into the validate/import request bodies. It is required in practice when
+``S7_TOKEN`` is a user MCP token (the backend rejects user-principal writes
+without ``project_id``) and ignored/harmless for project credentials — the
+backend still enforces its own scope, so a mismatch gets a 403.
 
 The server speaks MCP over stdio: nothing may ever be written to stdout, so
 all diagnostics go to stderr and missing/invalid settings exit non-zero.
@@ -19,6 +25,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from typing import Callable, NoReturn, TypeVar
 from urllib.parse import urlparse
@@ -27,6 +34,7 @@ ENV_BASE_URL = "S7_BASE_URL"
 ENV_TOKEN = "S7_TOKEN"
 ENV_MAX_PAYLOAD_KB = "S7_MAX_PAYLOAD_KB"
 ENV_TIMEOUT_S = "S7_TIMEOUT_S"
+ENV_PROJECT_ID = "S7_PROJECT_ID"
 
 DEFAULT_MAX_PAYLOAD_KB = 512
 DEFAULT_TIMEOUT_S = 30.0
@@ -42,6 +50,7 @@ class S7Config:
     token: str
     max_payload_kb: int = DEFAULT_MAX_PAYLOAD_KB
     timeout_s: float = DEFAULT_TIMEOUT_S
+    project_id: str | None = None
 
 
 def _fatal(message: str) -> NoReturn:
@@ -78,8 +87,8 @@ def get_config() -> S7Config:
         _fatal(
             "missing required environment variable(s): "
             + ", ".join(missing)
-            + ". Set S7_BASE_URL (backend base URL) and S7_TOKEN (project "
-            "credential bearer token) in the MCP client configuration."
+            + ". Set S7_BASE_URL (backend base URL) and S7_TOKEN (user MCP "
+            "bearer token) in the MCP client configuration."
         )
     base_url = os.environ[ENV_BASE_URL].strip().rstrip("/")
     parsed = urlparse(base_url)
@@ -88,9 +97,17 @@ def get_config() -> S7Config:
             f"{ENV_BASE_URL} must be an absolute http(s) URL "
             f"(got {os.environ[ENV_BASE_URL]!r})."
         )
+    raw_project_id = os.environ.get(ENV_PROJECT_ID, "").strip()
+    project_id = None
+    if raw_project_id:
+        try:
+            project_id = str(uuid.UUID(raw_project_id))
+        except ValueError:
+            _fatal(f"{ENV_PROJECT_ID} must be a UUID (got {raw_project_id!r}).")
     return S7Config(
         base_url=base_url,
         token=os.environ[ENV_TOKEN].strip(),
         max_payload_kb=_positive_number(ENV_MAX_PAYLOAD_KB, int, DEFAULT_MAX_PAYLOAD_KB),
         timeout_s=_positive_number(ENV_TIMEOUT_S, float, DEFAULT_TIMEOUT_S),
+        project_id=project_id,
     )

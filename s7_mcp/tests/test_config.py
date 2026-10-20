@@ -15,6 +15,7 @@ from s7_mcp import config
 from s7_mcp.config import (
     ENV_BASE_URL,
     ENV_MAX_PAYLOAD_KB,
+    ENV_PROJECT_ID,
     ENV_TIMEOUT_S,
     ENV_TOKEN,
 )
@@ -188,6 +189,37 @@ class GetConfigTests(unittest.TestCase):
         cfg, code, _ = _run_with_env(env, config.get_config)
         self.assertIsNone(code)
         self.assertEqual(cfg.token, "tok")
+
+
+class ProjectIdTests(unittest.TestCase):
+    """``S7_PROJECT_ID`` optional UUID parsing and validation."""
+
+    _UUID = "12345678-1234-5678-1234-567812345678"
+
+    def test_unset_project_id_defaults_to_none(self):
+        cfg, code, _ = _run_with_env(_VALID_ENV, config.get_config)
+        self.assertIsNone(code)
+        self.assertIsNone(cfg.project_id)
+
+    def test_blank_project_id_counts_as_unset(self):
+        env = dict(_VALID_ENV, **{ENV_PROJECT_ID: "   "})
+        cfg, code, _ = _run_with_env(env, config.get_config)
+        self.assertIsNone(code)
+        self.assertIsNone(cfg.project_id)
+
+    def test_valid_project_id_is_canonicalized(self):
+        env = dict(_VALID_ENV, **{ENV_PROJECT_ID: f"  {self._UUID.upper()}  "})
+        cfg, code, _ = _run_with_env(env, config.get_config)
+        self.assertIsNone(code)
+        self.assertEqual(cfg.project_id, self._UUID)
+
+    def test_malformed_project_id_is_fatal(self):
+        env = dict(_VALID_ENV, **{ENV_PROJECT_ID: "not-a-uuid"})
+        _, code, stderr = _run_with_env(env, config.get_config)
+        self.assertEqual(code, 2)
+        self.assertIn(ENV_PROJECT_ID, stderr)
+        self.assertIn("must be a UUID", stderr)
+        self.assertIn("'not-a-uuid'", stderr)
 
 
 if __name__ == "__main__":

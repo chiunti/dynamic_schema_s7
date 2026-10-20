@@ -38,6 +38,7 @@ class S7Client:
     """Minimal JSON client for the authenticated ``/api/`` endpoints."""
 
     def __init__(self, config: S7Config) -> None:
+        self._project_id = config.project_id
         self._max_payload_bytes = config.max_payload_kb * 1024
         self._http = httpx.Client(
             base_url=config.base_url,
@@ -53,9 +54,18 @@ class S7Client:
     def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST ``{base}/api/{path}`` with a JSON body.
 
+        When ``S7_PROJECT_ID`` is configured, ``project_id`` is injected into
+        the body — the backend requires it on the schema write endpoints for
+        user-principal tokens and tolerates it for project credentials (a
+        scope mismatch is still answered with the backend's own error). The
+        injection runs before the size check so the limit applies to the
+        actual wire body, and the env value wins over any same-named key.
+
         Refuses to send bodies larger than the configured limit, returning the
         ``payload_too_large`` envelope instead.
         """
+        if self._project_id:
+            payload = {**payload, "project_id": self._project_id}
         encoded = json.dumps(payload)
         if len(encoded) > self._max_payload_bytes:
             return _error(

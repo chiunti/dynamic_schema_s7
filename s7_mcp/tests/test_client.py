@@ -40,13 +40,15 @@ class ClientConstructionTests(unittest.TestCase):
 class _ClientCase(unittest.TestCase):
     """Base case wiring an ``S7Client`` to a ``MockTransport`` handler."""
 
-    def _client(self, handler, *, max_payload_kb=512, base_url="http://backend.test"):
+    def _client(self, handler, *, max_payload_kb=512, base_url="http://backend.test",
+                project_id=None):
         client = S7Client(
             S7Config(
                 base_url=base_url,
                 token="tok",
                 max_payload_kb=max_payload_kb,
                 timeout_s=5,
+                project_id=project_id,
             )
         )
         client._http = httpx.Client(
@@ -193,6 +195,72 @@ class PayloadSizeGuardTests(_ClientCase):
         result = client.post_json("schema/validate/", payload)
         self.assertEqual(result["error"]["code"], "payload_too_large")
         self.assertIsNone(result["error"]["status"])
+        self.assertEqual(calls, [])
+
+
+@unittest.skipUnless(_DEPS, "requires httpx")
+class ProjectIdInjectionTests(_ClientCase):
+    """``post_json`` adds ``project_id`` to the wire body when configured."""
+
+    _PROJECT_ID = "12345678-1234-5678-1234-567812345678"
+
+    def _seen_body(self, project_id):
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"ok": True})
+
+        result = self._client(handler, project_id=project_id).post_json(
+            "schema/validate/", {"schema_text": "{}", "node_type": "survey"}
+        )
+        self.assertEqual(result, {"ok": True})
+        return seen["body"]
+
+    def test_project_id_injected_when_configured(self):
+        body = self._seen_body(self._PROJECT_ID)
+        self.assertEqual(body["project_id"], self._PROJECT_ID)
+        self.assertEqual(body["node_type"], "survey")
+
+    def test_project_id_absent_when_not_configured(self):
+        body = self._seen_body(None)
+        self.assertNotIn("project_id", body)
+        self.assertEqual(set(body), {"schema_text", "node_type"})
+
+    def test_organization_id_is_never_injected(self):
+        body = self._seen_body(self._PROJECT_ID)
+        self.assertNotIn("organization_id", body)
+
+    def test_env_project_id_wins_over_same_named_key(self):
+        """A payload already carrying ``project_id`` is overridden by env."""
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"ok": True})
+
+        self._client(handler, project_id=self._PROJECT_ID).post_json(
+            "schema/validate/", {"node_type": "survey", "project_id": "other"}
+        )
+        self.assertEqual(seen["body"]["project_id"], self._PROJECT_ID)
+
+    def test_injected_project_id_counts_toward_payload_limit(self):
+        """Injection happens before the size check: the wire body is measured."""
+        calls = []
+        schema_text = "x" * (1024 - len(json.dumps(
+            {"schema_text": "", "node_type": "s", "project_id": self._PROJECT_ID}
+        )) + 1)
+        client = self._client(
+            lambda request: calls.append(request) or httpx.Response(200, json={}),
+            max_payload_kb=1,
+            project_id=self._PROJECT_ID,
+        )
+        result = client.post_json(
+            "schema/validate/", {"schema_text": schema_text, "node_type": "s"}
+        )
+        # Sized so the body is 1 byte over the limit only once project_id
+        # is injected; without it the same payload would pass.
+        self.assertEqual(result["error"]["code"], "payload_too_large")
         self.assertEqual(calls, [])
 
 

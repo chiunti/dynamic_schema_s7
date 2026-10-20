@@ -68,6 +68,7 @@ ERR_NO_PERMISSION_TO_EDIT_PROJECT = "You do not have permission to edit this pro
 ERR_ORGANIZATION_NOT_FOUND = "Organization {organization_id} not found."
 ERR_USER_NOT_FOUND = "User with email '{email}' not found."
 ERR_INVALID_ROLE = "Invalid role '{role}'. Must be admin, editor, or viewer."
+ERR_INVALID_USER_MCP_TOKEN = "Invalid user MCP token"
 
 # Repository validation error messages
 ERR_ROOT_ID_MUST_BE_UUID = "root_id must be a valid UUID"

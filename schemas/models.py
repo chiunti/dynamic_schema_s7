@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -163,6 +164,46 @@ class ProjectAPICredential(models.Model):
 
     def __str__(self) -> str:
         return f"{self.project_id}:{self.name}"
+
+
+class UserMCPToken(models.Model):
+    """Per-user bearer token for MCP access with an assigned capability level."""
+
+    class Level(models.IntegerChoices):
+        SCHEMA_AUTHORING = 1, "Schema authoring"
+        CATALOG_AUTHORING = 2, "Catalog authoring"
+
+    id = models.UUIDField(
+        primary_key=True,
+        editable=False,
+        default=uuid.uuid4,
+        db_default=models.Func(function="gen_random_uuid"),
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="mcp_tokens",
+    )
+    name = models.CharField(max_length=255)
+    token_digest = models.CharField(max_length=64, unique=True)
+    mcp_level = models.PositiveSmallIntegerField(
+        choices=Level.choices,
+        default=Level.SCHEMA_AUTHORING,
+    )
+    expires_at = models.DateField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "schema_user_mcp_tokens"
+        verbose_name = "User MCP token"
+        verbose_name_plural = "User MCP tokens"
+        indexes = [
+            models.Index(fields=["user", "revoked_at"], name="idx_user_mcp_tok_active"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.name}"
 
 
 class NodeTypeManager(models.Manager):

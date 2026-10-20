@@ -15,8 +15,9 @@ variant-specific properties, `keys` lists the allowed variant values), \
 `compositions` grouped by `collection_key` (with per-child min/max \
 cardinalities), the `domains` dictionary of allowed value/label pairs, and a \
 generated `example`. Also read `s7://datatypes` for the data-type catalog and \
-`s7://examples/{scope}` / `s7://schemas/{node_type}/{key}/{version}` for \
-few-shot references.
+`s7://examples/{scope}` for few-shot references \
+(`s7://schemas/{node_type}/{key}/{version}` serves published schemas to \
+project credentials only — user MCP tokens get 401 there).
 
 2. DRAFT — write the root JSON object for the schema. It MUST include `key`, \
 `version` and `"status": "draft"`. Respect the catalog strictly: use only \
@@ -34,7 +35,9 @@ for credential-based imports.
 
 5. VERIFY — after a human publishes the draft in the admin, call \
 `s7_get_schema` with the same `node_type`, `key` and `version` to confirm the \
-published JSON round-trips as authored.
+published JSON round-trips as authored. Note: `s7_get_schema` requires a \
+project credential — a user MCP token is rejected there (401), so this step \
+only works when `S7_TOKEN` is a B2B credential.
 
 Note: publishing, approving and applying schemas are human actions performed \
 in the admin — there is intentionally no publish/approve/apply tool.\

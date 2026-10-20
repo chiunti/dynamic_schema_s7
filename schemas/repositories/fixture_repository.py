@@ -12,6 +12,21 @@ class FixtureRepository:
         model = apps.get_model('schemas', model_label)
         return model.objects.filter(id__in=pks).count()
 
+    def natural_key_exists(self, model_label: str, ref: list[str]) -> bool:
+        """Whether a natural-key reference resolves to a live row.
+
+        The model is resolved dynamically by label — the fixture loader
+        validates references against arbitrary catalog models. Any failure
+        (unknown label, missing row, manager without the method) reads as
+        "does not resolve".
+        """
+        try:
+            model = apps.get_model('schemas', model_label)
+            model.objects.get_by_natural_key(*ref)
+            return True
+        except Exception:
+            return False
+
     def get_load_records(self) -> dict:
         """{name: sha256} of fixtures loaded through this tool."""
         return {

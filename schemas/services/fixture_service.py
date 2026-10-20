@@ -243,16 +243,9 @@ class FixtureService:
                     )
         return errors
 
-    @staticmethod
-    def _resolves_in_db(target_label: str, ref: list) -> bool:
+    def _resolves_in_db(self, target_label: str, ref: list) -> bool:
         """Natural-key reference resolves against the live database."""
-        from django.apps import apps
-        try:
-            model = apps.get_model('schemas', target_label)
-            model.objects.get_by_natural_key(*ref)
-            return True
-        except Exception:
-            return False
+        return self.fixture_repository.natural_key_exists(target_label, ref)
 
     @staticmethod
     def _natural_key_for(label: str, fields: dict):

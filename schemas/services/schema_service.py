@@ -247,7 +247,6 @@ class SchemaService:
         Returns:
             dict with warning information if versions mismatched, empty dict otherwise
         """
-        from schemas.models import NodeTypeComposition
         import logging
 
         logger = logging.getLogger(__name__)
@@ -344,8 +343,6 @@ class SchemaService:
     
     def _set_schema_metadata(self, schema_id: uuid.UUID, schema_key: str, schema_status: str):
         """Set key and status as attributes on the root node"""
-        from schemas.models import AttributeDef, DataType, NodeAttribute
-
         root_node = self.repository.get_node_by_id(schema_id)
         root_node_type = root_node.node_type
 
@@ -616,8 +613,6 @@ class SchemaService:
     
     def _process_single_child_node(self, parent_id: uuid.UUID, json_key: str, value: dict, child_type, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, index: Optional[int] = None, sort_order: int = 0, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
         """Process a single child node from a dict value (composition without collection_key)"""
-        from schemas.models import Node, AttributeDef
-
         # JSON path of this child node within the payload (indexed when the
         # child comes from a list slot).
         child_path = f"{path}.{json_key}" if index is None else f"{path}.{json_key}[{index}]"
@@ -886,8 +881,6 @@ class SchemaService:
             path: JSON path of this node's attributes object within the
                 payload; errors are reported as ``{path}.{json_key}``.
         """
-        from schemas.models import AttributeDef, DataType, NodeAttribute, NodeTypeComposition, DomainItem, Node
-
         # Get Node model field names (these are not attributes)
         node_field_names = self.repository.get_node_field_names()
 
@@ -1205,8 +1198,6 @@ class SchemaService:
         auto-creating catalog entries, and non-collection values on declared
         collection keys raise instead of being silently dropped.
         """
-        from schemas.models import AttributeDef, DataType
-
         # Check if json_key corresponds to a collection_key in NodeTypeComposition
         composition_exists = self.composition_repository.composition_exists_by_collection_key(
             node_type,

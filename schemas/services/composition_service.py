@@ -34,7 +34,7 @@ class CompositionService:
             return self.node_type_repository.get_node_type_ids_for_scope(scope)
         all_ids = []
         for nt in self.node_type_repository.get_all_root_node_types():
-            all_ids.extend(self.node_type_repository.get_node_type_ids_for_scope(nt.json_scope))
+            all_ids.extend(self.node_type_repository.get_node_type_ids_for_root(nt.id))
         return list(set(all_ids))
 
     def get_graph_data(self, scope: Optional[str], composition_model) -> Dict[str, Any]:

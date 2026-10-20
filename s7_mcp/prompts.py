@@ -33,11 +33,13 @@ envelope reports `"valid": true`.
 persisted as a draft; never send a status field — the backend forces `draft` \
 for credential-based imports.
 
-5. VERIFY — after a human publishes the draft in the admin, call \
-`s7_get_schema` with the same `node_type`, `key` and `version` to confirm the \
-published JSON round-trips as authored. Note: `s7_get_schema` requires a \
-project credential — a user MCP token is rejected there (401), so this step \
-only works when `S7_TOKEN` is a B2B credential.
+5. VERIFY — right after importing, call `s7_get_draft` with the same \
+`node_type`, `key` and `version` to confirm the persisted draft round-trips \
+as authored (user tokens need `S7_PROJECT_ID` set for this read). Then, \
+after a human publishes the draft in the admin, `s7_get_schema` confirms the \
+published JSON — note it requires a project credential: a user MCP token is \
+rejected there (401), so that final step only works when `S7_TOKEN` is a \
+B2B credential.
 
 Note: publishing, approving and applying schemas are human actions performed \
 in the admin — there is intentionally no publish/approve/apply tool.\

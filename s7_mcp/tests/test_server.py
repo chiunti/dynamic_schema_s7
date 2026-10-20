@@ -26,6 +26,7 @@ if _DEPS:
 EXPECTED_TOOLS = {
     "s7_get_catalog",
     "s7_get_schema",
+    "s7_get_draft",
     "s7_list_datatypes",
     "s7_validate_schema",
     "s7_import_draft",
@@ -76,6 +77,79 @@ class ToolPathTests(unittest.TestCase):
         envelope = {"error": {"code": "transport_error", "message": "x", "status": None}}
         self.client.get_json.return_value = envelope
         self.assertIs(server.s7_get_catalog("forms"), envelope)
+
+
+@unittest.skipUnless(_DEPS, "requires mcp + httpx")
+class GetDraftTests(unittest.TestCase):
+    """``s7_get_draft`` maps to the draft-read endpoint with ``project_id``.
+
+    The project id is read off the client (resolved from ``S7_PROJECT_ID``)
+    and forwarded as a query param — the tool itself takes no such argument,
+    the same rule as the write tools' body injection.
+    """
+
+    def setUp(self):
+        self.client = MagicMock()
+        self.client.get_json.return_value = {"ok": True}
+        self.client.project_id = None
+        patcher = patch.object(
+            server, "_get_client", return_value=self.client
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _call(self):
+        return self.client.get_json.call_args
+
+    def test_draft_path_with_quoted_segments(self):
+        server.s7_get_draft("node/type", "key?1", "v%2")
+        self.assertEqual(
+            self._call()[0][0],
+            "schema/draft/node%2Ftype/key%3F1/v%252/",
+        )
+
+    def test_project_id_sent_as_query_param_when_configured(self):
+        project_id = "12345678-1234-5678-1234-567812345678"
+        self.client.project_id = project_id
+        server.s7_get_draft("survey", "k", "v1")
+        self.assertEqual(
+            self._call()[1]["params"], {"project_id": project_id}
+        )
+
+    def test_project_id_is_none_when_not_configured(self):
+        """With no ``S7_PROJECT_ID`` the param is forwarded as ``None`` and
+        the client drops it from the query string."""
+        server.s7_get_draft("survey", "k", "v1")
+        self.assertEqual(self._call()[1]["params"], {"project_id": None})
+
+    def test_tool_takes_no_project_id_argument(self):
+        self.assertEqual(
+            list(inspect.signature(server.s7_get_draft).parameters),
+            ["node_type", "key", "version"],
+        )
+
+    def test_draft_envelope_propagates_verbatim(self):
+        envelope = {
+            "data": {"key": "k", "nodes": []},
+            "meta": {
+                "node_type": "survey",
+                "key": "k",
+                "version": "v1",
+                "status": "draft",
+            },
+        }
+        self.client.get_json.return_value = envelope
+        self.assertIs(server.s7_get_draft("survey", "k", "v1"), envelope)
+
+    def test_not_found_envelope_propagates_verbatim(self):
+        envelope = {
+            "type": "schema_not_found",
+            "title": "Schema not found",
+            "detail": "no draft schema",
+            "status": 404,
+        }
+        self.client.get_json.return_value = envelope
+        self.assertIs(server.s7_get_draft("survey", "k", "v1"), envelope)
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
@@ -294,9 +368,9 @@ class LazyClientTests(unittest.TestCase):
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class McpSurfaceTests(unittest.TestCase):
-    """The exposed MCP surface: exactly the six read/author tools."""
+    """The exposed MCP surface: exactly the seven read/author tools."""
 
-    def test_the_six_tools_exist_and_are_callable(self):
+    def test_the_seven_tools_exist_and_are_callable(self):
         for name in EXPECTED_TOOLS:
             with self.subTest(tool=name):
                 self.assertTrue(
@@ -322,7 +396,7 @@ class McpSurfaceTests(unittest.TestCase):
         self.assertNotIn("schema_status", params)
 
     def test_registered_tool_set_matches_module_functions(self):
-        """The SDK registry (when introspectable) holds exactly the 6 tools."""
+        """The SDK registry (when introspectable) holds exactly the 7 tools."""
         tool_manager = getattr(server.mcp, "_tool_manager", None)
         registered = getattr(tool_manager, "_tools", None)
         if isinstance(registered, dict):

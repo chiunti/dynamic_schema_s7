@@ -3,6 +3,7 @@ from .views import (
     CatalogDatatypesView,
     CatalogImportView,
     CatalogScopeView,
+    SchemaDraftView,
     SchemaImportView,
     SchemaPublishView,
     SchemaValidateView,
@@ -26,6 +27,11 @@ urlpatterns = [
         'schema/<str:node_type>/<str:key>/<str:version>/publish/',
         SchemaPublishView.as_view(),
         name='schema-publish',
+    ),
+    path(
+        'schema/draft/<str:node_type>/<str:key>/<str:version>/',
+        SchemaDraftView.as_view(),
+        name='schema-draft',
     ),
     path('schema/<str:node_type>/<str:key>/<str:version>/', SchemaView.as_view(), name='schema'),
     # Catalog — the literal 'import' and 'datatypes' routes must precede

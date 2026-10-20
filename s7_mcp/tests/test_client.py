@@ -36,6 +36,24 @@ class ClientConstructionTests(unittest.TestCase):
         self.assertEqual(client._http.timeout.as_dict()["read"], 7.5)
         self.assertIs(client._http.follow_redirects, True)
 
+    def test_project_id_property_reflects_config(self):
+        client = S7Client(
+            S7Config(
+                base_url="http://backend.test",
+                token="tok",
+                project_id="12345678-1234-5678-1234-567812345678",
+            )
+        )
+        self.assertEqual(
+            client.project_id, "12345678-1234-5678-1234-567812345678"
+        )
+
+    def test_project_id_property_defaults_to_none(self):
+        client = S7Client(
+            S7Config(base_url="http://backend.test", token="tok")
+        )
+        self.assertIsNone(client.project_id)
+
 
 class _ClientCase(unittest.TestCase):
     """Base case wiring an ``S7Client`` to a ``MockTransport`` handler."""
@@ -150,6 +168,57 @@ class RequestEnvelopeTests(_ClientCase):
         self._client(handler).post_json("schema/validate/", payload)
         self.assertEqual(seen["content_type"], "application/json")
         self.assertEqual(seen["body"], json.dumps(payload))
+
+
+@unittest.skipUnless(_DEPS, "requires httpx")
+class GetJsonParamsTests(_ClientCase):
+    """``get_json`` encodes optional query params onto the request URL."""
+
+    def _seen_url(self, params):
+        seen = {}
+
+        def handler(request):
+            seen["path"] = request.url.path
+            seen["params"] = request.url.params
+            return httpx.Response(200, json={"ok": True})
+
+        result = self._client(handler).get_json(
+            "schema/draft/nt/k/v/", params=params
+        )
+        self.assertEqual(result, {"ok": True})
+        return seen
+
+    def test_params_become_the_query_string(self):
+        seen = self._seen_url({"project_id": "abc-123", "other": "x"})
+        self.assertEqual(seen["path"], "/api/schema/draft/nt/k/v/")
+        self.assertEqual(seen["params"]["project_id"], "abc-123")
+        self.assertEqual(seen["params"]["other"], "x")
+
+    def test_param_values_are_urlencoded(self):
+        seen = self._seen_url({"project_id": "a b&c=d"})
+        self.assertEqual(seen["params"]["project_id"], "a b&c=d")
+
+    def test_none_param_values_are_skipped(self):
+        seen = self._seen_url({"project_id": None, "other": "x"})
+        self.assertNotIn("project_id", seen["params"])
+        self.assertEqual(seen["params"]["other"], "x")
+
+    def test_all_none_params_send_no_query_string(self):
+        seen = self._seen_url({"project_id": None})
+        self.assertEqual(len(seen["params"]), 0)
+
+    def test_no_params_sends_no_query_string(self):
+        seen = self._seen_url(None)
+        self.assertEqual(len(seen["params"]), 0)
+
+    def test_error_contract_is_unchanged_with_params(self):
+        envelope = {"type": "schema_not_found", "status": 404}
+        client = self._client(
+            lambda request: httpx.Response(404, json=envelope)
+        )
+        result = client.get_json("schema/draft/nt/k/v/",
+                                 params={"project_id": "abc"})
+        self.assertEqual(result, envelope)
 
 
 @unittest.skipUnless(_DEPS, "requires httpx")

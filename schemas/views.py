@@ -28,6 +28,7 @@ from .services.catalog_service import CatalogService
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
 from .services.schema_read_service import SchemaReadService
+from .utils import parse_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,80 @@ class SchemaView(APIView):
         except Exception:
             logger.exception("Schema retrieval failed")
             return Response({"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SchemaDraftView(APIView):
+    """Serve the persisted JSON of a draft schema to credentials or user MCP tokens.
+
+    Counterpart of ``SchemaView`` for the ``draft`` lifecycle status: while
+    the published endpoint serves the pre-built cache, this endpoint
+    rebuilds the persisted node JSON via ``s7_build_node_json`` so API
+    consumers can verify what an import actually stored (round-trip check).
+    A schema missing or in any other status resolves to the same RFC-7807
+    404 envelope — drafts are not distinguishable from absent schemas.
+    """
+
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema | UserMCPTokenPermission]
+
+    def get(self, request, node_type, key, version):
+        if isinstance(request.user, ProjectPrincipal):
+            project_id = request.user.project_id
+            requested_project_id = request.query_params.get('project_id')
+            if requested_project_id:
+                try:
+                    requested_uuid = parse_uuid(requested_project_id, "project_id")
+                except ValueError as exc:
+                    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                if requested_uuid != project_id:
+                    return Response({'error': 'Project credential does not match request'},
+                                    status=status.HTTP_403_FORBIDDEN)
+            user = None
+        else:
+            # User MCP tokens delegate to the real user: project_id is
+            # required so the service can check access on the target project.
+            requested_project_id = request.query_params.get('project_id')
+            if not requested_project_id:
+                return Response({'error': ERR_PROJECT_ID_REQUIRED},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                project_id = parse_uuid(requested_project_id, "project_id")
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            user = request.user
+        try:
+            schema_json = SchemaReadService().get_draft(
+                node_type, key, version, project_id, user=user
+            )
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Draft schema retrieval failed")
+            return Response(
+                {"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        if not schema_json:
+            return Response({
+                "type": "schema_not_found",
+                "title": "Schema Not Found",
+                "detail": "Schema not found, not in draft status, or node type mismatch",
+                "status": 404,
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Convert JSONB string to Python dict to avoid double serialization
+        schema_dict = json.loads(schema_json) if isinstance(schema_json, str) else schema_json
+        return Response({
+            "data": schema_dict,
+            "meta": {
+                "node_type": node_type,
+                "key": key,
+                "version": version,
+                "status": STATUS_DRAFT,
+            },
+        })
 
 
 class SchemaImportView(APIView):

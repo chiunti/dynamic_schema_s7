@@ -96,6 +96,28 @@ def s7_get_schema(node_type: str, key: str, version: str) -> dict:
 
 
 @mcp.tool()
+def s7_get_draft(node_type: str, key: str, version: str) -> dict:
+    """Fetch a draft schema as ``{"data": <schema>, "meta": {...}}``.
+
+    Main use: verify an ``s7_import_draft`` round-trip right after importing,
+    without waiting for a human to publish — ``meta.status`` is always
+    ``"draft"``. A schema that does not exist or is not a draft answers 404
+    with the RFC-7807 body ``{"type": "schema_not_found", "title", "detail",
+    "status": 404}``.
+
+    Dual auth: project credentials work as-is; a user MCP token is not bound
+    to a project, so the backend requires ``?project_id=<uuid>`` — set
+    ``S7_PROJECT_ID`` and the client sends it automatically (missing answers
+    ``400 {"error": "project_id is required"}``, a scope mismatch 403).
+    """
+    client = _get_client()
+    return client.get_json(
+        f"schema/draft/{_q(node_type)}/{_q(key)}/{_q(version)}/",
+        params={"project_id": client.project_id},
+    )
+
+
+@mcp.tool()
 def s7_list_datatypes() -> dict:
     """List the universal DataType catalog as ``{"datatypes": [...]}``."""
     return _get_client().get_json("catalog/datatypes/")

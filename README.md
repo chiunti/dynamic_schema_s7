@@ -390,7 +390,7 @@ The API follows RESTful principles with JSON payloads. All endpoints require aut
 
 ### Authentication
 
-The schema GET, import and publish endpoints require `Authorization: Bearer <project credential>`. Credentials are bound to one project and independently scoped for `read`, `import` and `publish`. User/session tokens cannot access these machine endpoints. Administrative organization/project routes continue to use Django sessions.
+The schema GET, import and publish endpoints require `Authorization: Bearer <project credential>`. Credentials are bound to one project and independently scoped for `read`, `import` and `publish`. Per-user MCP tokens (`Bearer <user MCP token>`) also authenticate on the authoring/read surface (catalog, validate, import, draft read — level-gated; they must declare the target `project_id` and cannot publish). Administrative organization/project routes continue to use Django sessions.
 
 Provision a separate high-entropy secret per backend service through a secret manager. Superusers issue credentials from Django Admin → Tenancy → Project API credentials → Add: a random secret is generated on save and shown once in a warning message — copy it there; only its SHA-256 digest is stored. Configure the secret as `S7_PROJECT_TOKEN` in the consuming service and use HTTPS between services. Rotate by provisioning a new credential, updating the consumer, then revoking the old credential from the same admin screen. The project/organization IDs supplied in an import payload, if present, must match the credential.
 
@@ -399,6 +399,7 @@ Provision a separate high-entropy secret per backend service through a secret ma
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/schema/{node_type}/{key}/{version}/` | Get published schema for the authenticated project |
+| GET | `/api/schema/draft/{node_type}/{key}/{version}/` | Get persisted draft schema (`read` scope or user MCP token + `?project_id=`); `meta` includes `"status": "draft"` |
 | POST | `/api/schema/import/` | Import a schema JSON (`import` scope) — persists as `draft` unless the credential has `publish` scope; response adds `"forced_status": "draft"` when the requested status was downgraded |
 | POST | `/api/schema/{node_type}/{key}/{version}/publish/` | Publish a schema (`publish` scope) |
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -47,8 +48,26 @@ class S7Client:
             follow_redirects=True,
         )
 
-    def get_json(self, path: str) -> dict[str, Any]:
-        """GET ``{base}/api/{path}`` and return the decoded JSON body."""
+    @property
+    def project_id(self) -> str | None:
+        """The configured ``S7_PROJECT_ID``, or ``None`` when unset."""
+        return self._project_id
+
+    def get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """GET ``{base}/api/{path}`` and return the decoded JSON body.
+
+        When ``params`` is given, its entries are URL-encoded into a query
+        string appended to the path; entries whose value is ``None`` are
+        skipped, so optional parameters can be forwarded unconditionally.
+        The error contract is identical to a param-less GET.
+        """
+        if params is not None:
+            query = urlencode(
+                {key: value for key, value in params.items() if value is not None}
+            )
+            if query:
+                separator = "&" if "?" in path else "?"
+                path = f"{path}{separator}{query}"
         return self._request("GET", path)
 
     def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:

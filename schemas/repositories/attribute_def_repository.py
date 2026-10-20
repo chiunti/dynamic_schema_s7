@@ -68,9 +68,12 @@ class AttributeDefRepository:
         """Delete all DomainItems for a given domain."""
         DomainItem.objects.filter(domain=domain).delete()
 
-    def bulk_create_domain_items(self, items: list[dict]) -> None:
-        """Bulk create DomainItem instances."""
-        DomainItem.objects.bulk_create(items)
+    def bulk_create_domain_items(self, domain: Domain, items: list[dict]) -> None:
+        """Bulk create DomainItems for the given domain from {"value", "label"} dicts."""
+        DomainItem.objects.bulk_create(
+            DomainItem(domain=domain, value=item["value"], label=item["label"])
+            for item in items
+        )
 
     def get_all_variants(self, type_ids: Optional[list[uuid.UUID]] = None) -> list[dict]:
         """Return all NodeTypeVariants, optionally filtered to the given node type IDs."""

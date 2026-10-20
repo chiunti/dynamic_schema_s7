@@ -4,7 +4,6 @@ Business logic for AttributeDef, component type, and variant property management
 
 from django.db import transaction
 
-from ..models import DomainItem
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..constants import (
@@ -101,12 +100,10 @@ class AttributeDefService:
                         variant_key=component_type,
                     )
             label = attr_def.name if attr_def else prop_value
-            domain_items_to_create.append(
-                DomainItem(domain=domain, value=prop_value, label=label)
-            )
+            domain_items_to_create.append({"value": prop_value, "label": label})
 
         if domain_items_to_create:
-            self.repository.bulk_create_domain_items(domain_items_to_create)
+            self.repository.bulk_create_domain_items(domain, domain_items_to_create)
 
         return {
             "ok": True,

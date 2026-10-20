@@ -31,14 +31,14 @@ class NodeTypeRepository:
         return NodeType.objects.filter(json_scope=scope, is_root=True).first()
 
     def get_node_type_ids_for_scope(self, scope: str) -> list[uuid.UUID]:
-        """Return all NodeType IDs reachable from the root type with the given json_scope via BFS."""
+        """Return all NodeType IDs reachable from the root type with the given json_scope via graph traversal."""
         root = self.get_root_node_type_by_scope(scope)
         if not root:
             return []
         return self.get_node_type_ids_for_root(root.id)
 
     def get_node_type_ids_for_root(self, root_id: uuid.UUID) -> list[uuid.UUID]:
-        """Return all NodeType IDs reachable from the given root type ID via BFS."""
+        """Return all NodeType IDs reachable from the given root type ID via graph traversal."""
         visited = set()
         queue = [root_id]
         while queue:

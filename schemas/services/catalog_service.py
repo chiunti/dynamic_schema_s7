@@ -49,7 +49,8 @@ class CatalogService:
             - node_types: denormalized entries ordered by name, each with
               attributes (ordered by json_key), a resolved variants block
               (None when the type declares none) and compositions grouped
-              by collection_key
+              by collection_key (groups ordered by key, structural
+              None group last)
             - domains: {domain_name: [{value, label}]} for every domain
               referenced by the scope's attribute definitions
             - example: embedded JSON example for the scope, or None
@@ -147,9 +148,10 @@ class CatalogService:
         """Group a node type's composition rows by collection_key.
 
         composition_rows are NodeTypeComposition instances with child_type
-        already select_related. Groups keep first-seen collection_key order;
-        a None collection_key groups the structural children, whose JSON key
-        comes from each child's default_json_key.
+        already select_related. The emitted group order is explicit contract:
+        groups sorted by collection_key, with the None group (structural
+        children, whose JSON key comes from each child's default_json_key)
+        always last — independent of the repository's row ordering.
         """
         grouped: dict[Optional[str], list[dict]] = {}
         for comp in composition_rows:
@@ -163,7 +165,9 @@ class CatalogService:
             )
         return [
             {"collection_key": collection_key, "child_types": child_types}
-            for collection_key, child_types in grouped.items()
+            for collection_key, child_types in sorted(
+                grouped.items(), key=lambda item: (item[0] is None, item[0])
+            )
         ]
 
     def _build_domains(self, attr_rows: list[dict]) -> dict:

@@ -390,6 +390,9 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
         except OSError as e:
             logger.exception("Fixture upload failed")
             messages.error(request, f"Could not write fixture file: {e}")
+        except Exception as e:
+            logger.exception("Fixture upload failed")
+            messages.error(request, f"Fixture upload failed: {e}")
 
         return self._fixture_loader_redirect()
 

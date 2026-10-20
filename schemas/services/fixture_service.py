@@ -192,12 +192,17 @@ class FixtureService:
         uuid PKs, and that every natural-key FK resolves — either to an
         object inside the fixture or to a row already in the database
         (cross-fixture references like base datatypes are legitimate).
+
+        Never raises on arbitrary input: objects that fail the shape
+        checks accumulate in ``errors[]`` and are skipped by the
+        reference-resolution pass.
         """
         errors = []
         if not isinstance(objects, list) or not objects:
             return ['Fixture must be a non-empty JSON array of objects']
 
         naturals = {}
+        checked = []
         for i, obj in enumerate(objects):
             where = f'object[{i}]'
             if not isinstance(obj, dict):
@@ -220,21 +225,29 @@ class FixtureService:
             if not isinstance(fields, dict):
                 errors.append(f'{where}: missing fields object')
                 continue
+            checked.append((i, label, fields))
             nk = self._natural_key_for(label, fields)
             if nk is not None:
-                naturals.setdefault(label, set()).add(nk)
+                try:
+                    naturals.setdefault(label, set()).add(nk)
+                except TypeError:
+                    errors.append(f'{where}: malformed natural key')
 
         # Second pass: natural-key FK references must resolve in the
-        # fixture or in the database.
-        for i, obj in enumerate(objects):
-            label = obj['model'].split('.')[1]
-            fields = obj['fields']
+        # fixture or in the database. Only objects that passed the shape
+        # checks above are inspected — malformed ones already carry an
+        # errors[] entry and must not crash this pass.
+        for i, label, fields in checked:
             for field, target_label in FK_FIELDS.get(label, []):
                 ref = fields.get(field)
                 if ref is None or not isinstance(ref, list):
                     continue
-                if tuple(ref) in naturals.get(target_label, set()):
-                    continue
+                try:
+                    if tuple(ref) in naturals.get(target_label, set()):
+                        continue
+                except TypeError:
+                    # Unhashable components can never match a natural key.
+                    pass
                 if not self._resolves_in_db(target_label, ref):
                     errors.append(
                         f'object[{i}]: {label}.{field}={ref} does not '

@@ -37,6 +37,7 @@ ERR_PROPERTIES_REQUIRED = "properties_required"
 ERR_MAX_CHILDREN_VIOLATION = "max_children_violation"
 ERR_VERSION_NOT_AVAILABLE = "Could not find available version for schema with key='{key}' after {attempts} attempts"
 ERR_PERMISSION_DENIED = "You do not have permission to import schemas in this project."
+ERR_ROOT_NODE_TYPE_REQUIRED = "root_node_type_required"
 
 # Generic error messages for RuntimeError
 ERR_DATABASE_ERROR_ARCHIVE = "Database error during archive: {error}"

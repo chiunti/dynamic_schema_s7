@@ -46,6 +46,7 @@ from ..constants import (
     ERR_UNDECLARED_JSON_KEY,
     ERR_INVALID_COLLECTION_VALUE,
     ERR_INVALID_DOMAIN_VALUE,
+    ERR_ROOT_NODE_TYPE_REQUIRED,
     MAX_VERSION_AUTO_INCREMENT_ATTEMPTS,
     SCHEMA_KEY_SUFFIX,
     SCHEMA_METADATA_SUFFIX,
@@ -98,9 +99,14 @@ class SchemaService:
         Same output as generate_json_example, but skips the json_scope
         lookup for callers that already hold the root instance.
 
+        Raises:
+            ValueError: If node_type is None or is not a root NodeType.
+
         Returns:
             Example dict.
         """
+        if node_type is None or not node_type.is_root:
+            raise ValueError(ERR_ROOT_NODE_TYPE_REQUIRED)
         return self._generate_json_example(node_type)
 
     def _generate_json_example(self, node_type: NodeType) -> dict:

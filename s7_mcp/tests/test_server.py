@@ -21,7 +21,7 @@ _DEPS = (
 
 if _DEPS:
     import s7_mcp.server as server
-    from s7_mcp.prompts import CREATE_TRAMITE_FORM_PROMPT
+    from s7_mcp.prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
 
 EXPECTED_TOOLS = {
     "s7_get_catalog",
@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "s7_list_datatypes",
     "s7_validate_schema",
     "s7_import_draft",
+    "s7_import_catalog",
 }
 
 
@@ -146,6 +147,67 @@ class SchemaPayloadTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
+class CatalogImportTests(unittest.TestCase):
+    """``s7_import_catalog`` forwards the fixture-format payload verbatim."""
+
+    def setUp(self):
+        self.client = MagicMock()
+        self.client.post_json.return_value = {"ok": True}
+        patcher = patch.object(
+            server, "_get_client", return_value=self.client
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _objects(self):
+        return [
+            {
+                "model": "schemas.nodetype",
+                "fields": {
+                    "label": "esign_root",
+                    "is_root": True,
+                    "json_scope": "esign",
+                },
+            }
+        ]
+
+    def test_posts_objects_verbatim_to_catalog_import(self):
+        objects = self._objects()
+        result = server.s7_import_catalog(objects)
+        self.assertIs(result, self.client.post_json.return_value)
+        path, payload = self.client.post_json.call_args[0]
+        self.assertEqual(path, "catalog/import/")
+        self.assertEqual(payload, {"objects": objects})
+        self.assertIs(payload["objects"], objects)
+
+    def test_success_envelope_propagates_verbatim(self):
+        envelope = {
+            "applied": True,
+            "created": {"nodetype": 1},
+            "updated": {},
+            "warnings": [],
+        }
+        self.client.post_json.return_value = envelope
+        self.assertIs(server.s7_import_catalog(self._objects()), envelope)
+
+    def test_applied_false_envelope_propagates_verbatim(self):
+        """A 400-style ``{"applied": false, "errors": [...]}`` body reaches
+        the caller untouched — the tool never inspects the envelope."""
+        envelope = {
+            "applied": False,
+            "errors": [
+                {
+                    "code": "unknown_model",
+                    "message": "model not in the catalog subset",
+                    "path": "$.objects[0]",
+                }
+            ],
+        }
+        self.client.post_json.return_value = envelope
+        self.assertIs(server.s7_import_catalog(self._objects()), envelope)
+
+
+@unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class ResourceTests(unittest.TestCase):
     """Resources mirror tool paths and propagate envelopes per contract."""
 
@@ -208,6 +270,12 @@ class PromptTests(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertTrue(result.strip())
 
+    def test_author_catalog_prompt_returns_the_template_text(self):
+        result = server.author_catalog()
+        self.assertIs(result, AUTHOR_CATALOG_PROMPT)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.strip())
+
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class LazyClientTests(unittest.TestCase):
@@ -226,9 +294,9 @@ class LazyClientTests(unittest.TestCase):
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class McpSurfaceTests(unittest.TestCase):
-    """The exposed MCP surface: exactly the five read/author tools."""
+    """The exposed MCP surface: exactly the six read/author tools."""
 
-    def test_the_five_tools_exist_and_are_callable(self):
+    def test_the_six_tools_exist_and_are_callable(self):
         for name in EXPECTED_TOOLS:
             with self.subTest(tool=name):
                 self.assertTrue(
@@ -254,7 +322,7 @@ class McpSurfaceTests(unittest.TestCase):
         self.assertNotIn("schema_status", params)
 
     def test_registered_tool_set_matches_module_functions(self):
-        """The SDK registry (when introspectable) holds exactly the 5 tools."""
+        """The SDK registry (when introspectable) holds exactly the 6 tools."""
         tool_manager = getattr(server.mcp, "_tool_manager", None)
         registered = getattr(tool_manager, "_tools", None)
         if isinstance(registered, dict):
@@ -388,7 +456,10 @@ class ShimBranchTests(unittest.TestCase):
                     "s7://schemas/{node_type}/{key}/{version}",
                 },
             )
-            self.assertEqual(set(server.mcp.prompts), {"create_tramite_form"})
+            self.assertEqual(
+                set(server.mcp.prompts),
+                {"create_tramite_form", "author_catalog"},
+            )
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - mcp 1.x
 from . import __version__
 from .client import S7Client
 from .config import S7Config, get_config
-from .prompts import CREATE_TRAMITE_FORM_PROMPT
+from .prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
 
 try:
     mcp = MCPServer("s7-author", version=__version__)
@@ -132,6 +132,26 @@ def s7_import_draft(node_type: str, schema: dict | str,
     return _get_client().post_json("schema/import/", payload)
 
 
+@mcp.tool()
+def s7_import_catalog(objects: list[dict]) -> dict:
+    """Apply a fixture-format catalog payload (MCP level 2).
+
+    ``objects`` is a list of ``{"model": "schemas.<label>", "pk": <uuid?>?,
+    "fields": {...}}`` objects — same shape as Django fixtures. Allowed
+    labels: domain, domainitem, nodetype, nodetypecomposition,
+    nodetypevariant, attributedef. Natural-key FKs are used inside
+    ``fields`` exactly like fixture files. Natural-key match updates the
+    existing row; no match creates it; deletes are not supported.
+
+    Returns ``{"applied": true, "created": {...}, "updated": {...},
+    "warnings": [...]}`` on success; ``{"applied": false, "errors": [...]}``
+    on validation/apply failure. Requires a user MCP token with
+    ``mcp_level >= 2`` plus per-model Django permissions — anything else
+    gets a 401/403 envelope verbatim.
+    """
+    return _get_client().post_json("catalog/import/", {"objects": objects})
+
+
 # ---------------------------------------------------------------------------
 # Resources — read-only context for the agent.
 # ---------------------------------------------------------------------------
@@ -175,6 +195,12 @@ def schema_resource(node_type: str, key: str, version: str) -> Any:
 def create_tramite_form() -> str:
     """Step-by-step workflow to author a government-procedure form schema."""
     return CREATE_TRAMITE_FORM_PROMPT
+
+
+@mcp.prompt()
+def author_catalog() -> str:
+    """Step-by-step workflow to author catalog grammar (level 2)."""
+    return AUTHOR_CATALOG_PROMPT
 
 
 def main() -> None:

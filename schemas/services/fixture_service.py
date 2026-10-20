@@ -13,6 +13,7 @@ import re
 import uuid
 from collections import Counter
 from pathlib import Path
+from typing import Optional
 
 from django.core.management import call_command
 
@@ -185,18 +186,26 @@ class FixtureService:
         )
         return {'name': stem, 'total': len(objects)}
 
-    def validate_objects(self, objects) -> list[str]:
+    def validate_objects(self, objects, allowed_models=None) -> list[str]:
         """Structural validation of a fixture payload.
 
         Checks: top-level list, {model,pk,fields} shape, model whitelist,
-        uuid PKs, and that every natural-key FK resolves — either to an
-        object inside the fixture or to a row already in the database
+        uuid PKs, field names against the target model, in-payload natural
+        key uniqueness, and that every natural-key FK resolves — either to
+        an object inside the fixture or to a row already in the database
         (cross-fixture references like base datatypes are legitimate).
+
+        ``allowed_models`` narrows the label whitelist when the caller
+        accepts only a subset (e.g. catalog-only payloads); the default
+        is the module-level ``ALLOWED_MODELS``.
 
         Never raises on arbitrary input: objects that fail the shape
         checks accumulate in ``errors[]`` and are skipped by the
         reference-resolution pass.
         """
+        if allowed_models is None:
+            allowed_models = ALLOWED_MODELS
+
         errors = []
         if not isinstance(objects, list) or not objects:
             return ['Fixture must be a non-empty JSON array of objects']
@@ -211,11 +220,13 @@ class FixtureService:
             model = obj.get('model')
             pk = obj.get('pk')
             fields = obj.get('fields')
-            if not isinstance(model, str) or not model.startswith('schemas.'):
+            if (not isinstance(model, str)
+                    or not model.startswith('schemas.')
+                    or model.count('.') != 1):
                 errors.append(f'{where}: missing/invalid model {model!r}')
                 continue
             label = model.split('.')[1]
-            if label not in ALLOWED_MODELS:
+            if label not in allowed_models:
                 errors.append(f'{where}: model {model!r} not allowed')
                 continue
             try:
@@ -225,11 +236,38 @@ class FixtureService:
             if not isinstance(fields, dict):
                 errors.append(f'{where}: missing fields object')
                 continue
+            # A serialized 'id' inside fields would override the top-level
+            # pk at deserialization time — the pk position is the only
+            # sanctioned way to name a row.
+            if 'id' in fields:
+                errors.append(
+                    f"{where}: field 'id' belongs at the top-level 'pk', "
+                    'not inside fields',
+                )
+            field_names = self.fixture_repository.get_model_field_names(label)
+            if field_names is not None:
+                for name in fields:
+                    if name not in field_names:
+                        errors.append(
+                            f'{where}: unknown field {name!r} '
+                            f"for model '{label}'",
+                        )
             checked.append((i, label, fields))
-            nk = self._natural_key_for(label, fields)
+            nk = self.natural_key_for(label, fields)
             if nk is not None:
                 try:
-                    naturals.setdefault(label, set()).add(nk)
+                    label_naturals = naturals.setdefault(label, set())
+                    if nk in label_naturals:
+                        # Two payload objects carrying the same natural key
+                        # with different pks would both insert when a key
+                        # component is NULL (unique constraints treat NULLs
+                        # as distinct) — flag instead of silently
+                        # duplicating.
+                        errors.append(
+                            f'{where}: duplicate natural key in payload',
+                        )
+                    else:
+                        label_naturals.add(nk)
                 except TypeError:
                     errors.append(f'{where}: malformed natural key')
 
@@ -261,8 +299,14 @@ class FixtureService:
         return self.fixture_repository.natural_key_exists(target_label, ref)
 
     @staticmethod
-    def _natural_key_for(label: str, fields: dict):
-        """Rebuild a row's natural key from its serialized fields."""
+    def natural_key_for(label: str, fields: dict) -> Optional[tuple]:
+        """Rebuild a row's natural key from its serialized fields.
+
+        FK positions carry natural-key arrays in fixture format, so the
+        first element is taken; plain scalars pass through unchanged.
+        Returns ``None`` for models without a natural key (``node`` /
+        ``nodeattribute`` are pk-referenced).
+        """
         def nk1(field):
             ref = fields.get(field)
             return ref[0] if isinstance(ref, list) and ref else ref

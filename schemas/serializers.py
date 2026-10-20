@@ -44,3 +44,16 @@ class SchemaImportSerializer(serializers.Serializer):
         default=False,
         help_text="Whether to overwrite an existing schema with the same key and version.",
     )
+
+
+class CatalogImportSerializer(serializers.Serializer):
+    objects = serializers.ListField(
+        child=serializers.DictField(),
+        allow_empty=False,
+        help_text=(
+            "Fixture-format catalog objects: each entry is a dict shaped "
+            "{model, pk?, fields} where 'model' is a catalog model label "
+            "(e.g. nodetype, attributedef, domain), 'pk' an optional UUID, "
+            "and 'fields' the object field values."
+        ),
+    )

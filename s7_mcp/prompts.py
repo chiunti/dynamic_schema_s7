@@ -42,3 +42,33 @@ only works when `S7_TOKEN` is a B2B credential.
 Note: publishing, approving and applying schemas are human actions performed \
 in the admin — there is intentionally no publish/approve/apply tool.\
 """
+
+# Authoring workflow prompt for catalog (grammar) objects — MCP level 2.
+AUTHOR_CATALOG_PROMPT = """\
+You are authoring grammar for the dynamic-schema dialect — new node types \
+(including root types), attribute definitions, compositions, variants and \
+domains — via the `s7_import_catalog` tool, which requires a user MCP token \
+at level 2 plus per-model catalog permissions. Follow these steps:
+
+1. DISCOVER — read `s7://datatypes` for the data-type catalog (attribute \
+definitions reference existing data types only — the payload cannot create \
+new ones) and `s7://catalog/{scope}` of a related existing scope for \
+reference shapes.
+
+2. BUILD — assemble the `objects` list in fixture format: each element is \
+`{"model": "schemas.<label>", "pk": <optional uuid>, "fields": {...}}` with \
+labels from `domain`, `domainitem`, `nodetype`, `nodetypecomposition`, \
+`nodetypevariant`, `attributedef`. Foreign keys inside `fields` use the \
+same natural-key form as fixture files; omit `pk` to let the backend \
+derive it. A new root node type needs `is_root` and a unique `json_scope`.
+
+3. APPLY — call `s7_import_catalog` once with the full list: the apply is \
+atomic, natural-key matches update existing rows, non-matches create new \
+ones, and deletes are never performed. On `{"applied": false, "errors": \
+[...]}` each error points at its `$.objects[i]` entry — fix and retry.
+
+4. VERIFY — call `s7_get_catalog` with the new `json_scope`; grammar writes \
+are global and live immediately (no draft stage). An instance of the new \
+type can then be validated and imported with the level-1 tools \
+(`s7_validate_schema` → `s7_import_draft`).\
+"""

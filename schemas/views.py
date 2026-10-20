@@ -2,10 +2,12 @@ import json
 import logging
 
 from rest_framework import status
+from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import (
+    CanAuthorCatalog,
     CanImportSchema,
     CanPublishSchema,
     CanReadSchema,
@@ -20,7 +22,8 @@ from .constants import (
     ERR_PROJECT_ID_REQUIRED,
     STATUS_DRAFT,
 )
-from .serializers import SchemaImportSerializer
+from .serializers import CatalogImportSerializer, SchemaImportSerializer
+from .services.catalog_import_service import CatalogImportService
 from .services.catalog_service import CatalogService
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
@@ -246,3 +249,82 @@ class CatalogDatatypesView(APIView):
                 {"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         return Response(datatypes, status=status.HTTP_200_OK)
+
+
+class CatalogImportView(APIView):
+    """MCP level-2 endpoint for catalog grammar authoring.
+
+    Accepts a non-empty list of fixture-format objects
+    (``{"model": ..., "pk"?: ..., "fields": ...}``) and applies them
+    atomically: rows matched by natural key are updated, the rest are
+    created. The grammar is global and live immediately — there is no
+    draft staging — and deletes are not supported by the payload.
+
+    Authentication is restricted to user MCP tokens: a project credential
+    Bearer token is not resolved by this authenticator, so the request
+    falls through to anonymous and is rejected, and the permission
+    requires ``mcp_level >= 2`` which only user tokens carry.
+    """
+
+    authentication_classes = [UserMCPTokenAuthentication]
+    permission_classes = [CanAuthorCatalog]
+
+    def post(self, request: Request) -> Response:
+        serializer = CatalogImportSerializer(data=request.data)
+        if not serializer.is_valid():
+            errors = []
+            for field, field_errors in serializer.errors.items():
+                if isinstance(field_errors, dict):
+                    # ListField reports per-item failures as
+                    # {item_index: [messages]} — point at the entry.
+                    index = next(iter(field_errors))
+                    item_errors = field_errors[index]
+                    detail = (
+                        item_errors[0]
+                        if isinstance(item_errors, (list, tuple))
+                        else item_errors
+                    )
+                    message = f"{field}[{index}]: {detail}"
+                    path = f"$.{field}[{index}]"
+                else:
+                    message = f"{field}: {field_errors[0]}"
+                    path = f"$.{field}"
+                errors.append({
+                    "code": ERR_INVALID_REQUEST,
+                    "message": message,
+                    "path": path,
+                })
+            return Response(
+                {"applied": False, "errors": errors, "warnings": []},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = serializer.validated_data
+        try:
+            result = CatalogImportService().import_objects(
+                data["objects"], user=request.user
+            )
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except Exception:
+            logger.exception("Catalog import failed")
+            return Response(
+                {
+                    "applied": False,
+                    "errors": [{
+                        "code": ERR_INTERNAL_SERVER_ERROR,
+                        "message": "Internal server error",
+                        "path": None,
+                    }],
+                    "warnings": [],
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            result,
+            status=(
+                status.HTTP_200_OK if result["applied"]
+                else status.HTTP_400_BAD_REQUEST
+            ),
+        )

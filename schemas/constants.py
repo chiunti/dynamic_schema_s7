@@ -140,6 +140,10 @@ ERR_IMPORT_FAILED = "import_failed"
 # Schema validate endpoint codes — envelope {valid, errors, warnings} of
 # POST /api/schema/validate/ (views.SchemaValidateView)
 ERR_INVALID_REQUEST = "invalid_request"
+# Catalog import endpoint codes — envelope {applied, errors, warnings} of
+# POST /api/catalog/import/ (views.CatalogImportView)
+ERR_INVALID_CATALOG_OBJECT = "invalid_catalog_object"
+ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for model '{label}'"
 ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
 ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"
 ERR_INVALID_DOMAIN_VALUE = "invalid_domain_value"

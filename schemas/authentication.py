@@ -99,3 +99,15 @@ class UserMCPTokenPermission(BasePermission):
             request.user and request.user.is_authenticated
             and getattr(request.auth, 'mcp_level', 0) >= self.min_level
         )
+
+
+class CanAuthorCatalog(UserMCPTokenPermission):
+    """MCP level-2 permission for catalog grammar authoring.
+
+    Gates the catalog import endpoint where user MCP tokens write grammar
+    objects (node types, attribute defs, compositions, domains, variants).
+    Project credentials can never satisfy it: their ``request.auth`` carries
+    no ``mcp_level`` attribute, so the duck-typed level check fails closed.
+    """
+
+    min_level = 2

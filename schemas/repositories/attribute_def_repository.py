@@ -632,6 +632,43 @@ class AttributeDefRepository:
                 return declared
         return qs.filter(variant_key__isnull=True).first()
 
+    def get_domain_declaration(
+        self,
+        node_type: NodeType,
+        json_key: str,
+        variant_key: Optional[str],
+    ) -> Optional[AttributeDef]:
+        """
+        Return the domain-bearing AttributeDef declaring ``(node_type, json_key)``
+        applicable to ``variant_key``, or None.
+
+        Mirrors ``get_attribute_def_declaration`` — exact-variant row first,
+        then the ``variant_key=None`` template — but only considers rows with
+        a non-NULL ``domain``. This lookup exists *to resolve a domain*, so a
+        materialized def without one must not shadow the domain-bearing
+        declaration behind it (a stale variant-scoped row would otherwise
+        resolve as its own declaration and silently disable the domain
+        check). Declaration *existence* semantics (undeclared-key checks)
+        stay with ``get_attribute_def_declaration``, which is unchanged: a
+        def without ``domain`` is still a valid declaration there.
+
+        Args:
+            node_type: NodeType instance
+            json_key: JSON key
+            variant_key: Variant key of the current node context (None allowed)
+
+        Returns:
+            The applicable domain-bearing AttributeDef declaration, or None
+        """
+        qs = AttributeDef.objects.filter(
+            node_type=node_type, json_key=json_key, domain__isnull=False
+        )
+        if variant_key is not None:
+            declared = qs.filter(variant_key=variant_key).first()
+            if declared:
+                return declared
+        return qs.filter(variant_key__isnull=True).first()
+
     def get_variant_keys_for_json_key(self, node_type: NodeType, json_key: str) -> list:
         """
         Return the distinct variant_keys under which (node_type, json_key) is

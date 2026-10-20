@@ -1341,11 +1341,14 @@ class SchemaService:
 
         Materialized defs may carry no ``domain`` (created before the catalog
         template declared one, or via a permissive import), so fall back to
-        the AttributeDef declaration for this node type and variant.
+        the domain-bearing AttributeDef declaration for this node type and
+        variant. The fallback only considers declarations with a non-NULL
+        ``domain``: a stale variant-scoped def without one must not resolve
+        as its own declaration and shadow the template's domain.
         """
         if attr_def.domain:
             return attr_def.domain
-        declaration = self.attribute_def_repository.get_attribute_def_declaration(
+        declaration = self.attribute_def_repository.get_domain_declaration(
             node_type, json_key, variant_key
         )
         return declaration.domain if declaration else None

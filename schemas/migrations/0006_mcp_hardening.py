@@ -2,6 +2,10 @@ from django.db import migrations, models
 from django.db.models import Q
 
 
+# MCP feature batch — catalog hardening (feature tag: `mcp`).
+#
+# --- root scope uniqueness --------------------------------------------------
+#
 # Partial unique constraint: at most one root NodeType per json_scope —
 # including the scope-less case. nulls_distinct=False emits NULLS NOT
 # DISTINCT (PostgreSQL >= 15, already the project floor), so at most one
@@ -12,6 +16,54 @@ from django.db.models import Q
 # duplicated named scopes AND multiple NULL-scope roots — either could
 # legitimately exist beforehand. Empty strings DO collide, which is
 # intended: a scope that identifies no catalog must not be shared silently.
+#
+# --- attribute-def domain backfill -----------------------------------------
+#
+# Backfill stale materialized AttributeDefs that carry no domain. The strict
+# validate path resolves the effective domain of an attribute through its
+# declaration: an exact-variant row wins over the variant_key IS NULL
+# template. Materialized defs created before the template declared a domain
+# — or by permissive imports that never copy it — therefore resolved to
+# themselves (domain=None) and silently disabled the domain check. The
+# declaration lookup is now domain-aware, and the backfill repairs the
+# existing rows by copying domain_id from the template row of the same
+# (node_type_id, json_key).
+#
+# The scalar subquery with ORDER BY t.id LIMIT 1 keeps the UPDATE
+# deterministic: uq_sattr_defs_key does not use NULLS NOT DISTINCT, so in
+# theory several variant_key IS NULL rows can coexist for one
+# (node_type_id, json_key) — an UPDATE ... FROM would then pick an
+# arbitrary template among them.
+#
+# The statement is idempotent (rows already carrying a domain, or without
+# a domain-bearing template, are left untouched) and intentionally keeps a
+# noop reverse: backfilled rows cannot be told apart from rows that had
+# domain_id set before this migration ran, so no selective undo is
+# possible.
+
+BACKFILL_DOMAIN_SQL = """
+UPDATE s7.schema_attribute_defs AS d
+SET domain_id = (
+    SELECT t.domain_id
+    FROM s7.schema_attribute_defs AS t
+    WHERE t.node_type_id = d.node_type_id
+      AND t.json_key = d.json_key
+      AND t.variant_key IS NULL
+      AND t.domain_id IS NOT NULL
+    ORDER BY t.id
+    LIMIT 1
+)
+WHERE d.variant_key IS NOT NULL
+  AND d.domain_id IS NULL
+  AND EXISTS (
+      SELECT 1
+      FROM s7.schema_attribute_defs AS t
+      WHERE t.node_type_id = d.node_type_id
+        AND t.json_key = d.json_key
+        AND t.variant_key IS NULL
+        AND t.domain_id IS NOT NULL
+  );
+"""
 
 
 def check_unique_root_scopes(apps, schema_editor):
@@ -68,5 +120,12 @@ class Migration(migrations.Migration):
                 name="uq_snode_types_root_scope",
                 nulls_distinct=False,
             ),
+        ),
+        migrations.RunSQL(
+            sql=BACKFILL_DOMAIN_SQL,
+            # Intentional noop: rows updated by the backfill are
+            # indistinguishable from rows that already carried a domain,
+            # so the reverse cannot selectively undo only the backfill.
+            reverse_sql=migrations.RunSQL.noop,
         ),
     ]

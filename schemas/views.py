@@ -19,6 +19,7 @@ from .authentication import (
 from .constants import (
     ERR_INTERNAL_SERVER_ERROR,
     ERR_INVALID_REQUEST,
+    ERR_PROJECT_CREDENTIAL_MISMATCH,
     ERR_PROJECT_ID_REQUIRED,
     STATUS_DRAFT,
 )
@@ -60,7 +61,7 @@ class SchemaView(APIView):
                 except ValueError as exc:
                     return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 if requested_uuid != project_id:
-                    return Response({'error': 'Project credential does not match request'},
+                    return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
                                     status=status.HTTP_403_FORBIDDEN)
             user = None
         else:
@@ -127,7 +128,7 @@ class SchemaDraftView(APIView):
                 except ValueError as exc:
                     return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 if requested_uuid != project_id:
-                    return Response({'error': 'Project credential does not match request'},
+                    return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
                                     status=status.HTTP_403_FORBIDDEN)
             user = None
         else:
@@ -198,7 +199,7 @@ class SchemaImportView(APIView):
         if isinstance(request.user, ProjectPrincipal):
             if ((data.get('project_id') and data['project_id'] != request.user.project_id)
                     or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
-                return Response({'error': 'Project credential does not match request'},
+                return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
                                 status=status.HTTP_403_FORBIDDEN)
             data['project_id'] = request.user.project_id
             data['organization_id'] = request.user.organization_id
@@ -268,7 +269,7 @@ class SchemaValidateView(APIView):
         if isinstance(request.user, ProjectPrincipal):
             if ((data.get('project_id') and data['project_id'] != request.user.project_id)
                     or (data.get('organization_id') and data['organization_id'] != request.user.organization_id)):
-                return Response({'error': 'Project credential does not match request'},
+                return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
                                 status=status.HTTP_403_FORBIDDEN)
             data['project_id'] = request.user.project_id
             data['organization_id'] = request.user.organization_id

@@ -165,5 +165,5 @@ STORAGES = {
 # All schemas-app models explicitly define UUID primary keys using:
 #   id = models.UUIDField(primary_key=True, db_default=models.Func(function="gen_random_uuid"))
 # Documented exception: accounts.CustomUser uses BigAutoField (standard Django convention).
-# Never use AutoField or BigAutoField for schemas models — see AGENTS.md conventions.
+# Never use AutoField or BigAutoField for schemas models.
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

@@ -4,8 +4,8 @@ from django.contrib import admin
 
 class SchemasConfig(AppConfig):
     # NOTE: This default applies ONLY to third-party apps (django.contrib.*).
-    # All models in this app (schemas) explicitly define UUID primary keys per AGENTS.md
-    # conventions. Exception: accounts.CustomUser uses BigAutoField (standard Django
+    # All models in this app (schemas) explicitly define UUID primary keys by
+    # convention. Exception: accounts.CustomUser uses BigAutoField (standard Django
     # user-model convention). Do NOT rely on this default - always specify UUID PK explicitly.
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'schemas'

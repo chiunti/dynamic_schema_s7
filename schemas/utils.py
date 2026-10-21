@@ -2,11 +2,36 @@
 Utility functions for the schemas app.
 """
 
+import functools
 import json
 import uuid
-from typing import Dict, Any
+from typing import Any, Callable, Dict
+
+from django.http import HttpRequest, HttpResponse, JsonResponse
 
 from .models import Organization, Project, OrganizationMember
+
+
+def api_login_required(
+    view_func: Callable[..., HttpResponse],
+) -> Callable[..., HttpResponse]:
+    """Require an authenticated user, answering with a JSON 401.
+
+    Drop-in replacement for ``django.contrib.auth.decorators.login_required``
+    on JSON API views: anonymous requests get
+    ``{"error": "authentication_required"}`` with status 401 instead of a
+    302 redirect to the HTML login page.
+    """
+
+    @functools.wraps(view_func)
+    def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        if not request.user.is_authenticated:
+            from .constants import ERR_AUTHENTICATION_REQUIRED
+
+            return JsonResponse({"error": ERR_AUTHENTICATION_REQUIRED}, status=401)
+        return view_func(request, *args, **kwargs)
+
+    return wrapper
 
 
 def parse_uuid(value: str, field: str) -> uuid.UUID:

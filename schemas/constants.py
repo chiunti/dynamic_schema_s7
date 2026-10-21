@@ -5,6 +5,7 @@ Used by admin views, node editor endpoints, and service layer exceptions.
 
 ERR_METHOD_NOT_ALLOWED = "method_not_allowed"
 ERR_INVALID_JSON = "invalid_json"
+ERR_AUTHENTICATION_REQUIRED = "authentication_required"
 ERR_NOT_FOUND = "not_found"
 ERR_PARENT_NOT_FOUND = "parent_not_found"
 ERR_NODE_TYPE_NOT_FOUND = "node_type_not_found"

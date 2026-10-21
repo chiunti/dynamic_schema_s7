@@ -1,7 +1,6 @@
 import logging
 import uuid
 
-from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, JsonResponse
 from django.utils.decorators import method_decorator
 from django.views import View
@@ -9,12 +8,12 @@ from django.views import View
 from .constants import ROLE_VIEWER
 from .services.organization_service import OrganizationService
 from .services.project_service import ProjectService
-from .utils import parse_uuid, json_body, org_to_dict, project_to_dict, member_to_dict
+from .utils import api_login_required, parse_uuid, json_body, org_to_dict, project_to_dict, member_to_dict
 
 logger = logging.getLogger(__name__)
 
 
-@method_decorator(login_required, name="dispatch")
+@method_decorator(api_login_required, name="dispatch")
 class OrganizationListCreateView(View):
     def get(self, request):
         service = OrganizationService()
@@ -41,7 +40,7 @@ class OrganizationListCreateView(View):
             return JsonResponse({"error": "Internal server error"}, status=500)
 
 
-@method_decorator(login_required, name="dispatch")
+@method_decorator(api_login_required, name="dispatch")
 class OrganizationDetailView(View):
     def _get_org_id(self, org_id: str) -> uuid.UUID:
         return parse_uuid(org_id, "org_id")
@@ -71,7 +70,7 @@ class OrganizationDetailView(View):
         return self.patch(request, org_id)
 
 
-@method_decorator(login_required, name="dispatch")
+@method_decorator(api_login_required, name="dispatch")
 class OrganizationMemberListView(View):
     def get(self, request, org_id):
         try:
@@ -100,7 +99,7 @@ class OrganizationMemberListView(View):
             return JsonResponse({"error": str(e)}, status=400)
 
 
-@method_decorator(login_required, name="dispatch")
+@method_decorator(api_login_required, name="dispatch")
 class OrganizationMemberDetailView(View):
     def delete(self, request, org_id, member_id):
         try:
@@ -114,7 +113,7 @@ class OrganizationMemberDetailView(View):
             return JsonResponse({"error": str(e)}, status=404)
 
 
-@method_decorator(login_required, name="dispatch")
+@method_decorator(api_login_required, name="dispatch")
 class ProjectListCreateView(View):
     def get(self, request):
         org_id_str = request.GET.get("organization_id")
@@ -150,7 +149,7 @@ class ProjectListCreateView(View):
             return JsonResponse({"error": "Internal server error"}, status=500)
 
 
-@method_decorator(login_required, name="dispatch")
+@method_decorator(api_login_required, name="dispatch")
 class ProjectDetailView(View):
     def get(self, request, project_id):
         try:

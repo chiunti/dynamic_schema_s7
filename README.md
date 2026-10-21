@@ -386,22 +386,32 @@ Schema retrieval, import and publish endpoints are implemented in `schemas/views
 
 ## API Documentation
 
-The API follows RESTful principles with JSON payloads. All endpoints require authentication: Bearer project credentials for the machine schema endpoints, and a Django session for organization/project administration and the staff-only admin JSON endpoints.
+The API follows RESTful principles with JSON payloads. All endpoints require authentication: Bearer credentials (project credentials or user MCP tokens) for the schema-domain endpoints, and a Django session for organization/project administration and the staff-only admin JSON endpoints.
 
 ### Authentication
 
-The schema GET, import and publish endpoints require `Authorization: Bearer <project credential>`. Credentials are bound to one project and independently scoped for `read`, `import` and `publish`. Per-user MCP tokens (`Bearer <user MCP token>`) also authenticate on the authoring/read surface (catalog, validate, import, draft read — level-gated; they must declare the target `project_id` and cannot publish). Administrative organization/project routes continue to use Django sessions.
+Two bearer credential types authenticate on the schema-domain endpoints; organization/project administration routes use Django sessions.
+
+**Project credentials** — `Authorization: Bearer <project credential>`: machine credentials bound to one project, independently scoped — `can_read` (published/draft schema reads, catalog reads), `can_import` (validate, schema import), `can_publish` (publish).
 
 Provision a separate high-entropy secret per backend service through a secret manager. Superusers issue credentials from Django Admin → Tenancy → Project API credentials → Add: a random secret is generated on save and shown once in a warning message — copy it there; only its SHA-256 digest is stored. Configure the secret as `S7_PROJECT_TOKEN` in the consuming service and use HTTPS between services. Rotate by provisioning a new credential, updating the consumer, then revoking the old credential from the same admin screen. The project/organization IDs supplied in an import payload, if present, must match the credential.
 
+**User MCP tokens** — `Authorization: Bearer <user MCP token>`: per-user credentials for agent tooling carrying an `mcp_level`. Level **1 (schema authoring)** covers schema reads, catalog reads, validate and schema import; level **2 (catalog authoring)** adds `POST /api/catalog/import/`, which additionally requires the token's user to hold per-model `schemas.add_*`/`change_*` permissions. A user token is not bound to a project, so project-scoped endpoints require the target `project_id` — the `?project_id=` query parameter on schema reads (published and draft), or a `project_id` field in the validate/import JSON bodies; a missing one is rejected with `400`, an inaccessible project with `403`. User tokens never publish — `POST /api/schema/{node_type}/{key}/{version}/publish/` accepts project credentials only — and their imports always persist as `draft`. Superusers provision tokens under Django Admin → Tenancy → User MCP tokens; the raw secret is shown once and only its digest is stored.
+
+The `s7-author` MCP server (`s7_mcp/`) wraps this surface for local AI agents: configure `S7_BASE_URL`, `S7_TOKEN` (a user MCP token) and `S7_PROJECT_ID` (the target project UUID — the client injects it as `project_id` into the relevant requests). See [`s7_mcp/README.md`](s7_mcp/README.md) for client setup.
+
 ### Core Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/schema/{node_type}/{key}/{version}/` | Get published schema for the authenticated project |
-| GET | `/api/schema/draft/{node_type}/{key}/{version}/` | Get persisted draft schema (`read` scope or user MCP token + `?project_id=`); `meta` includes `"status": "draft"` |
-| POST | `/api/schema/import/` | Import a schema JSON (`import` scope) — persists as `draft` unless the credential has `publish` scope; response adds `"forced_status": "draft"` when the requested status was downgraded |
-| POST | `/api/schema/{node_type}/{key}/{version}/publish/` | Publish a schema (`publish` scope) |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/schema/{node_type}/{key}/{version}/` | `can_read` · MCP L1+ `?project_id=` | Published schema for the target project |
+| GET | `/api/schema/draft/{node_type}/{key}/{version}/` | `can_read` · MCP L1+ `?project_id=` | Persisted draft schema; `meta` includes `"status": "draft"` |
+| POST | `/api/schema/validate/` | `can_import` · MCP L1+ `project_id` | Validate a schema JSON without persisting — returns `{valid, errors, warnings}` |
+| POST | `/api/schema/import/` | `can_import` · MCP L1+ `project_id` | Import a schema JSON — requested `schema_status` honored only with `can_publish`; otherwise forced to `draft` (always for MCP) and reported as `"forced_status"` |
+| POST | `/api/schema/{node_type}/{key}/{version}/publish/` | `can_publish` — credentials only | Publish a schema |
+| GET | `/api/catalog/datatypes/` | `can_read` · MCP L1+ | Resolved `DataType` catalog |
+| GET | `/api/catalog/{scope}/` | `can_read` · MCP L1+ | Resolved authoring catalog for a scope — node types, attribute defs, variants, compositions, domains, grammar docs |
+| POST | `/api/catalog/import/` | MCP L2 + per-model `add_*`/`change_*` | Import catalog grammar (node types, attribute defs, compositions, domains, variants) |
 
 **Schema Response Format:**
 ```json
@@ -411,6 +421,7 @@ Provision a separate high-entropy secret per backend service through a secret ma
     "node_type": "string",
     "key": "string",
     "version": "string"
+    /* "status": "draft" is added by the draft endpoint */
   }
 }
 ```
@@ -437,7 +448,7 @@ Provision a separate high-entropy secret per backend service through a secret ma
 | PATCH/PUT | `/api/projects/{id}/` | Update project |
 | DELETE | `/api/projects/{id}/` | Delete project |
 
-Schema endpoints use project service credentials; organization/project administration uses the authenticated user session.
+Schema-domain endpoints accept project credentials or user MCP tokens; organization/project administration uses the authenticated user session.
 
 ---
 

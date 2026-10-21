@@ -179,9 +179,17 @@ class ProjectAPICredentialAdmin(admin.ModelAdmin):
         qs = super().get_queryset(request).select_related("project", "project__organization")
         if request.user.is_superuser:
             return qs
+        # Defense in depth: the *_permission hooks below already gate the whole
+        # admin to superusers, so this branch is unreachable in practice.
         from ..repositories.multi_tenant_repository import MultiTenantRepository
         accessible_org_ids = MultiTenantRepository().get_accessible_organization_ids(request.user)
         return qs.filter(project__organization_id__in=accessible_org_ids)
+
+    def has_module_permission(self, request):
+        return request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser
 
     def has_add_permission(self, request):
         return request.user.is_superuser

@@ -24,6 +24,7 @@ from ..constants import (
     ERR_VALUE_MUST_BE_JSON_SERIALIZABLE,
     ERR_DOMAIN_NAME_MUST_BE_NON_EMPTY_MAX_255_OR_NONE,
     ERR_NODE_TYPE_MUST_BE_NON_EMPTY_MAX_255,
+    ERR_NODE_TYPE_MUST_BE_NODETYPE_OR_UUID,
     VALID_SCHEMA_STATUSES,
 )
 
@@ -796,21 +797,37 @@ class SchemaRepository:
             queue.extend(children)
         return ids
 
-    def get_root_node_by_key_version(self, key: str, version: str, project_id: uuid.UUID = None):
+    def get_root_node_by_key_version(self, key: str, version: str, project_id: uuid.UUID = None, node_type=None):
         """
-        Get root node by key and version.
+        Get root node by key and version, optionally narrowed by node type.
+
+        ``node_type`` is optional because broad-scope callers (build state,
+        build counter increment, generic root resolution) do not know the
+        expected type, while typed callers (schema publish, draft read) pass
+        it to eliminate the residual key+version ambiguity that appears when
+        two roots of different node types share the same key and version.
 
         Args:
             key: Schema key
             version: Schema version
+            project_id: Optional project UUID scoping the lookup
+            node_type: Optional NodeType instance or UUID; when provided,
+                adds a ``node_type_id`` filter to the query
 
         Returns:
             Node instance or None
+
+        Raises:
+            ValueError: If node_type is neither a NodeType instance nor a UUID
         """
-        from ..models import Node
+        from ..models import Node, NodeType
+        if node_type is not None and not isinstance(node_type, (NodeType, uuid.UUID)):
+            raise ValueError(ERR_NODE_TYPE_MUST_BE_NODETYPE_OR_UUID)
         filters = {'node_type__is_root': True, 'parent__isnull': True, 'key': key, 'version': version}
         if project_id is not None:
             filters['project_id'] = project_id
+        if node_type is not None:
+            filters['node_type_id'] = node_type.pk if isinstance(node_type, NodeType) else node_type
         return Node.objects.filter(**filters).select_related('node_type').first()
 
     def get_attribute_def_by_node_type_key(self, node_type, json_key: str):

@@ -91,7 +91,7 @@ class SchemaReadService:
         if user is not None and not self.permission_service.can_access_project(user, project_id):
             raise PermissionError(ERR_NO_ACCESS_TO_PROJECT)
 
-        node = self.repository.get_root_node_by_key_version(key, version, project_id=project_id)
+        node = self.repository.get_root_node_by_key_version(key, version, project_id=project_id, node_type=node_type)
         if not node or node.node_type_id != node_type.id:
             return None
 

@@ -30,7 +30,7 @@ class SchemaPublishService:
         if not node_type or not node_type.is_root:
             raise ValueError(f"Root node type not found for '{node_type_value}'")
 
-        node = self.schema_repository.get_root_node_by_key_version(key, version, project_id=project_id)
+        node = self.schema_repository.get_root_node_by_key_version(key, version, project_id=project_id, node_type=node_type)
         if not node or node.node_type_id != node_type.id:
             raise ValueError(f"Schema not found for {node_type_value}/{key}/{version}")
 

@@ -93,6 +93,7 @@ ERR_JSON_KEY_MUST_BE_NON_EMPTY_MAX_255 = "json_key must be a non-empty string wi
 ERR_VALUE_MUST_BE_JSON_SERIALIZABLE = "value must be a JSON-serializable value"
 ERR_DOMAIN_NAME_MUST_BE_NON_EMPTY_MAX_255_OR_NONE = "domain_name must be a non-empty string with max 255 characters or None"
 ERR_NODE_TYPE_MUST_BE_NON_EMPTY_MAX_255 = "node_type must be a non-empty string with max 255 characters"
+ERR_NODE_TYPE_MUST_BE_NODETYPE_OR_UUID = "node_type must be a NodeType instance or a valid UUID"
 
 # Status domain validation error messages
 ERR_PUBLISHED_STATUS_NOT_AVAILABLE = "published_status_not_available: 'published' value not defined in status domain"

@@ -606,6 +606,11 @@ class SchemaService:
         2. Check if any child type has a 'version' attribute with natural_version datatype
         3. If the JSON has that child with a version value, update Node.version
 
+        The child may arrive as a plain dict or as a list — singleton
+        composition slots are serialized as an array of items. A list is
+        normalized to its first dict item; a list with more than one item logs
+        a warning and still uses the first item.
+
         Priority:
         - If user specified version in form: use form version (warn if JSON differs)
         - If form is empty/default: use JSON version
@@ -660,6 +665,20 @@ class SchemaService:
                 child_obj = root_obj.get(child_type.default_json_key or child_type.name)
                 if child_obj is None and child_type.default_json_key:
                     child_obj = root_obj.get(child_type.name)
+
+            # Singleton composition slots are serialized as a list of items;
+            # normalize to a single dict before reading the version. A list
+            # with more than one item means the slot's singleton contract was
+            # not enforced upstream — use the first item and warn, since this
+            # is not an import error.
+            if isinstance(child_obj, list):
+                if len(child_obj) > 1:
+                    logger.warning(
+                        "Singleton child slot '%s' received %d items during schema import; using the first item.",
+                        collection_key or child_type.default_json_key or child_type.name,
+                        len(child_obj),
+                    )
+                child_obj = child_obj[0] if child_obj and isinstance(child_obj[0], dict) else None
 
             if not child_obj or not isinstance(child_obj, dict):
                 continue

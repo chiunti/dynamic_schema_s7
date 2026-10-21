@@ -9,13 +9,13 @@ class ProjectAdmin(admin.ModelAdmin):
     list_display = ("name", "slug", "organization_link", "created_by", "created_at")
     list_filter = ("organization",)
     search_fields = ("name", "slug")
-    readonly_fields = ("created_at", "updated_at", "created_by")
+    readonly_fields = ("id", "created_at", "updated_at", "created_by")
     prepopulated_fields = {"slug": ("name",)}
     autocomplete_fields = ("organization",)
 
     fieldsets = (
         (None, {
-            "fields": ("name", "slug", "description", "organization"),
+            "fields": ("id", "name", "slug", "description", "organization"),
         }),
         ("Metadata", {
             "fields": ("created_by", "created_at", "updated_at"),

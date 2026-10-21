@@ -19,6 +19,7 @@ from .datatype_plugins import (
     get_datatype_doc,
     get_storage_defaults,
     get_storage_type,
+    is_server_managed_attribute,
     validate_datatype_value,
 )
 from .exceptions import SchemaValidationError
@@ -60,6 +61,7 @@ from ..constants import (
     STATUS_DRAFT,
     STATUS_PUBLISHED,
     STATUS_ARCHIVED,
+    WARN_ATTRIBUTE_IGNORED,
     WARN_DROPPED_ATTRIBUTE,
 )
 
@@ -912,7 +914,8 @@ class SchemaService:
 
             # For singleton slots (max_children=1), use collection_key as node key.
             # This enables the SQL s7_build_node_json to join: ch.key = ntc.collection_key
-            # For collections (max_children != 1), generate unique keys from item id or index.
+            # For collections (max_children != 1), prefer the item's explicit
+            # 'key'; otherwise _map_json_to_node_fields already generated one.
             if max_children == 1:
                 # Map JSON properties to Node fields (including natural attributes like version)
                 node_fields = self._map_json_to_node_fields(item, json_key_to_field_map, child_node_type, sort_order_offset + idx, collection_key)
@@ -921,18 +924,11 @@ class SchemaService:
                 node_fields['key'] = collection_key
             else:
                 node_fields = self._map_json_to_node_fields(item, json_key_to_field_map, child_node_type, sort_order_offset + idx)
-                # Collections: prefer explicit 'key' from JSON, then 'id', then generate
+                # Collections: prefer explicit 'key' from JSON.
                 json_key_val = item.get('key')
-                json_id = item.get('id')
                 if json_key_val:
                     node_fields['key'] = json_key_val
                     node_fields['name'] = json_key_val
-                elif json_id:
-                    node_fields['key'] = json_id
-                    node_fields['name'] = json_id
-                elif node_fields['key'] is None:
-                    node_fields['key'] = f"{collection_key}_{idx}"
-                    node_fields['name'] = f"{collection_key}_{idx}"
 
             # Extract key from node_fields to avoid duplicate argument
             node_key = node_fields.pop('key')
@@ -1002,8 +998,6 @@ class SchemaService:
                 node_fields['name'] = json_key
             elif 'name' in item and item['name']:
                 node_fields['key'] = item['name']
-            elif 'id' in item and item['id']:
-                node_fields['key'] = str(item['id'])
             else:
                 # Generate a unique key based on node type and index
                 node_fields['key'] = f'{node_type.name}_{idx}'
@@ -1267,6 +1261,31 @@ class SchemaService:
                 dropped_attributes=dropped_attributes,
             )
 
+    @staticmethod
+    def _report_server_managed_ignored(json_key: str, path: str, dropped_attributes: Optional[list]) -> None:
+        """Report a payload value bound to a server-managed attribute.
+
+        Server-managed attributes (``is_server_managed_attribute`` — e.g.
+        ``natural_uuid`` bound to ``id``) never write through to a Node
+        column, so the provided value is ignored; surface it as an
+        ``attribute_ignored`` entry on the out-list, or a log warning when
+        the caller carries no out-list — nothing is dropped silently.
+        """
+        message = f"'{json_key}' is server-generated and its value is ignored."
+        if dropped_attributes is not None:
+            dropped_attributes.append(
+                {
+                    "code": WARN_ATTRIBUTE_IGNORED,
+                    "path": f"{path}.{json_key}",
+                    "message": message,
+                }
+            )
+        else:
+            logging.getLogger(__name__).warning(
+                "%s.%s: %s",
+                path, json_key, message,
+            )
+
     def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process attributes for a node, creating AttributeDefs dynamically if needed.
 
@@ -1289,8 +1308,9 @@ class SchemaService:
                 payload; errors are reported as ``{path}.{json_key}``.
             dropped_attributes: Optional out-list collecting
                 ``{"code", "path", "message"}`` dicts for attribute values
-                rejected by datatype validators in permissive mode; under
-                ``strict_keys`` those failures raise instead.
+                rejected by datatype validators in permissive mode (under
+                ``strict_keys`` those failures raise instead) and for
+                server-managed attributes whose payload value is ignored.
         """
         # Get Node model field names (these are not attributes)
         node_field_names = self.repository.get_node_field_names()
@@ -1393,15 +1413,34 @@ class SchemaService:
                     # may be expressed explicitly in JSON and must be stored as an attribute
                     # when no display_order AttributeDef is present on this node type.
                     if json_key in node_field_names and json_key != 'sort_order':
+                        # Server-managed attributes (e.g. natural_uuid bound to
+                        # 'id') never write through to a Node column — surface
+                        # the ignored value instead of dropping it silently.
+                        attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
+                            node_type,
+                            json_key,
+                            None
+                        )
+                        if attr_def and value is not None and is_server_managed_attribute(
+                            attr_def.data_type.name, attr_def.name
+                        ):
+                            self._report_server_managed_ignored(
+                                json_key, path, dropped_attributes
+                            )
                         continue
                     # Skip natural type attributes (natural_version, natural_key, etc.)
-                    # These are mapped to node columns and handled separately
+                    # These are mapped to node columns and handled separately;
+                    # the ones that are server-managed report the ignored value.
                     attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
                         node_type,
                         json_key,
                         None
                     )
                     if attr_def and attr_def.data_type.name.startswith('natural_'):
+                        if value is not None and is_server_managed_attribute(attr_def.data_type.name, attr_def.name):
+                            self._report_server_managed_ignored(
+                                json_key, path, dropped_attributes
+                            )
                         continue
                     if json_key == 'sort_order':
                         # If a display_order AttributeDef exists, skip: the value is driven by
@@ -1445,7 +1484,7 @@ class SchemaService:
                     # Case 2: shorthand discriminator (e.g. 'body' dict -> screen_section node)
                     if json_key in shorthand_map and isinstance(value, dict):
                         child_type, discriminator_json_key = shorthand_map[json_key]
-                        name = value.get('id') or json_key
+                        name = json_key
                         child_node = self.repository.create_child_node(
                             child_type,
                             node_id,

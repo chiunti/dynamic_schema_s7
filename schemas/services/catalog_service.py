@@ -16,7 +16,7 @@ from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.data_type_repository import DataTypeRepository
 from ..repositories.node_type_repository import NodeTypeRepository
-from .datatype_plugins import get_datatype_doc
+from .datatype_plugins import get_datatype_doc, is_server_managed_attribute
 from .schema_service import SchemaService
 
 
@@ -50,7 +50,10 @@ class CatalogService:
             - scope: the requested json_scope
             - root_node_type: name of the scope's root NodeType
             - node_types: denormalized entries ordered by name, each with
-              attributes (ordered by json_key), a resolved variants block
+              attributes (ordered by json_key; every attribute entry carries
+              ``server_generated`` — True for engine-managed ``natural_*``
+              attributes such as ``natural_uuid`` bound to ``id``, which also
+              forces ``required`` to False), a resolved variants block
               (None when the type declares none) and compositions grouped
               by collection_key (groups ordered by key, structural
               None group last)
@@ -87,18 +90,23 @@ class CatalogService:
         catalog_types = []
         for node_type in node_types:
             type_id = node_type["id"]
-            attributes = [
-                {
-                    "json_key": row["json_key"],
-                    "name": row["name"],
-                    "data_type": row["data_type__name"],
-                    "domain": row["domain__domain_name"],
-                    "required": row["is_required"],
-                    "common": row["is_common"],
-                    "variant_key": row["variant_key"],
-                }
-                for row in sorted(attrs_by_type.get(type_id, []), key=lambda r: r["json_key"])
-            ]
+            attributes = []
+            for row in sorted(attrs_by_type.get(type_id, []), key=lambda r: r["json_key"]):
+                server_managed = is_server_managed_attribute(
+                    row["data_type__name"], row["name"]
+                )
+                attributes.append(
+                    {
+                        "json_key": row["json_key"],
+                        "name": row["name"],
+                        "data_type": row["data_type__name"],
+                        "domain": row["domain__domain_name"],
+                        "required": False if server_managed else row["is_required"],
+                        "server_generated": server_managed,
+                        "common": row["is_common"],
+                        "variant_key": row["variant_key"],
+                    }
+                )
             catalog_types.append(
                 {
                     "name": node_type["name"],

@@ -8,7 +8,9 @@ the dynamic-schema dialect served by this MCP server. Follow these steps:
 1. DISCOVER — read the resource `s7://catalog/{scope}` for the scope you are \
 authoring (for example `s7://catalog/survey`; ask the user which scope to use \
 if unsure). The resolved catalog lists every reachable node type with its \
-`attributes` (json_key, data_type, required, domain, variant_key), the \
+`attributes` (json_key, data_type, required, domain, variant_key, \
+server_generated — attributes flagged `server_generated`, such as `id`, are \
+emitted by the engine on read and must not be authored), the \
 `variants` block (`discriminator_attr` tells which attribute selects the \
 variant, `props_node_type` tells which child node type carries \
 variant-specific properties, `keys` lists the allowed variant values), \

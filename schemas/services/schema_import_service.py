@@ -13,7 +13,6 @@ from ..constants import (
     ERR_SCHEMA_STATUS_MUST_BE_VALID,
     STATUS_DRAFT,
     VALID_SCHEMA_STATUSES,
-    WARN_DROPPED_ATTRIBUTE,
     WARN_IMPORT,
     WARN_MISSING_REQUIRED_ATTRIBUTES,
 )
@@ -118,9 +117,10 @@ class SchemaImportService:
         non-collection values on collection keys and out-of-domain scalars
         with ``SchemaValidationError`` carrying a JSON path.
 
-        ``dropped_attributes`` is an optional out-list: in permissive mode the
-        pipeline appends ``{"code", "path", "message"}`` dicts for attribute
-        values rejected by datatype validators. The same drops are also
+        ``dropped_attributes`` is an optional out-list: the pipeline appends
+        ``{"code", "path", "message"}`` dicts for attribute values rejected
+        by datatype validators in permissive mode and for server-managed
+        attributes whose payload value is ignored. The same drops are also
         folded into the returned warning string.
 
         Returns the imported schema root node ID, a warning string, and the
@@ -175,9 +175,11 @@ class SchemaImportService:
             "",
         )
         if not schema_key:
-            # Fall back to the root object's name or id, truncated to the
-            # schema_nodes.key column limit (30 chars).
-            schema_key = self._extract_string(inner.get("name") or inner.get("id"), "")[:30]
+            # Fall back to the root object's name, truncated to the
+            # schema_nodes.key column limit (30 chars). The root's 'id' is
+            # deliberately not a fallback: id is server-generated and never
+            # identifies anything on import.
+            schema_key = self._extract_string(inner.get("name"), "")[:30]
         if not schema_key:
             raise SchemaValidationError(
                 "schema_key is required and cannot be determined from the schema",
@@ -211,8 +213,8 @@ class SchemaImportService:
             project = self.project_repository.get_project_by_id(project_id)
             organization_id = project.organization_id if project else None
 
-        # Attribute values rejected by datatype validators land here in
-        # permissive mode; under strict_keys they raise instead.
+        # Validator rejections land here in permissive mode (under strict_keys
+        # they raise instead); ignored server-managed values land in both.
         if dropped_attributes is None:
             dropped_attributes = []
 
@@ -238,7 +240,7 @@ class SchemaImportService:
             else:
                 warning_parts.append(str(version_warning))
         warning_parts.extend(
-            f"[{WARN_DROPPED_ATTRIBUTE}] {drop['path']}: {drop['message']}"
+            f"[{drop['code']}] {drop['path']}: {drop['message']}"
             for drop in dropped_attributes
         )
         warning = "; ".join(part for part in warning_parts if part)
@@ -258,8 +260,9 @@ class SchemaImportService:
             ``{"valid": bool, "errors": [...], "warnings": [...]}`` where each
             error carries ``code``, ``message``, ``path``, ``expected`` and
             ``received`` (``None`` when not applicable). Warnings carry the
-            import/required-attribute notices plus any ``dropped_attribute``
-            dicts collected by the pipeline.
+            import/required-attribute notices plus the pipeline's collected
+            drops (``dropped_attribute`` rejections and ``attribute_ignored``
+            notices for server-managed attributes).
         """
         schema_text = data.get("schema_text")
         if not isinstance(schema_text, str):
@@ -306,9 +309,9 @@ class SchemaImportService:
             else:
                 if warning:
                     warnings.append({"code": WARN_IMPORT, "message": warning})
-                # Strict mode raises on validator-rejected attributes, so this
-                # stays empty today; appended defensively so the envelope keeps
-                # reporting drops as structured warnings if that ever changes.
+                # Validator-rejected attributes raise under strict mode, but
+                # non-fatal drops (e.g. attribute_ignored notices for
+                # server-managed attributes) still land here.
                 warnings.extend(dropped_attributes)
                 # collect_required_warnings reads the tree built above; the
                 # inner atomic of import_from_request acted as a savepoint,

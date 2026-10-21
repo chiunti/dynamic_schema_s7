@@ -76,10 +76,11 @@ def _schema_payload(node_type: str, schema: dict | str,
 def s7_get_catalog(scope: str) -> dict:
     """Fetch the resolved authoring catalog for a scope.
 
-    Returns ``{scope, root_node_type, node_types, domains, example}`` where
-    each node-type entry carries its attributes, resolved ``variants`` block
-    and ``compositions`` grouped by collection_key. ``{"error": ...}`` when the
-    scope does not exist.
+    Returns ``{scope, root_node_type, node_types, domains, datatypes,
+    example}`` where each node-type entry carries its attributes, resolved
+    ``variants`` block and ``compositions`` grouped by collection_key, and
+    ``datatypes`` carries grammar docs for the non-trivial data types used
+    by the scope. ``{"error": ...}`` when the scope does not exist.
     """
     return _get_client().get_json(f"catalog/{_q(scope)}/")
 

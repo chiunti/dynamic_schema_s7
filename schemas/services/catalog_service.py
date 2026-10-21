@@ -3,10 +3,12 @@
 Builds the denormalized per-scope catalog — one entry per reachable node
 type carrying its attribute definitions, digested NodeTypeVariant metadata
 and compositions grouped by collection_key — plus the referenced domain
-dictionaries and an embedded JSON example. Consumers can author valid JSON
-without replicating the internal variant/composition resolution logic.
+dictionaries, the registered grammar docs for the non-trivial datatypes in
+use and an embedded JSON example. Consumers can author valid JSON without
+replicating the internal variant/composition resolution logic.
 """
 
+from copy import deepcopy
 from typing import Any, Optional
 
 from ..constants import ERR_SCOPE_NOT_FOUND
@@ -14,6 +16,7 @@ from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.data_type_repository import DataTypeRepository
 from ..repositories.node_type_repository import NodeTypeRepository
+from .datatype_plugins import get_datatype_doc
 from .schema_service import SchemaService
 
 
@@ -53,6 +56,10 @@ class CatalogService:
               None group last)
             - domains: {domain_name: [{value, label}]} for every domain
               referenced by the scope's attribute definitions
+            - datatypes: {datatype_name: doc} for every datatype used by the
+              scope that has a DATATYPE_DOCS entry (e.g. the conditional
+              grammar); always present — {} when the scope uses no
+              documented datatype
             - example: embedded JSON example for the scope, or None
 
         Raises:
@@ -112,6 +119,7 @@ class CatalogService:
             "root_node_type": root.name,
             "node_types": catalog_types,
             "domains": self._build_domains(attr_rows),
+            "datatypes": self._build_datatype_docs(attr_rows),
             "example": self.schema_service.generate_json_example_for_root(root),
         }
 
@@ -185,3 +193,19 @@ class CatalogService:
                 {"value": item["value"], "label": item["label"]}
             )
         return domains
+
+    def _build_datatype_docs(self, attr_rows: list[dict]) -> dict:
+        """Collect the registered grammar docs for datatypes used by the scope.
+
+        Returns {datatype_name: doc} for every data_type present in attr_rows
+        that has a DATATYPE_DOCS entry, ordered by name for deterministic
+        output. Undocumented datatypes (plain scalars) are skipped. The
+        section is always emitted — {} when the scope uses no documented
+        datatype — so consumers can rely on the key existing.
+        """
+        docs: dict[str, dict] = {}
+        for name in sorted({row["data_type__name"] for row in attr_rows}):
+            doc = get_datatype_doc(name)
+            if doc is not None:
+                docs[name] = deepcopy(doc)
+        return docs

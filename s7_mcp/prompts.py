@@ -14,8 +14,11 @@ variant, `props_node_type` tells which child node type carries \
 variant-specific properties, `keys` lists the allowed variant values), \
 `compositions` grouped by `collection_key` (with per-child min/max \
 cardinalities), the `domains` dictionary of allowed value/label pairs, and a \
-generated `example`. Also read `s7://datatypes` for the data-type catalog and \
-`s7://examples/{scope}` for few-shot references \
+generated `example`. A `datatypes` block documents the value grammar \
+(shape, allowed operators, example) of each non-trivial data type used in \
+the scope — `conditional`, for instance, documents its `{logic, \
+conditions}` structure there. Also read `s7://datatypes` for the data-type \
+catalog and `s7://examples/{scope}` for few-shot references \
 (`s7://schemas/{node_type}/{key}/{version}` serves published schemas to \
 project credentials only — user MCP tokens get 401 there).
 

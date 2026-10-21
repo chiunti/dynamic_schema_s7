@@ -1,8 +1,70 @@
+from typing import Any, Optional
+
 from django.utils.module_loading import import_string
+
+from .conditional_validator import (
+    ALLOWED_LOGIC_OPERATORS,
+    ALLOWED_OPERAND_KINDS,
+    ALLOWED_OPERATORS,
+)
 
 DATATYPE_VALIDATORS = {
     'conditional': 'schemas.services.conditional_validator.validate_conditional_value',
 }
+
+# Declarative per-datatype documentation surfaced by the resolved catalog
+# (CatalogService.get_resolved_catalog -> "datatypes" section). Parallel to
+# DATATYPE_VALIDATORS: register an entry here for datatypes whose JSON value
+# grammar is not self-evident; plain scalars (string, number, bool, ...) are
+# intentionally undocumented.
+#
+# Entry keys:
+#   - description: what the value expresses and where it is used.
+#   - shape: structural skeleton of the JSON value. List values are item
+#     templates ("list of objects like this"); leaf strings are placeholders
+#     that reference the enum keys below ('one of operators', ...) or spell
+#     out the operand rule — never duplicate the allowed tokens literally so
+#     the docs cannot drift from the validator.
+#   - operators / logic_operators / operand_kinds: valid token sets, derived
+#     from the validator module at import time.
+#   - example: a concrete value that must pass the datatype's validator.
+DATATYPE_DOCS: dict[str, dict[str, Any]] = {
+    'conditional': {
+        'description': (
+            'Boolean expression evaluated over field values, used by '
+            'conditional properties such as show_if / enabled_if. The value '
+            'is either a JSON boolean or an object with "logic" and a '
+            'non-empty "conditions" list.'
+        ),
+        'shape': {
+            'logic': 'one of logic_operators',
+            'conditions': [
+                {
+                    'left': 'operand — exactly one of {"field": "<field name>"} | {"value": <JSON literal>}',
+                    'op': 'one of operators',
+                    'right': 'operand — exactly one of {"field": "<field name>"} | {"value": <JSON literal>}',
+                },
+            ],
+        },
+        'operators': sorted(ALLOWED_OPERATORS),
+        'logic_operators': sorted(ALLOWED_LOGIC_OPERATORS),
+        'operand_kinds': sorted(ALLOWED_OPERAND_KINDS),
+        'example': {
+            'logic': 'and',
+            'conditions': [
+                {'left': {'field': 'age'}, 'op': '>=', 'right': {'value': 18}},
+            ],
+        },
+    },
+}
+
+
+def get_datatype_doc(name: str) -> Optional[dict[str, Any]]:
+    """
+    Returns the registered documentation for a datatype name, or None when
+    the datatype carries no documented grammar (e.g. plain scalars).
+    """
+    return DATATYPE_DOCS.get(name)
 
 
 def validate_datatype_value(data_type, value):

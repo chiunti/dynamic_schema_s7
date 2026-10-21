@@ -98,7 +98,7 @@ of `mcpServers`.
 
 | Tool | Endpoint | Purpose |
 |---|---|---|
-| `s7_get_catalog(scope)` | `GET catalog/<scope>/` | Resolved authoring catalog: node types, attributes, variants, compositions, domains, generated example. |
+| `s7_get_catalog(scope)` | `GET catalog/<scope>/` | Resolved authoring catalog: node types, attributes, variants, compositions, domains, grammar docs for non-trivial datatypes, generated example. |
 | `s7_get_schema(node_type, key, version)` | `GET schema/<node_type>/<key>/<version>/` | Published schema `{"data", "meta"}` — few-shot reference and post-publish verification. **Project credential only**: the published-read endpoint is still B2B — a user MCP token gets 401 here. |
 | `s7_get_draft(node_type, key, version)` | `GET schema/draft/<node_type>/<key>/<version>/` | Draft schema `{"data", "meta"}` with `meta.status: "draft"` — verify an import round-trips right after `s7_import_draft`, without waiting for a human to publish. **Dual auth**: project credentials work as-is; a user MCP token needs `S7_PROJECT_ID` (sent as `?project_id=`). |
 | `s7_list_datatypes()` | `GET catalog/datatypes/` | Universal DataType catalog. |

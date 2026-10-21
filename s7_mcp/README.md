@@ -23,7 +23,7 @@ The server is configured exclusively through environment variables:
 |---|---|---|---|
 | `S7_BASE_URL` | yes | — | Backend base URL, e.g. `http://localhost:8000`. API paths resolve under `{S7_BASE_URL}/api/`. |
 | `S7_TOKEN` | yes | — | Bearer token of a `UserMCPToken` — a per-user MCP credential (see below). |
-| `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the draft-schema read. Set it when `S7_TOKEN` is a user MCP token — the backend requires `project_id` on those endpoints for user principals. |
+| `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the schema reads (draft and published). Set it when `S7_TOKEN` is a user MCP token — the backend requires `project_id` on those endpoints for user principals. |
 | `S7_MAX_PAYLOAD_KB` | no | `512` | Outgoing JSON body limit for validate/import (KB). |
 | `S7_TIMEOUT_S` | no | `30` | HTTP timeout in seconds. |
 
@@ -45,8 +45,8 @@ a human action in the admin.
 Because a user token is not bound to a project, set `S7_PROJECT_ID` to the
 target project UUID: the client injects it as `project_id` on
 `schema/validate/` and `schema/import/` and sends it as the `project_id`
-query parameter on `schema/draft/` reads — all required by the backend for
-user principals (without it they answer
+query parameter on `schema/` reads (draft and published) — all required by
+the backend for user principals (without it they answer
 `400 {"error": "project_id is required"}`; a project the user cannot access
 gets `403`). The value is validated as a UUID
 at startup — a malformed one exits with a stderr diagnostic. For project
@@ -99,7 +99,7 @@ of `mcpServers`.
 | Tool | Endpoint | Purpose |
 |---|---|---|
 | `s7_get_catalog(scope)` | `GET catalog/<scope>/` | Resolved authoring catalog: node types, attributes, variants, compositions, domains, grammar docs for non-trivial datatypes, generated example. |
-| `s7_get_schema(node_type, key, version)` | `GET schema/<node_type>/<key>/<version>/` | Published schema `{"data", "meta"}` — few-shot reference and post-publish verification. **Project credential only**: the published-read endpoint is still B2B — a user MCP token gets 401 here. |
+| `s7_get_schema(node_type, key, version)` | `GET schema/<node_type>/<key>/<version>/` | Published schema `{"data", "meta"}` — few-shot reference and post-publish verification. **Dual auth**: project credentials work as-is; a user MCP token needs `S7_PROJECT_ID` (sent as `?project_id=`). |
 | `s7_get_draft(node_type, key, version)` | `GET schema/draft/<node_type>/<key>/<version>/` | Draft schema `{"data", "meta"}` with `meta.status: "draft"` — verify an import round-trips right after `s7_import_draft`, without waiting for a human to publish. **Dual auth**: project credentials work as-is; a user MCP token needs `S7_PROJECT_ID` (sent as `?project_id=`). |
 | `s7_list_datatypes()` | `GET catalog/datatypes/` | Universal DataType catalog. |
 | `s7_validate_schema(node_type, schema, schema_key?, schema_version?)` | `POST schema/validate/` | Dry-run the import pipeline → `{valid, errors, warnings}`. |
@@ -115,16 +115,15 @@ of `mcpServers`.
 | `s7://catalog/{scope}` | Resolved catalog JSON. |
 | `s7://datatypes` | DataType catalog JSON. |
 | `s7://examples/{scope}` | Generated example JSON for the scope. |
-| `s7://schemas/{node_type}/{key}/{version}` | Published schema JSON (few-shot). Project credential only — see `s7_get_schema`. |
+| `s7://schemas/{node_type}/{key}/{version}` | Published schema JSON (few-shot). Dual auth — user tokens need `S7_PROJECT_ID`; see `s7_get_schema`. |
 
 ### Prompts
 
 - `create_tramite_form` — guided workflow: read the catalog → draft the root
   JSON (`key`, `version`, `"status": "draft"`) → validate until `valid: true` →
-  import draft → verify the draft via `s7_get_draft` (works with user tokens
-  when `S7_PROJECT_ID` is set) → `s7_get_schema` after a human publishes
-  (the published read still needs a project credential — user tokens cannot
-  read published schemas yet).
+  import draft → verify the draft via `s7_get_draft` → `s7_get_schema` after
+  a human publishes (both reads work with user tokens when `S7_PROJECT_ID`
+  is set).
 - `author_catalog` — guided workflow for grammar authoring (level 2): read
   `s7://datatypes` → build a fixture-format `objects` payload with
   natural-key FKs → `s7_import_catalog` → verify via `s7_get_catalog` on the

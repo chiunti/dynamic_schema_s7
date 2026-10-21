@@ -17,7 +17,38 @@ class SchemaReadService:
         self.permission_service = PermissionService()
 
     def get_published(self, node_type: str, key: str, version: str,
-                      project_id: uuid.UUID) -> Optional[dict[str, Any] | str]:
+                      project_id: uuid.UUID, user=None) -> Optional[dict[str, Any] | str]:
+        """Return the cached JSON of a published schema.
+
+        Serves the pre-built ``SchemaCache`` entry for ``key``/``version``
+        scoped to ``project_id``, joined against the published view so
+        non-published schemas and node-type mismatches resolve to
+        ``None`` — the same RFC-7807 404 envelope as an absent schema.
+
+        Args:
+            node_type: NodeType name of the schema.
+            key: Schema key.
+            version: Schema version.
+            project_id: Owning project that scopes the lookup.
+            user: Optional end user (user MCP token principal). When
+                provided, project access is checked before the cache
+                lookup so out-of-scope projects fail deterministically.
+
+        Returns:
+            The cached published JSON (dict or JSON string), or ``None``
+            when the schema does not exist, is not published, or its
+            node type does not match.
+
+        Raises:
+            PermissionError: ``user`` has no access to ``project_id``.
+            ValueError: ``project_id`` is missing.
+        """
+        if not project_id:
+            raise ValueError(ERR_PROJECT_ID_REQUIRED)
+
+        if user is not None and not self.permission_service.can_access_project(user, project_id):
+            raise PermissionError(ERR_NO_ACCESS_TO_PROJECT)
+
         return self.repository.get_published_schema(node_type, key, version, project_id)
 
     def get_draft(self, node_type_value: str, key: str, version: str,

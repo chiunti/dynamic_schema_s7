@@ -22,7 +22,8 @@ the scope — `conditional`, for instance, documents its `{logic, \
 conditions}` structure there. Also read `s7://datatypes` for the data-type \
 catalog and `s7://examples/{scope}` for few-shot references \
 (`s7://schemas/{node_type}/{key}/{version}` serves published schemas to \
-project credentials only — user MCP tokens get 401 there).
+both credential types — user MCP tokens need `S7_PROJECT_ID` set, sent as \
+`?project_id=`).
 
 2. DRAFT — write the root JSON object for the schema. It MUST include `key`, \
 `version` and `"status": "draft"`. Respect the catalog strictly: use only \
@@ -42,9 +43,8 @@ for credential-based imports.
 `node_type`, `key` and `version` to confirm the persisted draft round-trips \
 as authored (user tokens need `S7_PROJECT_ID` set for this read). Then, \
 after a human publishes the draft in the admin, `s7_get_schema` confirms the \
-published JSON — note it requires a project credential: a user MCP token is \
-rejected there (401), so that final step only works when `S7_TOKEN` is a \
-B2B credential.
+published JSON — same dual auth: project credentials work as-is and a user \
+MCP token works when `S7_PROJECT_ID` is set (sent as `?project_id=`).
 
 Note: publishing, approving and applying schemas are human actions performed \
 in the admin — there is intentionally no publish/approve/apply tool.\

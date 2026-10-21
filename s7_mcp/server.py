@@ -92,8 +92,18 @@ def s7_get_schema(node_type: str, key: str, version: str) -> dict:
     Use it for few-shot reference and to verify an import round-trips after a
     human publishes the draft. On 404 the endpoint returns an RFC-7807 body
     ``{"type": "schema_not_found", "title", "detail", "status": 404}``.
+
+    Dual auth: project credentials work as-is; a user MCP token is not bound
+    to a project, so the backend requires ``?project_id=<uuid>`` — set
+    ``S7_PROJECT_ID`` and the client sends it automatically (missing answers
+    ``400 {"error": "project_id is required"}``, an inaccessible project or
+    scope mismatch 403).
     """
-    return _get_client().get_json(f"schema/{_q(node_type)}/{_q(key)}/{_q(version)}/")
+    client = _get_client()
+    return client.get_json(
+        f"schema/{_q(node_type)}/{_q(key)}/{_q(version)}/",
+        params={"project_id": client.project_id},
+    )
 
 
 @mcp.tool()
@@ -204,8 +214,16 @@ def example_resource(scope: str) -> Any:
 
 @mcp.resource("s7://schemas/{node_type}/{key}/{version}", mime_type="application/json")
 def schema_resource(node_type: str, key: str, version: str) -> Any:
-    """Published schema JSON of the project (few-shot reference)."""
-    body = _get_client().get_json(f"schema/{_q(node_type)}/{_q(key)}/{_q(version)}/")
+    """Published schema JSON of the project (few-shot reference).
+
+    Same endpoint as ``s7_get_schema`` — dual auth: a user MCP token needs
+    ``S7_PROJECT_ID`` set (sent as ``?project_id=``).
+    """
+    client = _get_client()
+    body = client.get_json(
+        f"schema/{_q(node_type)}/{_q(key)}/{_q(version)}/",
+        params={"project_id": client.project_id},
+    )
     return body.get("data", body)
 
 

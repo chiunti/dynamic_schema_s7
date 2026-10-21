@@ -34,35 +34,73 @@ logger = logging.getLogger(__name__)
 
 
 class SchemaView(APIView):
-    """Serve published schema JSON only to the owning project's credential."""
+    """Serve the published schema JSON to credentials or user MCP tokens.
 
-    authentication_classes = [ProjectTokenAuthentication]
-    permission_classes = [CanReadSchema]
+    Counterpart of ``SchemaDraftView`` for the ``published`` lifecycle
+    status: while the draft endpoint rebuilds the persisted node JSON on
+    every call, this endpoint serves the pre-built ``SchemaCache`` entry
+    maintained by the publish flow. ``project_id`` is a security scope,
+    not a cosmetic filter — project credentials are bound to their own
+    project, and user MCP tokens must declare it explicitly via the
+    ``project_id`` query param so the service can verify project access
+    before the lookup. A schema missing, not published, or under a
+    different node type resolves to the same RFC-7807 404 envelope.
+    """
+
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema | UserMCPTokenPermission]
 
     def get(self, request, node_type, key, version):
+        if isinstance(request.user, ProjectPrincipal):
+            project_id = request.user.project_id
+            requested_project_id = request.query_params.get('project_id')
+            if requested_project_id:
+                try:
+                    requested_uuid = parse_uuid(requested_project_id, "project_id")
+                except ValueError as exc:
+                    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                if requested_uuid != project_id:
+                    return Response({'error': 'Project credential does not match request'},
+                                    status=status.HTTP_403_FORBIDDEN)
+            user = None
+        else:
+            # User MCP tokens delegate to the real user: project_id is
+            # required so the service can check access on the target project.
+            requested_project_id = request.query_params.get('project_id')
+            if not requested_project_id:
+                return Response({'error': ERR_PROJECT_ID_REQUIRED},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                project_id = parse_uuid(requested_project_id, "project_id")
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            user = request.user
         try:
             schema_json = SchemaReadService().get_published(
-                node_type, key, version, request.user.project_id
+                node_type, key, version, project_id, user=user
             )
-            if not schema_json:
-                return Response({
-                    "type": "schema_not_found",
-                    "title": "Schema Not Found",
-                    "detail": "Schema not found, not published, or node type mismatch",
-                    "status": 404,
-                }, status=status.HTTP_404_NOT_FOUND)
-
-            # Convert JSONB string to Python dict to avoid double serialization
-            schema_dict = json.loads(schema_json) if isinstance(schema_json, str) else schema_json
-            return Response({
-                "data": schema_dict,
-                "meta": {"node_type": node_type, "key": key, "version": version},
-            })
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception:
             logger.exception("Schema retrieval failed")
             return Response({"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        if not schema_json:
+            return Response({
+                "type": "schema_not_found",
+                "title": "Schema Not Found",
+                "detail": "Schema not found, not published, or node type mismatch",
+                "status": 404,
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Convert JSONB string to Python dict to avoid double serialization
+        schema_dict = json.loads(schema_json) if isinstance(schema_json, str) else schema_json
+        return Response({
+            "data": schema_dict,
+            "meta": {"node_type": node_type, "key": key, "version": version},
+        })
 
 
 class SchemaDraftView(APIView):

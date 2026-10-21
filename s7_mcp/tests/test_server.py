@@ -23,6 +23,10 @@ if _DEPS:
     import s7_mcp.server as server
     from s7_mcp.prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
 
+# Pure-Python data module — importable without mcp/httpx, so the grammar
+# tests below run even when the optional dependencies are not installed.
+from s7_mcp.catalog_grammar import CATALOG_GRAMMAR
+
 EXPECTED_TOOLS = {
     "s7_get_catalog",
     "s7_get_schema",
@@ -436,6 +440,142 @@ class ResourceTests(unittest.TestCase):
         self.client.get_json.return_value = envelope
         self.assertIs(server.schema_resource("nt", "k", "v"), envelope)
 
+    def test_catalog_grammar_resource_returns_static_document(self):
+        """The resource serves the versioned module verbatim — the static
+        document has no REST endpoint, so the client is never touched."""
+        self.assertIs(server.catalog_grammar_resource(), CATALOG_GRAMMAR)
+        self.client.get_json.assert_not_called()
+
+    def test_catalog_grammar_resource_takes_no_arguments(self):
+        self.assertEqual(
+            list(
+                inspect.signature(server.catalog_grammar_resource).parameters
+            ),
+            [],
+        )
+
+
+class CatalogGrammarDataTests(unittest.TestCase):
+    """``CATALOG_GRAMMAR`` content checks.
+
+    No ``_DEPS`` guard: ``s7_mcp.catalog_grammar`` is pure Python and
+    importable without the optional mcp/httpx dependencies.
+    """
+
+    EXPECTED_MODELS = {
+        "schemas.domain",
+        "schemas.domainitem",
+        "schemas.nodetype",
+        "schemas.nodetypecomposition",
+        "schemas.nodetypevariant",
+        "schemas.attributedef",
+    }
+
+    EXPECTED_FKS = {
+        "schemas.domain": set(),
+        "schemas.domainitem": {"domain"},
+        "schemas.nodetype": set(),
+        "schemas.nodetypecomposition": {"parent_type", "child_type"},
+        "schemas.nodetypevariant": {"node_type", "props_node_type"},
+        "schemas.attributedef": {"node_type", "data_type", "domain"},
+    }
+
+    def test_exactly_the_six_authorizable_models(self):
+        self.assertEqual(set(CATALOG_GRAMMAR["models"]), self.EXPECTED_MODELS)
+        # schemas.datatype is referenced by attributedef.data_type but is
+        # not authorizable through the payload, so it is not listed.
+        self.assertNotIn("schemas.datatype", CATALOG_GRAMMAR["models"])
+
+    def test_each_model_carries_natural_key_fields_fks(self):
+        for label, model in CATALOG_GRAMMAR["models"].items():
+            with self.subTest(model=label):
+                self.assertIsInstance(model["natural_key"], list)
+                self.assertTrue(model["natural_key"])
+                self.assertIsInstance(model["fields"], dict)
+                self.assertIsInstance(model["fks"], dict)
+
+    def test_fk_fields_live_in_fks_not_fields(self):
+        """Foreign-key field names are documented under ``fks`` only —
+        a scalar slot in ``fields`` would mislead the fixture shape."""
+        for label, model in CATALOG_GRAMMAR["models"].items():
+            with self.subTest(model=label):
+                self.assertEqual(set(model["fks"]), self.EXPECTED_FKS[label])
+                self.assertFalse(set(model["fields"]) & set(model["fks"]))
+
+    def test_scalar_field_entries_shape(self):
+        for label, model in CATALOG_GRAMMAR["models"].items():
+            for name, field in model["fields"].items():
+                with self.subTest(model=label, field=name):
+                    self.assertIn(
+                        field["type"], ("string", "integer", "boolean")
+                    )
+                    self.assertIsInstance(field["required"], bool)
+                    self.assertIsInstance(field["nullable"], bool)
+
+    def test_fk_entries_shape(self):
+        for label, model in CATALOG_GRAMMAR["models"].items():
+            for name, fk in model["fks"].items():
+                with self.subTest(model=label, field=name):
+                    self.assertTrue(fk["model"].startswith("schemas."))
+                    self.assertIsInstance(fk["natural_key"], list)
+                    self.assertEqual(fk["shape"], "[natural_key]")
+                    self.assertIsInstance(fk["required"], bool)
+                    self.assertIsInstance(fk["nullable"], bool)
+
+    def test_real_fixture_field_names_spot_checks(self):
+        """Field names must be the real model fields — the whole point of
+        the resource is ending discovery-by-rejection."""
+        attributedef = CATALOG_GRAMMAR["models"]["schemas.attributedef"]
+        self.assertIn("is_required", attributedef["fields"])
+        self.assertIn("is_common", attributedef["fields"])
+        self.assertIn("json_key", attributedef["fields"])
+        self.assertIn("variant_key", attributedef["fields"])
+        self.assertIn("data_type", attributedef["fks"])
+        self.assertEqual(
+            attributedef["natural_key"],
+            ["node_type", "json_key", "variant_key"],
+        )
+
+        composition = CATALOG_GRAMMAR["models"]["schemas.nodetypecomposition"]
+        self.assertIn("collection_key", composition["fields"])
+        self.assertIn("parent_type", composition["fks"])
+        self.assertIn("child_type", composition["fks"])
+        self.assertEqual(
+            composition["natural_key"],
+            ["parent_type", "child_type", "collection_key"],
+        )
+
+        variant = CATALOG_GRAMMAR["models"]["schemas.nodetypevariant"]
+        self.assertIn("discriminator_attr", variant["fields"])
+        self.assertIn("props_node_type", variant["fks"])
+        self.assertEqual(
+            variant["natural_key"],
+            ["node_type", "variant_key", "discriminator_attr"],
+        )
+
+        domainitem = CATALOG_GRAMMAR["models"]["schemas.domainitem"]
+        self.assertEqual(domainitem["natural_key"], ["domain", "value"])
+        self.assertIn("domain", domainitem["fks"])
+
+        nodetype = CATALOG_GRAMMAR["models"]["schemas.nodetype"]
+        for name in (
+            "name", "label", "is_container", "is_root", "json_scope",
+            "default_json_key", "is_json_map", "json_scalar_attribute",
+        ):
+            self.assertIn(name, nodetype["fields"])
+
+    def test_payload_envelope_semantics_documented(self):
+        self.assertTrue(CATALOG_GRAMMAR["format"].strip())
+        for key in ("objects", "pk", "fields", "semantics"):
+            self.assertIn(key, CATALOG_GRAMMAR["payload"])
+
+    def test_document_is_json_serializable(self):
+        """Served with ``mime_type="application/json"`` — the dict must
+        round-trip through ``json.dumps`` unchanged."""
+        self.assertEqual(
+            json.loads(json.dumps(CATALOG_GRAMMAR)), CATALOG_GRAMMAR
+        )
+
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class PromptTests(unittest.TestCase):
@@ -629,6 +769,7 @@ class ShimBranchTests(unittest.TestCase):
                     "s7://datatypes",
                     "s7://examples/{scope}",
                     "s7://schemas/{node_type}/{key}/{version}",
+                    "s7://catalog-grammar",
                 },
             )
             self.assertEqual(

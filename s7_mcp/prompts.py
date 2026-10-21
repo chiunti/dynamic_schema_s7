@@ -57,17 +57,25 @@ You are authoring grammar for the dynamic-schema dialect — new node types \
 domains — via the `s7_import_catalog` tool, which requires a user MCP token \
 at level 2 plus per-model catalog permissions. Follow these steps:
 
-1. DISCOVER — read `s7://datatypes` for the data-type catalog (attribute \
-definitions reference existing data types only — the payload cannot create \
-new ones) and `s7://catalog/{scope}` of a related existing scope for \
-reference shapes.
+1. DISCOVER — read `s7://catalog-grammar` for the per-model field \
+reference of the fixture payload: the real writable field names, each \
+model's natural key and the `[natural_key]` list shape foreign keys \
+take inside `fields`. Consult it before building objects — it is the \
+authoritative field table, so field names never have to be discovered \
+by rejection. Also read `s7://datatypes` for the data-type catalog \
+(attribute definitions reference existing data types only — the \
+payload cannot create new ones) and `s7://catalog/{scope}` of a \
+related existing scope for reference shapes.
 
 2. BUILD — assemble the `objects` list in fixture format: each element is \
 `{"model": "schemas.<label>", "pk": <optional uuid>, "fields": {...}}` with \
 labels from `domain`, `domainitem`, `nodetype`, `nodetypecomposition`, \
-`nodetypevariant`, `attributedef`. Foreign keys inside `fields` use the \
-same natural-key form as fixture files; omit `pk` to let the backend \
-derive it. A new root node type needs `is_root` and a unique `json_scope`.
+`nodetypevariant`, `attributedef`. Follow `s7://catalog-grammar` for the \
+exact field set of each model: `fields` carries writable fields only \
+(`id` belongs at top-level `pk`, never inside `fields`). Foreign keys \
+inside `fields` use the same natural-key form as fixture files; omit \
+`pk` to let the backend derive it. A new root node type needs `is_root` \
+and a unique `json_scope`.
 
 3. APPLY — call `s7_import_catalog` once with the full list: the apply is \
 atomic, natural-key matches update existing rows, non-matches create new \

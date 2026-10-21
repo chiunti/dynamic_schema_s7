@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
 
 from . import __version__
+from .catalog_grammar import CATALOG_GRAMMAR
 from .client import S7Client
 from .config import S7Config, get_config
 from .prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
@@ -225,6 +226,17 @@ def schema_resource(node_type: str, key: str, version: str) -> Any:
         params={"project_id": client.project_id},
     )
     return body.get("data", body)
+
+
+@mcp.resource("s7://catalog-grammar", mime_type="application/json")
+def catalog_grammar_resource() -> dict:
+    """Per-model field reference for the s7_import_catalog fixture payload.
+
+    Static document shipped with the package — catalog-grammar metadata has
+    no REST endpoint; it is versioned here and kept honest by a backend-side
+    drift test.
+    """
+    return CATALOG_GRAMMAR
 
 
 # ---------------------------------------------------------------------------

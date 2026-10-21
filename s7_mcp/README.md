@@ -116,6 +116,7 @@ of `mcpServers`.
 | `s7://datatypes` | DataType catalog JSON. |
 | `s7://examples/{scope}` | Generated example JSON for the scope. |
 | `s7://schemas/{node_type}/{key}/{version}` | Published schema JSON (few-shot). Dual auth — user tokens need `S7_PROJECT_ID`; see `s7_get_schema`. |
+| `s7://catalog-grammar` | Field reference for the six level-2-authorizable catalog models: writable fields, natural keys, FK `[natural_key]` shapes and payload semantics (static, shipped with the package). |
 
 ### Prompts
 
@@ -125,9 +126,9 @@ of `mcpServers`.
   a human publishes (both reads work with user tokens when `S7_PROJECT_ID`
   is set).
 - `author_catalog` — guided workflow for grammar authoring (level 2): read
-  `s7://datatypes` → build a fixture-format `objects` payload with
-  natural-key FKs → `s7_import_catalog` → verify via `s7_get_catalog` on the
-  new scope.
+  `s7://catalog-grammar` (the per-model field table) plus `s7://datatypes` →
+  build a fixture-format `objects` payload with natural-key FKs →
+  `s7_import_catalog` → verify via `s7_get_catalog` on the new scope.
 
 ## Troubleshooting
 

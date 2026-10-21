@@ -1,11 +1,12 @@
 import logging
 import uuid
-from typing import Optional
+from copy import deepcopy
+from typing import Any, Optional
 
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
 
-from ..models import Node, NodeType
+from ..models import AttributeDef, Domain, Node, NodeType, NodeTypeComposition, NodeTypeVariant
 from ..repositories.schema_repository import SchemaRepository
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
@@ -14,7 +15,12 @@ from ..repositories.node_type_repository import NodeTypeRepository
 from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
-from .datatype_plugins import validate_datatype_value, get_storage_defaults
+from .datatype_plugins import (
+    get_datatype_doc,
+    get_storage_defaults,
+    get_storage_type,
+    validate_datatype_value,
+)
 from .exceptions import SchemaValidationError
 from .schema_validation_service import SchemaValidationService
 from ..constants import (
@@ -58,6 +64,46 @@ from ..constants import (
 )
 
 
+_EXAMPLE_MAX_DEPTH = 8
+"""Hard depth bound for the generated JSON example recursion.
+
+The ancestor guard in _generate_node_example already cuts composition
+cycles; this bound additionally caps pathological deep chains so the
+few-shot payload stays small.
+"""
+
+_EXAMPLE_NODE_FIELD_KEYS = frozenset({"id", "key", "version"})
+"""Attribute json_keys the example never emits: they map to Node columns."""
+
+_EXAMPLE_STRING_DATATYPES = frozenset({"string", "natural_key", "internal"})
+"""Datatype names whose example value is ``f"example_{json_key}"``."""
+
+_EXAMPLE_STATIC_VALUES: dict = {
+    "int": 1,
+    "number": 1.0,
+    "float": 1.0,
+    "bool": True,
+    "list_string": ["option_1", "option_2"],
+    "list_int": [1, 2],
+    "int_tuple": [1, 2],
+    "list_dict": [{}],
+    "json": {},
+    "dict": {},
+    "domain_list": [],
+    "options_field": [{"label": "Option 1", "value": "option_1"}],
+    "date": "2026-01-01",
+    "url": "https://example.com/",
+    "color": "#000000",
+    "uuid": "00000000-0000-0000-0000-000000000000",
+    "auto_uuid": "00000000-0000-0000-0000-000000000000",
+    "natural_uuid": "00000000-0000-0000-0000-000000000000",
+    "natural_version": "1",
+    "natural_order": 1,
+    "display_order": 1,
+}
+"""Static example values by DataType name for undocumented datatypes."""
+
+
 class SchemaService:
     """Service for schema-related business logic"""
     
@@ -83,8 +129,9 @@ class SchemaService:
     def generate_json_example(self, schema_type: str) -> Optional[dict]:
         """Generate a JSON example for a root schema type (by json_scope).
 
-        The example contains the root key with its required attributes and
-        empty placeholders for composition collections.
+        The example contains the root key wrapping a recursively built
+        example object: declared attributes plus one representative child
+        per composition, bounded by cycle and depth guards.
 
         Returns:
             Example dict, or None if the schema type does not resolve to a
@@ -112,48 +159,365 @@ class SchemaService:
         return self._generate_json_example(node_type)
 
     def _generate_json_example(self, node_type: NodeType) -> dict:
-        """Generate JSON example from NodeType definitions (only root level with required fields)"""
-        example = {}
+        """Generate a JSON example for a root NodeType.
 
-        # Start with the root key (node_type name or json_scope without _root suffix)
+        Emits ``{root_key: example_object}`` where ``root_key`` is the
+        json_scope without its ``_root`` suffix (or the node type name) and
+        the object is built by ``_generate_node_example``: declared required
+        attributes, a bounded set of illustrative optional attributes, one
+        representative child per ``collection_key`` (a singleton object when
+        ``max_children == 1``, a one-item list otherwise) and each
+        structural child under its declared ``default_json_key``. Recursion
+        is bounded by an ancestor guard and ``_EXAMPLE_MAX_DEPTH``.
+
+        Returns:
+            Example dict keyed by the root JSON key.
+        """
         root_key = node_type.json_scope.replace('_root', '') if node_type.json_scope else node_type.name
-        example[root_key] = {}
+        return {root_key: self._generate_node_example(node_type)}
 
-        # Add only required attributes for this node type
-        attr_defs = self.attribute_def_repository.get_attribute_defs_by_node_type_required(node_type, variant_key=None)
-        for attr_def in attr_defs:
-            if attr_def.json_key in ['id', 'key', 'version']:
-                continue  # Skip auto-generated fields
-            example[root_key][attr_def.json_key] = self._get_example_value(attr_def)
+    def _generate_node_example(
+        self,
+        node_type: NodeType,
+        active_variant: Optional[str] = None,
+        ancestors: frozenset = frozenset(),
+    ) -> dict:
+        """Build the example attribute-object of a node type, recursively.
 
-        # Add empty array placeholders for collections (only structure, no content)
-        compositions = self.composition_repository.get_compositions_by_node_type(node_type)
-        for composition in compositions:
-            if composition.collection_key:
-                example[root_key][composition.collection_key] = []
+        The caller wraps the returned dict under the structural key of the
+        slot the node occupies (``collection_key`` for collection members,
+        ``default_json_key``/name for structural children).
 
+        Args:
+            node_type: NodeType whose example object is generated.
+            active_variant: Variant inherited from the parent node; only
+                meaningful for props node types (a NodeTypeVariant with
+                ``discriminator_attr`` NULL). Other node types resolve
+                their own variant from the declared discriminator.
+            ancestors: Ids of the node types above this one on the current
+                path. A node type already present emits its attributes but
+                does not expand compositions — the cycle guard.
+
+        Returns:
+            Dict of json_key -> example value / nested example objects.
+        """
+        compositions = list(
+            self.composition_repository.get_compositions_by_node_type(node_type)
+        )
+        expandable = (
+            node_type.id not in ancestors and len(ancestors) < _EXAMPLE_MAX_DEPTH
+        )
+
+        if getattr(node_type, 'is_json_map', False):
+            # A map node's attribute object IS the keyed map: emit a single
+            # example entry (or {} when there is nothing safe to show).
+            if not expandable:
+                return {}
+            return self._generate_map_entry_example(
+                node_type, compositions, ancestors
+            )
+
+        attr_defs = list(
+            self.attribute_def_repository.get_attribute_defs_by_node_type(
+                node_type
+            ).select_related('data_type', 'domain')
+        )
+        ntv = self.node_type_repository.get_node_type_variant_by_node_type(
+            node_type
+        )
+        node_variant = self._resolve_example_variant(
+            node_type, ntv, active_variant, attr_defs
+        )
+        example = self._build_example_attributes(attr_defs, node_variant, ntv)
+
+        if expandable:
+            child_ancestors = ancestors | {node_type.id}
+            collections: dict[str, list] = {}
+            structural: list = []
+            for composition in compositions:
+                if composition.collection_key:
+                    collections.setdefault(composition.collection_key, []).append(
+                        composition
+                    )
+                else:
+                    structural.append(composition)
+            # One representative child type per collection_key, chosen
+            # deterministically (first child_type name).
+            for collection_key in sorted(collections):
+                representative = min(
+                    collections[collection_key],
+                    key=lambda comp: comp.child_type.name,
+                )
+                item = self._generate_node_example(
+                    representative.child_type, ancestors=child_ancestors
+                )
+                example[collection_key] = (
+                    item if representative.max_children == 1 else [item]
+                )
+            # Structural children live under the child type's declared key.
+            for composition in sorted(
+                structural, key=lambda comp: comp.child_type.name
+            ):
+                child_type = composition.child_type
+                json_key = child_type.default_json_key or child_type.name
+                # Props node types inherit this node's variant.
+                child_variant = (
+                    node_variant
+                    if self.node_type_repository.is_props_node_type(child_type)
+                    else None
+                )
+                example[json_key] = self._generate_node_example(
+                    child_type,
+                    active_variant=child_variant,
+                    ancestors=child_ancestors,
+                )
         return example
 
-    def _get_example_value(self, attr_def):
-        """Generate example value based on DataType"""
-        data_type_name = attr_def.data_type.name if attr_def.data_type else 'string'
+    def _build_example_attributes(
+        self,
+        attr_defs: list,
+        active_variant: Optional[str],
+        ntv: Optional[NodeTypeVariant],
+    ) -> dict:
+        """Select and value the attributes emitted by an example node.
 
-        if data_type_name == 'string':
-            return f"example_{attr_def.json_key}"
-        elif data_type_name == 'int':
-            return 1
-        elif data_type_name == 'number':
-            return 1.0
-        elif data_type_name == 'bool':
-            return True
-        elif data_type_name == 'list_string':
-            return ["option1", "option2"]
-        elif data_type_name == 'json':
+        Applicable AttributeDefs are the ``variant_key`` NULL rows plus the
+        rows of the active variant; on json_key conflicts the
+        variant-scoped def wins (more specific).
+
+        Emission order: every applicable required def (sorted by json_key),
+        then all optional defs whose datatype documents an 'example' (e.g.
+        the conditional grammar), then the 'required' flag when declared,
+        then up to two more optional defs by json_key. When the node type
+        declares a variant discriminator and a variant was resolved, the
+        discriminator json_key is forced to that variant value.
+        """
+        applicable: dict[str, AttributeDef] = {}
+        for attr_def in attr_defs:
+            if (
+                attr_def.variant_key is not None
+                and attr_def.variant_key != active_variant
+            ):
+                continue
+            existing = applicable.get(attr_def.json_key)
+            if existing is None or (
+                existing.variant_key is None and attr_def.variant_key is not None
+            ):
+                applicable[attr_def.json_key] = attr_def
+
+        emittable = [
+            attr_def
+            for attr_def in applicable.values()
+            if self._is_emittable_example_attribute(attr_def)
+        ]
+        required = sorted(
+            (d for d in emittable if d.is_required), key=lambda d: d.json_key
+        )
+        optional = sorted(
+            (d for d in emittable if not d.is_required), key=lambda d: d.json_key
+        )
+
+        example = {}
+        for attr_def in required:
+            example[attr_def.json_key] = self._get_example_value(attr_def)
+        for attr_def in (d for d in optional if self._has_documented_example(d)):
+            example[attr_def.json_key] = self._get_example_value(attr_def)
+        required_flag = next(
+            (d for d in optional if d.json_key == 'required'), None
+        )
+        if required_flag is not None and required_flag.json_key not in example:
+            example[required_flag.json_key] = self._get_example_value(required_flag)
+        extra_slots = 2
+        for attr_def in optional:
+            if extra_slots <= 0:
+                break
+            if attr_def.json_key in example:
+                continue
+            example[attr_def.json_key] = self._get_example_value(attr_def)
+            extra_slots -= 1
+
+        # The discriminator must show the variant the example actually
+        # activates: required domain-bound defs already produce this value;
+        # the overwrite covers non-domain discriminators too.
+        if (
+            ntv is not None
+            and ntv.discriminator_attr
+            and active_variant is not None
+            and ntv.discriminator_attr in applicable
+        ):
+            example[ntv.discriminator_attr] = active_variant
+        return example
+
+    @staticmethod
+    def _is_emittable_example_attribute(attr_def: AttributeDef) -> bool:
+        """Whether an AttributeDef may appear in the generated example.
+
+        Excludes json_keys backed by Node columns ('id', 'key', 'version')
+        and the ``natural_*``/``display_order`` datatypes — they map to Node
+        columns and are exempt from the required-attribute check.
+        """
+        if attr_def.json_key in _EXAMPLE_NODE_FIELD_KEYS:
+            return False
+        data_type_name = attr_def.data_type.name if attr_def.data_type else ''
+        return (
+            not data_type_name.startswith('natural_')
+            and data_type_name != 'display_order'
+        )
+
+    @staticmethod
+    def _has_documented_example(attr_def: AttributeDef) -> bool:
+        """Whether the attr's datatype registers an 'example' in DATATYPE_DOCS."""
+        if not attr_def.data_type:
+            return False
+        doc = get_datatype_doc(attr_def.data_type.name)
+        return doc is not None and 'example' in doc
+
+    def _resolve_example_variant(
+        self,
+        node_type: NodeType,
+        ntv: Optional[NodeTypeVariant],
+        inherited_variant: Optional[str],
+        attr_defs: list,
+    ) -> Optional[str]:
+        """Resolve the variant an example node activates.
+
+        - No ``NodeTypeVariant`` row: the type has no variants -> None.
+        - ``discriminator_attr`` NULL: props/inherited-variant node type —
+          keeps the variant received from the parent.
+        - Otherwise the example self-discriminates on the first
+          ``DomainItem.value`` of the discriminator AttributeDef's domain,
+          falling back to the first declared ``variant_key``.
+        """
+        if ntv is None:
+            return None
+        if not ntv.discriminator_attr:
+            return inherited_variant
+        discriminator_def = next(
+            (
+                attr_def
+                for attr_def in attr_defs
+                if attr_def.json_key == ntv.discriminator_attr
+                and attr_def.domain_id
+            ),
+            None,
+        )
+        if discriminator_def is None:
+            discriminator_def = (
+                self.attribute_def_repository.get_attribute_def_with_domain(
+                    node_type, ntv.discriminator_attr
+                )
+            )
+        if discriminator_def is not None and discriminator_def.domain_id:
+            first_value = self._first_domain_item_value(discriminator_def.domain)
+            if first_value is not None:
+                return first_value
+        variant_keys = self.node_type_repository.get_variant_keys_by_node_type(
+            node_type
+        )
+        return variant_keys[0] if variant_keys else None
+
+    def _generate_map_entry_example(
+        self,
+        node_type: NodeType,
+        compositions: list[NodeTypeComposition],
+        ancestors: frozenset,
+    ) -> dict:
+        """Emit a single-entry example for an ``is_json_map`` node type.
+
+        Map keys are data, so the example uses the literal key
+        ``'example_key'``. The entry child type is the structural
+        (``collection_key`` NULL) candidate that is itself a map — the
+        nested-map dialect — or the first candidate by name. A scalar
+        candidate (``json_scalar_attribute``) emits a scalar entry so the
+        example stays inside what the keyed-map pipeline accepts.
+        """
+        candidates = sorted(
+            (comp.child_type for comp in compositions if comp.collection_key is None),
+            key=lambda child_type: child_type.name,
+        )
+        # Prefer candidates that can still expand — the map node type
+        # itself or an ancestor only emits the empty/attrs-only fallback.
+        viable = [
+            c
+            for c in candidates
+            if c.id not in ancestors and c.id != node_type.id
+        ] or candidates
+        chosen = next(
+            (child_type for child_type in viable if child_type.is_json_map),
+            viable[0] if viable else None,
+        )
+        if chosen is None:
             return {}
-        elif data_type_name == 'date':
-            return "2024-01-01"
-        else:
+        if chosen.json_scalar_attribute:
+            scalar_def = next(
+                (
+                    attr_def
+                    for attr_def in self.attribute_def_repository.get_attribute_defs_by_node_type(chosen)
+                    if attr_def.json_key == chosen.json_scalar_attribute
+                ),
+                None,
+            )
+            value = (
+                self._get_example_value(scalar_def)
+                if scalar_def is not None
+                else 'example_value'
+            )
+            return {'example_key': value}
+        return {
+            'example_key': self._generate_node_example(
+                chosen, ancestors=ancestors | {node_type.id}
+            )
+        }
+
+    def _first_domain_item_value(self, domain: Domain) -> Optional[str]:
+        """Return the first ``DomainItem.value`` of a domain, sorted by value."""
+        items = sorted(
+            self.attribute_def_repository.get_domain_items_by_domain(domain),
+            key=lambda item: item.value,
+        )
+        return items[0].value if items else None
+
+    def _get_example_value(self, attr_def: AttributeDef) -> Any:
+        """Generate an example value for an AttributeDef.
+
+        Precedence:
+          1. Domain-bound defs: the first ``DomainItem.value`` — domain
+             membership always wins so the example survives strict-key
+             validation (out-of-domain scalars are rejected there).
+          2. Datatypes with a ``DATATYPE_DOCS`` entry carrying an
+             'example' (e.g. the conditional grammar).
+          3. ``_EXAMPLE_STATIC_VALUES`` / ``_EXAMPLE_STRING_DATATYPES``.
+          4. The datatype's ``primary_storage_type`` fallback, last resort
+             ``f"example_{json_key}"``.
+        """
+        if attr_def.domain:
+            first_value = self._first_domain_item_value(attr_def.domain)
+            if first_value is not None:
+                return first_value
+
+        data_type = attr_def.data_type
+        data_type_name = data_type.name if data_type else 'string'
+
+        doc = get_datatype_doc(data_type_name)
+        if doc is not None and 'example' in doc:
+            return deepcopy(doc['example'])
+
+        if data_type_name in _EXAMPLE_STATIC_VALUES:
+            return deepcopy(_EXAMPLE_STATIC_VALUES[data_type_name])
+        if data_type_name in _EXAMPLE_STRING_DATATYPES:
             return f"example_{attr_def.json_key}"
+
+        if data_type is not None:
+            storage = get_storage_type(data_type)
+            if storage == 'string':
+                return f"example_{attr_def.json_key}"
+            if storage == 'number':
+                return 1
+            if storage == 'bool':
+                return True
+            if storage == 'json':
+                return {}
+        return f"example_{attr_def.json_key}"
 
     @transaction.atomic
     def import_schema(

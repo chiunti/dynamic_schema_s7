@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Optional
 
@@ -53,6 +54,7 @@ from ..constants import (
     STATUS_DRAFT,
     STATUS_PUBLISHED,
     STATUS_ARCHIVED,
+    WARN_DROPPED_ATTRIBUTE,
 )
 
 
@@ -166,6 +168,7 @@ class SchemaService:
         user=None,
         strict_keys: bool = False,
         path: str = "$",
+        dropped_attributes: Optional[list] = None,
     ) -> tuple[uuid.UUID, dict]:
         """Import a schema with validation.
 
@@ -175,6 +178,10 @@ class SchemaService:
         ``SchemaValidationError`` instead of being silently tolerated.
         ``path`` is the JSON path prefix used to locate errors inside the
         payload; the root schema object is addressed as ``$``.
+        ``dropped_attributes`` is an optional out-list collecting
+        ``{"code", "path", "message"}`` dicts for attribute values rejected
+        by datatype validators in permissive mode; under ``strict_keys``
+        those failures raise ``SchemaValidationError`` instead.
         """
         if project_id:
             project = ProjectRepository().get_project_by_id(project_id)
@@ -207,6 +214,7 @@ class SchemaService:
             organization_id,
             strict_keys=strict_keys,
             path=path,
+            dropped_attributes=dropped_attributes,
         )
         
         # Sync Node.version from child nodes that have natural_version attributes
@@ -380,13 +388,15 @@ class SchemaService:
                 {'value_string': schema_status}
             )
     
-    def _process_schema_structure(self, schema: dict, root_id: uuid.UUID, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], strict_keys: bool = False, path: str = "$"):
+    def _process_schema_structure(self, schema: dict, root_id: uuid.UUID, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process the complete schema JSON structure and create child nodes recursively.
 
         Delegates the entire root object to _process_node_attributes, which contains
         the unified dispatch logic for all cases (scalars, collections, shorthand sections,
         and composition-inferred child nodes). Error paths address the root object's
         members relative to ``path`` (the envelope root key is not part of it).
+        ``dropped_attributes`` is forwarded to _process_node_attributes as the
+        shared out-list for validator-rejected attribute values.
         """
         root_key = next(iter(schema.keys())) if schema else None
         if not root_key:
@@ -405,8 +415,9 @@ class SchemaService:
             organization_id,
             strict_keys=strict_keys,
             path=path,
+            dropped_attributes=dropped_attributes,
         )
-    
+
     def _resolve_child_type_for_item(self, item: dict, compositions):
         """Select the correct child NodeType for a JSON item from a set of candidate compositions.
 
@@ -455,8 +466,12 @@ class SchemaService:
 
         return compositions[0].child_type
 
-    def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0, strict_keys: bool = False, path: str = "$"):
-        """Process a collection of items as child nodes using NodeTypeComposition"""
+    def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
+        """Process a collection of items as child nodes using NodeTypeComposition.
+
+        ``dropped_attributes`` is forwarded to _process_node_attributes as the
+        shared out-list for validator-rejected attribute values.
+        """
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
             self.composition_repository.get_compositions_by_parent_type_select_related(parent_node_type)
@@ -556,6 +571,7 @@ class SchemaService:
                 organization_id,
                 strict_keys=strict_keys,
                 path=item_path,
+                dropped_attributes=dropped_attributes,
             )
     
     def _build_json_key_to_field_map(self, attr_defs):
@@ -611,8 +627,12 @@ class SchemaService:
         
         return node_fields
     
-    def _process_single_child_node(self, parent_id: uuid.UUID, json_key: str, value: dict, child_type, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, index: Optional[int] = None, sort_order: int = 0, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
-        """Process a single child node from a dict value (composition without collection_key)"""
+    def _process_single_child_node(self, parent_id: uuid.UUID, json_key: str, value: dict, child_type, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, index: Optional[int] = None, sort_order: int = 0, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
+        """Process a single child node from a dict value (composition without collection_key).
+
+        ``dropped_attributes`` is forwarded to _process_node_attributes as the
+        shared out-list for validator-rejected attribute values.
+        """
         # JSON path of this child node within the payload (indexed when the
         # child comes from a list slot).
         child_path = f"{path}.{json_key}" if index is None else f"{path}.{json_key}[{index}]"
@@ -706,8 +726,9 @@ class SchemaService:
             inherited_variant,
             strict_keys=strict_keys,
             path=child_path,
+            dropped_attributes=dropped_attributes,
         )
-    
+
     def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
         """Set a node attribute value, creating AttributeDef if needed"""
         # Disable triggers to bypass s7 validation
@@ -810,12 +831,14 @@ class SchemaService:
             # Re-enable triggers
             self.repository.enable_triggers()
     
-    def _process_keyed_map(self, node_id: uuid.UUID, node_type, entries: dict, compositions, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], strict_keys: bool = False, path: str = "$") -> None:
+    def _process_keyed_map(self, node_id: uuid.UUID, node_type, entries: dict, compositions, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None) -> None:
         """Store arbitrary JSON object keys as individually editable child nodes.
 
         Map keys are data (map semantics), so strict mode does not reject
         undeclared keys here; strict checks apply to each entry's attributes
         via the recursive _process_node_attributes call.
+        ``dropped_attributes`` is forwarded to _process_node_attributes as the
+        shared out-list for validator-rejected attribute values.
         """
         candidates = [comp.child_type for comp in compositions if comp.collection_key is None]
         typed_objects = [
@@ -858,9 +881,10 @@ class SchemaService:
                 organization_id,
                 strict_keys=strict_keys,
                 path=entry_path,
+                dropped_attributes=dropped_attributes,
             )
 
-    def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
+    def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process attributes for a node, creating AttributeDefs dynamically if needed.
 
         Dispatch priority for each json_key in attributes:
@@ -880,6 +904,10 @@ class SchemaService:
                 domain values with SchemaValidationError (validate dry-run).
             path: JSON path of this node's attributes object within the
                 payload; errors are reported as ``{path}.{json_key}``.
+            dropped_attributes: Optional out-list collecting
+                ``{"code", "path", "message"}`` dicts for attribute values
+                rejected by datatype validators in permissive mode; under
+                ``strict_keys`` those failures raise instead.
         """
         # Get Node model field names (these are not attributes)
         node_field_names = self.repository.get_node_field_names()
@@ -895,6 +923,7 @@ class SchemaService:
                 organization_id,
                 strict_keys=strict_keys,
                 path=path,
+                dropped_attributes=dropped_attributes,
             )
             return
         
@@ -1008,7 +1037,7 @@ class SchemaService:
                     # Case 1: value whose key matches a composition collection_key
                     if json_key in collection_keys:
                         if isinstance(value, list):
-                            self._process_collection(json_key, value, node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path)
+                            self._process_collection(json_key, value, node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                             child_sort_order += len(value)
                         elif isinstance(value, dict):
                             # Singleton dict: only dispatch if composition allows exactly one child (max_children=1)
@@ -1022,7 +1051,7 @@ class SchemaService:
                                     item.setdefault(discriminator_json_key, json_key)
                                 else:
                                     item = value
-                                self._process_collection(json_key, [item], node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path)
+                                self._process_collection(json_key, [item], node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                                 child_sort_order += 1
                             elif strict_keys:
                                 raise self._invalid_collection_value_error(node_type, json_key, value, path)
@@ -1046,7 +1075,7 @@ class SchemaService:
                         child_sort_order += 1
                         item_with_discriminator = dict(value)
                         item_with_discriminator.setdefault(discriminator_json_key, json_key)
-                        self._process_node_attributes(child_node.id, child_type, item_with_discriminator, project_id, organization_id, strict_keys=strict_keys, path=f"{path}.{json_key}")
+                        self._process_node_attributes(child_node.id, child_type, item_with_discriminator, project_id, organization_id, strict_keys=strict_keys, path=f"{path}.{json_key}", dropped_attributes=dropped_attributes)
                         continue
 
                     # Case 3: structural match -> composition without collection_key
@@ -1062,12 +1091,12 @@ class SchemaService:
                             else None
                         )
                         if isinstance(value, dict):
-                            self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path)
+                            self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                             child_sort_order += 1
                         elif isinstance(value, list):
                             for idx, item in enumerate(value):
                                 if isinstance(item, dict):
-                                    self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path)
+                                    self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                                     child_sort_order += 1
                         continue
 
@@ -1148,27 +1177,55 @@ class SchemaService:
                                 raise self._invalid_domain_value_error(json_key, check_domain, value, path)
 
                         # Set the attribute value using direct ORM to bypass s7 validation
+                        if value is None:
+                            # Skip None values (no attribute row needed)
+                            continue
+
+                        # Run datatype-specific plugin validators (e.g. conditional
+                        # structures). Strict mode turns a rejection into
+                        # SchemaValidationError (same shape as _set_node_attribute);
+                        # permissive mode records a dropped_attribute warning and
+                        # moves on to the next key — nothing is silently dropped.
                         try:
-                            if value is None:
-                                # Skip None values (no attribute row needed)
-                                continue
-
-                            # Run datatype-specific plugin validators (e.g. conditional structures).
                             validate_datatype_value(attr_def.data_type, value)
+                        except (ValidationError, SchemaValidationError) as exc:
+                            if strict_keys:
+                                raise SchemaValidationError(
+                                    f"Invalid value for '{json_key}': {exc}",
+                                    code=ERR_INVALID_SCHEMA,
+                                    path=f"{path}.{json_key}",
+                                ) from exc
+                            if dropped_attributes is not None:
+                                dropped_attributes.append(
+                                    {
+                                        "code": WARN_DROPPED_ATTRIBUTE,
+                                        "path": f"{path}.{json_key}",
+                                        "message": str(exc),
+                                    }
+                                )
+                            else:
+                                # Callers without the out-list (e.g. direct
+                                # import_schema calls) still get a trace —
+                                # nothing is dropped silently.
+                                logging.getLogger(__name__).warning(
+                                    "Dropped attribute %s.%s: %s",
+                                    path, json_key, exc,
+                                )
+                            continue
 
-                            # Store the value in the column declared by primary_storage_type.
-                            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                                from decimal import Decimal
-                                value = Decimal(str(value))
-                            defaults = get_storage_defaults(attr_def.data_type, value)
-                            self.repository.update_or_create_node_attribute(
-                                node_id,
-                                attribute_def=attr_def,
-                                defaults=defaults
-                            )
-                        except Exception:
-                            # Log error but continue processing other attributes
-                            pass
+                        # Store the value in the column declared by
+                        # primary_storage_type. Storage/persistence failures are
+                        # real bugs: they propagate to the per-key ValueError
+                        # wrapper (or unwrapped for RuntimeError/DatabaseError).
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            from decimal import Decimal
+                            value = Decimal(str(value))
+                        defaults = get_storage_defaults(attr_def.data_type, value)
+                        self.repository.update_or_create_node_attribute(
+                            node_id,
+                            attribute_def=attr_def,
+                            defaults=defaults
+                        )
                 except SchemaValidationError:
                     raise
                 except ValueError as exc:

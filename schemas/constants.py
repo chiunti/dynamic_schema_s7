@@ -147,6 +147,7 @@ ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for mode
 ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
 ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"
 ERR_INVALID_DOMAIN_VALUE = "invalid_domain_value"
+WARN_DROPPED_ATTRIBUTE = "dropped_attribute"
 WARN_IMPORT = "import_warning"
 WARN_MISSING_REQUIRED_ATTRIBUTES = "missing_required_attributes"
 

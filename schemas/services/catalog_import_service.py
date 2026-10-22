@@ -61,6 +61,10 @@ SEED_NS = uuid.uuid5(uuid.NAMESPACE_DNS, 's7.oaxaca.gob.mx')
 # Prefix emitted by FixtureService.validate_objects for per-object errors.
 _OBJECT_INDEX_RE = re.compile(r'^object\[(\d+)\]:\s*')
 
+# Trailing marker Django's DeserializationError.WithData stamps on its
+# message — it carries the raw field value that failed conversion.
+_FIELD_VALUE_RE = re.compile(r"field_value was '(.*)'\s*$")
+
 
 class CatalogImportService:
     """Validate and apply a fixture-format catalog payload atomically."""
@@ -87,7 +91,11 @@ class CatalogImportService:
             "updated": {label: n}, "warnings": []}``; on any validation
             or apply failure ``{"applied": False, "errors": [{"code",
             "message", "path"}], "warnings": []}`` with no partial
-            writes (the whole transaction rolls back).
+            writes (the whole transaction rolls back). Errors carry
+            ``path: $.objects[i]`` locating the offending entry, and
+            apply-time failures attribute the ORM error to the object —
+            and, when determinable, the field — that broke, so a raw
+            conversion message never reaches the client bare.
 
             The payload is mutated in place: generated uuid5 pks are
             written into objects that omit ``pk``, and objects whose
@@ -148,7 +156,7 @@ class CatalogImportService:
                     'path': f'$.objects[{i}]',
                 })
                 continue
-            classified.append((obj, label, pk_norm or nk_pk))
+            classified.append((i, obj, label, pk_norm or nk_pk))
 
         if conflicts:
             return self._error_envelope(conflicts)
@@ -157,7 +165,7 @@ class CatalogImportService:
         # permission aborts the import with an empty transaction.
         created: Counter = Counter()
         updated: Counter = Counter()
-        for obj, label, existing_pk in classified:
+        for _, obj, label, existing_pk in classified:
             if existing_pk is not None:
                 self._require_perm(user, 'change', label)
                 # Point the object at the live row so deserialization
@@ -168,24 +176,31 @@ class CatalogImportService:
                 self._require_perm(user, 'add', label)
                 created[label] += 1
 
+        # Apply one object at a time in dependency order (the sort is
+        # stable, so same-rank objects keep payload order): a failure is
+        # mapped back to the payload index of the object that broke —
+        # one batch deserialize call would lose that attribution.
         ordered = sorted(
-            (obj for obj, _, _ in classified),
-            key=lambda o: _APPLY_RANK[o['model'].split('.')[1]],
+            classified,
+            key=lambda entry: _APPLY_RANK[entry[2]],
         )
-        try:
-            self.fixture_repository.apply_fixture_objects(ordered)
-        except (DeserializationError, ValueError, RuntimeError,
-                IntegrityError, DatabaseError) as exc:
-            # Caught inside the atomic block: mark it for rollback so the
-            # partial writes of this pass cannot commit.
-            transaction.set_rollback(True)
-            return self._error_envelope([
-                {
-                    'code': ERR_INVALID_CATALOG_OBJECT,
-                    'message': str(exc),
-                    'path': None,
-                },
-            ])
+        for orig_i, obj, label, _ in ordered:
+            try:
+                self.fixture_repository.apply_fixture_objects([obj])
+            except (DeserializationError, ValueError, RuntimeError,
+                    IntegrityError, DatabaseError) as exc:
+                # Caught inside the atomic block: mark it for rollback
+                # so the partial writes of this pass cannot commit.
+                transaction.set_rollback(True)
+                return self._error_envelope([
+                    {
+                        'code': ERR_INVALID_CATALOG_OBJECT,
+                        'message': self._apply_error_message(
+                            exc, obj, label,
+                        ),
+                        'path': f'$.objects[{orig_i}]',
+                    },
+                ])
 
         self.fixture_repository.record_catalog_import(
             user, self._change_message(created, updated),
@@ -245,6 +260,42 @@ class CatalogImportService:
             'message': message,
             'path': path,
         }
+
+    @staticmethod
+    def _apply_error_message(exc: Exception, obj: dict, label: str) -> str:
+        """Render an apply failure with object/field context.
+
+        ``DeserializationError.WithData`` embeds the offending value in
+        a trailing ``field_value was '<value>'`` marker. When that value
+        ``str()``-matches exactly one field of the object, the error is
+        reported against ``label.field``; several matches name every
+        candidate. A ``'None'`` marker is the signature of a ``pk``
+        conversion failure (``WithData`` passes ``field_value=None``
+        there), so it must not be matched against nullable fields.
+        Anything without a single-field attribution falls back to
+        naming the object by label and pk — the raw ORM message never
+        reaches the client bare.
+
+        ``exc.__context__`` carries the conversion error ``WithData``
+        wrapped (it chains implicitly), which is the clean message; the
+        wrapper's own text is a serialization-format detail.
+        """
+        original = str(exc.__context__ or exc)
+        match = _FIELD_VALUE_RE.search(str(exc))
+        fields = obj.get('fields')
+        if (match and match.group(1) != 'None'
+                and isinstance(fields, dict)):
+            field_value = match.group(1)
+            candidates = [
+                name for name, value in fields.items()
+                if str(value) == field_value
+            ]
+            if len(candidates) == 1:
+                return f'{label}.{candidates[0]}: {original}'
+            if candidates:
+                names = ', '.join(sorted(candidates))
+                return f'{label} ({names}): {original}'
+        return f"{label} object (pk={obj.get('pk')}): {exc}"
 
     @staticmethod
     def _require_perm(user, action: str, label: str) -> None:

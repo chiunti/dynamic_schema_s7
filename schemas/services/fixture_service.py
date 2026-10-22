@@ -17,7 +17,10 @@ from typing import Optional
 
 from django.core.management import call_command
 
-from ..constants import ERR_MISSING_NATURAL_KEY_FIELDS
+from ..constants import (
+    ERR_INVALID_FK_SHAPE,
+    ERR_MISSING_NATURAL_KEY_FIELDS,
+)
 from ..repositories.fixture_repository import FixtureRepository
 
 FIXTURE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
@@ -195,9 +198,13 @@ class FixtureService:
         uuid PKs, field names against the target model, natural key
         presence (every position of the model's natural key must be
         present and non-empty — explicit NULL is accepted only on
-        nullable model fields), in-payload natural key uniqueness, and
-        that every natural-key FK resolves — either to an object inside
-        the fixture or to a row already in the database (cross-fixture
+        nullable model fields), in-payload natural key uniqueness, the
+        shape of every declared FK value (``FK_FIELDS`` positions must
+        serialize as natural-key lists of strings — ``None`` is the
+        valid "no reference" shape; scalars and lists with non-string
+        elements are rejected before resolution), and that every
+        natural-key FK resolves — either to an object inside the
+        fixture or to a row already in the database (cross-fixture
         references like base datatypes are legitimate).
 
         ``allowed_models`` narrows the label whitelist when the caller
@@ -292,14 +299,36 @@ class FixtureService:
                 except TypeError:
                     errors.append(f'{where}: malformed natural key')
 
-        # Second pass: natural-key FK references must resolve in the
-        # fixture or in the database. Only objects that passed the shape
-        # checks above are inspected — malformed ones already carry an
-        # errors[] entry and must not crash this pass.
+        # Second pass: declared FK values must carry the natural-key
+        # shape, and the references must resolve in the fixture or in
+        # the database. Only objects that passed the shape checks above
+        # are inspected — malformed ones already carry an errors[] entry
+        # and must not crash this pass.
         for i, label, fields in checked:
             for field, target_label in FK_FIELDS.get(label, []):
                 ref = fields.get(field)
-                if ref is None or not isinstance(ref, list):
+                if ref is None:
+                    # NULL is the valid "no reference" shape.
+                    continue
+                if (not isinstance(ref, list)
+                        or not all(isinstance(v, str) for v in ref)):
+                    # A declared FK must serialize as a natural-key list
+                    # of strings. Anything else would pass validation
+                    # silently and blow up inside the ORM's pk coercion
+                    # at apply time with an uncontextualized conversion
+                    # error.
+                    received = (
+                        'a scalar'
+                        if not isinstance(ref, list)
+                        else 'a list with non-string elements'
+                    )
+                    errors.append(
+                        f'object[{i}]: '
+                        + ERR_INVALID_FK_SHAPE.format(
+                            field=f'{label}.{field}',
+                            received=received,
+                        )
+                    )
                     continue
                 try:
                     if tuple(ref) in naturals.get(target_label, set()):

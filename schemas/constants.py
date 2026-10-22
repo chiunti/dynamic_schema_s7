@@ -147,6 +147,7 @@ ERR_INVALID_REQUEST = "invalid_request"
 # POST /api/catalog/import/ (views.CatalogImportView)
 ERR_INVALID_CATALOG_OBJECT = "invalid_catalog_object"
 ERR_MISSING_NATURAL_KEY_FIELDS = "missing natural key fields: {fields}"
+ERR_INVALID_FK_SHAPE = "expected a natural-key list of strings for '{field}', got {received}"
 ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for model '{label}'"
 ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
 ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"

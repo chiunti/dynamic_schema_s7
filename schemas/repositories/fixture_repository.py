@@ -34,6 +34,25 @@ class FixtureRepository:
         except (LookupError, AttributeError):
             return None
 
+    def get_nullable_field_names(
+        self, model_label: str,
+    ) -> Optional[frozenset[str]]:
+        """Concrete field names declared ``null=True``, or None if
+        unresolvable.
+
+        Natural-key positions may legitimately be NULL (e.g.
+        ``AttributeDef.variant_key`` marks a base def), so validation
+        needs the model's nullability map rather than treating every
+        absent value as an error.
+        """
+        try:
+            model = apps.get_model('schemas', model_label)
+            return frozenset(
+                f.name for f in model._meta.fields if f.null
+            )
+        except (LookupError, AttributeError):
+            return None
+
     def natural_key_exists(self, model_label: str, ref: list) -> bool:
         """Whether a natural-key reference resolves to a live row.
 

@@ -17,6 +17,7 @@ from typing import Optional
 
 from django.core.management import call_command
 
+from ..constants import ERR_MISSING_NATURAL_KEY_FIELDS
 from ..repositories.fixture_repository import FixtureRepository
 
 FIXTURE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
@@ -31,8 +32,9 @@ ALLOWED_MODELS = {
     'nodeattribute',
 }
 
-# Natural-key FK fields: (model, field) -> the natural-key fields of the
-# referenced model, used to verify references resolve inside the fixture.
+# Natural-key field positions per model: label -> the ordered field names
+# that form the row's natural key. FK positions carry natural-key arrays
+# in fixture format (see FK_FIELDS below).
 NATURAL_KEY_FIELDS = {
     'domain': ('domain_name',),
     'domainitem': ('domain', 'value'),
@@ -190,10 +192,13 @@ class FixtureService:
         """Structural validation of a fixture payload.
 
         Checks: top-level list, {model,pk,fields} shape, model whitelist,
-        uuid PKs, field names against the target model, in-payload natural
-        key uniqueness, and that every natural-key FK resolves — either to
-        an object inside the fixture or to a row already in the database
-        (cross-fixture references like base datatypes are legitimate).
+        uuid PKs, field names against the target model, natural key
+        presence (every position of the model's natural key must be
+        present and non-empty — explicit NULL is accepted only on
+        nullable model fields), in-payload natural key uniqueness, and
+        that every natural-key FK resolves — either to an object inside
+        the fixture or to a row already in the database (cross-fixture
+        references like base datatypes are legitimate).
 
         ``allowed_models`` narrows the label whitelist when the caller
         accepts only a subset (e.g. catalog-only payloads); the default
@@ -255,6 +260,22 @@ class FixtureService:
             checked.append((i, label, fields))
             nk = self.natural_key_for(label, fields)
             if nk is not None:
+                missing = self._missing_natural_key_fields(
+                    label, fields, nk,
+                )
+                if missing:
+                    # The catalog is natural-keyed: an object without a
+                    # complete NK has no identity — it would insert an
+                    # anonymous row or match-update a stray one. Reject
+                    # instead of deduplicating: an incomplete NK must not
+                    # participate in the naturals set either.
+                    errors.append(
+                        f'{where}: '
+                        + ERR_MISSING_NATURAL_KEY_FIELDS.format(
+                            fields=', '.join(missing),
+                        )
+                    )
+                    continue
                 try:
                     label_naturals = naturals.setdefault(label, set())
                     if nk in label_naturals:
@@ -293,6 +314,42 @@ class FixtureService:
                         'or the database',
                     )
         return errors
+
+    def _missing_natural_key_fields(
+        self, label: str, fields: dict, natural_key: tuple,
+    ) -> list[str]:
+        """Names of the natural-key positions absent from ``fields``.
+
+        A position is absent when its key is missing from the payload
+        (an absent key is always an error, even on nullable fields),
+        when it resolves to ``None`` on a non-nullable field, or when it
+        serialized as an empty string / empty list (the ``[]`` shape an
+        unresolvable FK reference takes). An explicit ``None`` on a
+        nullable model field is a legitimate NK NULL — base
+        ``attributedef`` rows carry ``variant_key=None``, global defs
+        carry ``node_type=None`` — and stays valid.
+
+        ``natural_key`` is the tuple returned by ``natural_key_for``;
+        its positions align with ``NATURAL_KEY_FIELDS[label]`` by
+        construction. When the model cannot be resolved for the
+        nullability map, every position is treated as required.
+        """
+        nullable = (
+            self.fixture_repository.get_nullable_field_names(label)
+            or frozenset()
+        )
+        missing = []
+        for field_name, component in zip(
+            NATURAL_KEY_FIELDS[label], natural_key,
+        ):
+            if (
+                field_name not in fields
+                or (component is None and field_name not in nullable)
+                or component == ''
+                or component == []
+            ):
+                missing.append(field_name)
+        return missing
 
     def _resolves_in_db(self, target_label: str, ref: list) -> bool:
         """Natural-key reference resolves against the live database."""

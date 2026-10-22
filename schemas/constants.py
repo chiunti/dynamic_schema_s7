@@ -146,6 +146,7 @@ ERR_INVALID_REQUEST = "invalid_request"
 # Catalog import endpoint codes — envelope {applied, errors, warnings} of
 # POST /api/catalog/import/ (views.CatalogImportView)
 ERR_INVALID_CATALOG_OBJECT = "invalid_catalog_object"
+ERR_MISSING_NATURAL_KEY_FIELDS = "missing natural key fields: {fields}"
 ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for model '{label}'"
 ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
 ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"

@@ -6,8 +6,10 @@ from typing import Optional
 from django.apps import apps
 from django.contrib.admin.models import CHANGE
 from django.core import serializers
-from django.core.exceptions import ObjectDoesNotExist
-from django.db import DatabaseError, IntegrityError, transaction
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.db import (
+    DatabaseError, IntegrityError, models, transaction,
+)
 
 from ..models import FixtureLoad
 
@@ -86,6 +88,51 @@ class FixtureRepository:
         except (ObjectDoesNotExist, LookupError, AttributeError,
                 TypeError, ValueError):
             return None
+
+    def get_fixture_state(
+        self, model_label: str, pk: str,
+    ) -> Optional[dict]:
+        """Fixture-format ``fields`` snapshot of a live row, or None.
+
+        The row is serialized with the JSON fixture serializer
+        (``use_natural_foreign_keys=True``), so the returned dict has
+        the same shape as an incoming payload's ``fields`` — FK values
+        carry natural-key lists and ``None`` is the no-reference shape.
+        Returns None when the model label does not resolve or the row
+        does not exist; the caller treats that as "no baseline".
+        """
+        try:
+            model = apps.get_model('schemas', model_label)
+            row = model.objects.get(pk=pk)
+        except (ObjectDoesNotExist, LookupError, AttributeError,
+                TypeError, ValueError, ValidationError):
+            return None
+        return self._fixture_fields(row)
+
+    def get_default_fixture_fields(
+        self, model_label: str,
+    ) -> Optional[dict]:
+        """Fixture-format ``fields`` of a fresh, unsaved instance.
+
+        Serializing ``model()`` yields the all-defaults state — what a
+        full-row replace writes into every field the payload omits. The
+        import service diffs live rows against this baseline to detect
+        silent resets. None when the model label does not resolve.
+        """
+        try:
+            model = apps.get_model('schemas', model_label)
+            instance = model()
+        except (LookupError, AttributeError, TypeError):
+            return None
+        return self._fixture_fields(instance)
+
+    @staticmethod
+    def _fixture_fields(instance: models.Model) -> dict:
+        """``fields`` dict of one instance in JSON fixture format."""
+        data = json.loads(serializers.serialize(
+            'json', [instance], use_natural_foreign_keys=True,
+        ))
+        return data[0]['fields']
 
     def apply_fixture_objects(self, objects: list[dict]) -> None:
         """Persist serialized fixture objects with loaddata upsert semantics.

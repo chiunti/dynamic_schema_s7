@@ -178,9 +178,14 @@ def s7_import_catalog(objects: list[dict]) -> dict:
     labels: domain, domainitem, nodetype, nodetypecomposition,
     nodetypevariant, attributedef. Natural-key FKs are used inside
     ``fields`` exactly like fixture files. Natural-key match updates the
-    existing row; no match creates it; deletes are not supported.
+    existing row; no match creates it; deletes are not supported and
+    object keys outside ``model``/``pk``/``fields`` are rejected. An
+    update replaces the whole row: omitting a field that holds a
+    non-default value on the live row is rejected, so resubmit the full
+    object on every update.
 
     Returns ``{"applied": true, "created": {...}, "updated": {...},
+    "results": [{index, model, natural_key, action, changed_fields}],
     "warnings": [...]}`` on success; ``{"applied": false, "errors": [...]}``
     on validation/apply failure. Requires a user MCP token with
     ``mcp_level >= 2`` plus per-model Django permissions — anything else

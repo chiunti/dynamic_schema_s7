@@ -143,11 +143,16 @@ ERR_IMPORT_FAILED = "import_failed"
 # Schema validate endpoint codes — envelope {valid, errors, warnings} of
 # POST /api/schema/validate/ (views.SchemaValidateView)
 ERR_INVALID_REQUEST = "invalid_request"
-# Catalog import endpoint codes — envelope {applied, errors, warnings} of
-# POST /api/catalog/import/ (views.CatalogImportView)
+# Catalog import endpoint codes — envelope {applied, created, updated,
+# results, errors, warnings} of POST /api/catalog/import/
+# (views.CatalogImportView). The message templates are also used by the
+# admin fixture upload (FixtureService.save_fixture_file), which shares
+# validate_objects.
 ERR_INVALID_CATALOG_OBJECT = "invalid_catalog_object"
 ERR_MISSING_NATURAL_KEY_FIELDS = "missing natural key fields: {fields}"
 ERR_INVALID_FK_SHAPE = "expected a natural-key list of strings for '{field}', got {received}"
+ERR_UNKNOWN_OBJECT_KEYS = "unknown object keys: {keys}"
+ERR_UPDATE_RESET_FIELDS = "update omits fields that hold non-default values: {fields} (update is a full-row replace)"
 ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for model '{label}'"
 ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
 ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"

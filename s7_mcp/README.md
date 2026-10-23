@@ -104,7 +104,7 @@ of `mcpServers`.
 | `s7_list_datatypes()` | `GET catalog/datatypes/` | Universal DataType catalog. |
 | `s7_validate_schema(node_type, schema, schema_key?, schema_version?)` | `POST schema/validate/` | Dry-run the import pipeline → `{valid, errors, warnings}`. |
 | `s7_import_draft(node_type, schema, schema_key?, schema_version?, overwrite?)` | `POST schema/import/` | Persist the schema — always as `draft`. |
-| `s7_import_catalog(objects)` | `POST catalog/import/` | Apply a fixture-format catalog payload (`{"objects": [{model, pk?, fields}]}`) → `{applied, created?, updated?, errors?, warnings?}`. **User token level ≥ 2 + per-model catalog permissions** — anything else gets the 401/403 envelope verbatim. |
+| `s7_import_catalog(objects)` | `POST catalog/import/` | Apply a fixture-format catalog payload (`{"objects": [{model, pk?, fields}]}`) → `{applied, created?, updated?, results?, errors?, warnings?}`. Updates replace the whole row — resubmit every field you want to keep, and object keys outside `model`/`pk`/`fields` are rejected. **User token level ≥ 2 + per-model catalog permissions** — anything else gets the 401/403 envelope verbatim. |
 
 `schema` accepts a JSON object or a JSON string.
 

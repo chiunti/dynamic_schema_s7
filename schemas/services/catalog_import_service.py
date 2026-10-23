@@ -8,10 +8,24 @@ transaction.
 
 Semantics are loaddata-like: an object whose ``pk`` or natural key
 matches a live row **updates** that row's fields; no match **creates** a
-row. Deletes are NOT supported — a payload never removes catalog rows;
-pruning stays a manual admin operation. Catalog grammar is global and
-takes effect immediately (no draft lifecycle); every import is
-attributed to the calling user through an admin ``LogEntry``.
+row. The object's wrapper keys are an allowlist — anything outside
+``{model, pk, fields}`` is a per-object validation error, so a
+``"delete": true`` hint can never pass silently (deletes are NOT
+supported — a payload never removes catalog rows; pruning stays a
+manual admin operation).
+
+An update is a **full-row replace**: deserialization fills every field
+absent from ``fields`` with the model default, so omitting a field
+whose live value is non-default would silently reset it. Such objects
+are rejected pre-write with the field names they would reset — omitted
+fields whose live value already IS the default stay harmless.
+
+On success the envelope carries ``results`` — one entry per payload
+object, in payload order, with ``index``, ``model``, ``natural_key``,
+``action`` (``created``/``updated``) and ``changed_fields`` — so the
+caller can audit exactly which row each object touched. Catalog grammar
+is global and takes effect immediately (no draft lifecycle); every
+import is attributed to the calling user through an admin ``LogEntry``.
 """
 
 import re
@@ -25,6 +39,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from ..constants import (
     ERR_INVALID_CATALOG_OBJECT,
     ERR_MISSING_MODEL_PERMISSION,
+    ERR_UPDATE_RESET_FIELDS,
 )
 from ..repositories.fixture_repository import FixtureRepository
 from .fixture_service import FixtureService
@@ -88,14 +103,22 @@ class CatalogImportService:
 
         Returns:
             On success ``{"applied": True, "created": {label: n},
-            "updated": {label: n}, "warnings": []}``; on any validation
-            or apply failure ``{"applied": False, "errors": [{"code",
+            "updated": {label: n}, "warnings": [], "results":
+            [{"index", "model", "natural_key", "action",
+            "changed_fields"}]}`` — one ``results`` entry per payload
+            object, in payload order; on any validation or apply
+            failure ``{"applied": False, "errors": [{"code",
             "message", "path"}], "warnings": []}`` with no partial
             writes (the whole transaction rolls back). Errors carry
             ``path: $.objects[i]`` locating the offending entry, and
             apply-time failures attribute the ORM error to the object —
             and, when determinable, the field — that broke, so a raw
             conversion message never reaches the client bare.
+
+            An object matched to a live row is updated by full-row
+            replace: omitting a field that holds a non-default live
+            value is a per-object validation error (the would-be reset
+            fields are named), not a silent reset.
 
             The payload is mutated in place: generated uuid5 pks are
             written into objects that omit ``pk``, and objects whose
@@ -176,6 +199,52 @@ class CatalogImportService:
                 self._require_perm(user, 'add', label)
                 created[label] += 1
 
+        # Full-row-replace guard — still before any write: an update
+        # that omits a field whose live value differs from the model
+        # default would silently reset it (deserialization fills absent
+        # fields with defaults). Reject such objects naming the fields
+        # they would reset; omitted fields whose live value already IS
+        # the default are harmless and pass. The live snapshots double
+        # as the ``changed_fields`` baseline of the success results.
+        snapshots = {}
+        defaults_by_label = {}
+        reset_errors = []
+        for i, obj, label, existing_pk in classified:
+            if existing_pk is None:
+                continue
+            live = self.fixture_repository.get_fixture_state(
+                label, existing_pk,
+            )
+            if live is None:
+                # The row vanished between classification and now — the
+                # apply pass will insert it instead of updating, so
+                # there is no baseline to reset against.
+                continue
+            snapshots[i] = live
+            if label not in defaults_by_label:
+                defaults_by_label[label] = (
+                    self.fixture_repository.get_default_fixture_fields(
+                        label,
+                    )
+                    or {}
+                )
+            defaults = defaults_by_label[label]
+            reset_fields = sorted(
+                name for name, value in live.items()
+                if name not in obj['fields']
+                and value != defaults.get(name)
+            )
+            if reset_fields:
+                reset_errors.append({
+                    'code': ERR_INVALID_CATALOG_OBJECT,
+                    'message': ERR_UPDATE_RESET_FIELDS.format(
+                        fields=', '.join(reset_fields),
+                    ),
+                    'path': f'$.objects[{i}]',
+                })
+        if reset_errors:
+            return self._error_envelope(reset_errors)
+
         # Apply one object at a time in dependency order (the sort is
         # stable, so same-rank objects keep payload order): a failure is
         # mapped back to the payload index of the object that broke —
@@ -205,11 +274,39 @@ class CatalogImportService:
         self.fixture_repository.record_catalog_import(
             user, self._change_message(created, updated),
         )
+
+        # Per-object audit trail in payload order — ``classified`` kept
+        # the original indices and the pre-apply snapshots pinpoint
+        # which incoming fields actually differ from the live row.
+        results = []
+        for i, obj, label, existing_pk in classified:
+            nk = self.fixture_service.natural_key_for(
+                label, obj['fields'],
+            )
+            if existing_pk is None:
+                action = 'created'
+                changed_fields = sorted(obj['fields'])
+            else:
+                action = 'updated'
+                live = snapshots.get(i)
+                changed_fields = sorted(
+                    name for name, value in obj['fields'].items()
+                    if live is None or live.get(name) != value
+                )
+            results.append({
+                'index': i,
+                'model': label,
+                'natural_key': list(nk) if nk else [],
+                'action': action,
+                'changed_fields': changed_fields,
+            })
+
         return {
             'applied': True,
             'created': dict(sorted(created.items())),
             'updated': dict(sorted(updated.items())),
             'warnings': [],
+            'results': results,
         }
 
     # ------------------------------------------------------------------ #

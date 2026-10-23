@@ -20,6 +20,7 @@ from django.core.management import call_command
 from ..constants import (
     ERR_INVALID_FK_SHAPE,
     ERR_MISSING_NATURAL_KEY_FIELDS,
+    ERR_UNKNOWN_OBJECT_KEYS,
 )
 from ..repositories.fixture_repository import FixtureRepository
 
@@ -194,7 +195,10 @@ class FixtureService:
     def validate_objects(self, objects, allowed_models=None) -> list[str]:
         """Structural validation of a fixture payload.
 
-        Checks: top-level list, {model,pk,fields} shape, model whitelist,
+        Checks: top-level list, a strict ``{model, pk, fields}``
+        allowlist on each object's wrapper keys (any other key — a
+        ``delete`` hint, an op verb, a typo — is a per-object error,
+        never silently ignored), {model,pk,fields} shape, model whitelist,
         uuid PKs, field names against the target model, natural key
         presence (every position of the model's natural key must be
         present and non-empty — explicit NULL is accepted only on
@@ -228,6 +232,18 @@ class FixtureService:
             where = f'object[{i}]'
             if not isinstance(obj, dict):
                 errors.append(f'{where}: not an object')
+                continue
+            # The wrapper is an allowlist: anything outside {model, pk,
+            # fields} (a "delete": true hint, an op verb, a typo) is an
+            # explicit per-object error — never silently ignored.
+            extra = set(obj) - {'model', 'pk', 'fields'}
+            if extra:
+                errors.append(
+                    f'{where}: '
+                    + ERR_UNKNOWN_OBJECT_KEYS.format(
+                        keys=', '.join(sorted(str(key) for key in extra)),
+                    )
+                )
                 continue
             model = obj.get('model')
             pk = obj.get('pk')

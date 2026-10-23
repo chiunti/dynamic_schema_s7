@@ -87,8 +87,13 @@ and a unique `json_scope`.
 
 3. APPLY — call `s7_import_catalog` once with the full list: the apply is \
 atomic, natural-key matches update existing rows, non-matches create new \
-ones, and deletes are never performed. On `{"applied": false, "errors": \
-[...]}` each error points at its `$.objects[i]` entry — fix and retry.
+ones, and deletes are never performed. Updates replace the whole row — \
+include every field you want to keep (omitting a field with a non-default \
+value is rejected) and use only `model`/`pk`/`fields` keys per object. The \
+success envelope lists `results[]` per object — check each `action` \
+(`created` vs `updated`) to confirm intent. On `{"applied": false, \
+"errors": [...]}` each error points at its `$.objects[i]` entry — fix and \
+retry.
 
 4. VERIFY — call `s7_get_catalog` with the new `json_scope`; grammar writes \
 are global and live immediately (no draft stage). An instance of the new \

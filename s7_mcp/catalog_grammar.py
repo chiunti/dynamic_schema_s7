@@ -55,12 +55,17 @@ CATALOG_GRAMMAR: dict = {
         "semantics": (
             "a row whose pk or natural key matches is updated, no match "
             "creates it (pk and natural key pointing at different rows "
-            "is an error); deletes are not supported; an update replaces "
-            "the row — omitted fields fall back to their defaults. "
-            "Matching reads the serialized natural key, so write every "
-            "natural-key component explicitly — omitting a component "
-            "that carries a model default (e.g. discriminator_attr) "
-            "matches no row and the insert collides on uniqueness"
+            "is an error); deletes are not supported and object keys "
+            "outside model/pk/fields are rejected. An update replaces "
+            "the whole row — omitting a field that holds a non-default "
+            "value on the live row is rejected, so resubmit the full "
+            "object on every update. The success envelope lists "
+            "results[] per object (index, model, natural_key, action "
+            "created|updated, changed_fields). Matching reads the "
+            "serialized natural key, so write every natural-key "
+            "component explicitly — omitting a component that carries "
+            "a model default (e.g. discriminator_attr) matches no row "
+            "and the insert collides on uniqueness"
         ),
     },
     "models": {

@@ -26,6 +26,12 @@ resource. Shape:
   ``schemas.datatype`` is deliberately absent: it is not authorizable
   through this payload — attribute definitions may only reference existing
   data types.
+
+- ``resolved_vs_import`` — read-vs-write shape table. The resolved
+  catalog served by ``s7://catalog/{scope}`` is a *read* shape, not this
+  payload: ``mapping`` translates each resolved block into the fixture
+  objects it becomes, ``example`` pairs a resolved fragment with its
+  import equivalent, and ``notes`` covers what does not translate.
 """
 
 CATALOG_GRAMMAR: dict = {
@@ -321,5 +327,235 @@ CATALOG_GRAMMAR: dict = {
                 "the natural key of an unbound attribute starts with null.",
             ],
         },
+    },
+    "resolved_vs_import": {
+        "summary": (
+            "The resolved catalog served by s7://catalog/{scope} "
+            "(GET catalog/<scope>/) is a denormalized read shape built "
+            "for authoring schema instances — it is NOT the shape "
+            "s7_import_catalog accepts. The import payload carries one "
+            "fixture object per catalog row; the mapping below "
+            "translates each resolved block into the objects it "
+            "becomes."
+        ),
+        "mapping": [
+            {
+                "resolved": "node_types[]",
+                "fixture": "schemas.nodetype",
+                "notes": (
+                    "one object per entry — name/label/is_container/"
+                    "default_json_key/is_json_map/json_scalar_attribute "
+                    "keep their names inside fields."
+                ),
+            },
+            {
+                "resolved": "root_node_type / node_types[].is_root",
+                "fixture": "schemas.nodetype fields is_root + json_scope",
+                "notes": (
+                    "the resolved payload puts the scope name at top "
+                    "level and marks the root node type is_root, but "
+                    "never emits json_scope — a root object sets "
+                    "fields.is_root=true plus fields.json_scope (the "
+                    "scope it owns)."
+                ),
+            },
+            {
+                "resolved": "node_types[].attributes[]",
+                "fixture": "schemas.attributedef",
+                "notes": (
+                    "nested attribute entries become separate objects "
+                    "bound to their node type by the node_type FK — a "
+                    "natural-key list like [\"example_root\"], not an "
+                    "embedded block. json_key/name keep their names; "
+                    "variant_key is part of the natural key — write it "
+                    "explicitly even when null."
+                ),
+            },
+            {
+                "resolved": "attributes[].required / attributes[].common",
+                "fixture": "attributedef fields is_required / is_common",
+                "notes": "plain boolean renames.",
+            },
+            {
+                "resolved": (
+                    "attributes[].data_type / attributes[].domain "
+                    "(flat strings; domain may be null)"
+                ),
+                "fixture": (
+                    "attributedef fks data_type / domain — natural-key "
+                    "lists inside fields, e.g. [\"string\"] / "
+                    "[\"yes_no\"]; a null domain serializes as null"
+                ),
+                "notes": (
+                    "data_type is required and must reference an "
+                    "existing datatype — schemas.datatype is not "
+                    "authorizable through this payload."
+                ),
+            },
+            {
+                "resolved": "attributes[].server_generated=true",
+                "fixture": "(no object — read-only)",
+                "notes": (
+                    "engine-managed attributes (the natural_* family) "
+                    "are emitted on read only — never author an "
+                    "attributedef for them."
+                ),
+            },
+            {
+                "resolved": (
+                    "node_types[].variants — {discriminator_attr, "
+                    "props_node_type, keys[]}"
+                ),
+                "fixture": "schemas.nodetypevariant",
+                "notes": (
+                    "the digested block expands back to one object per "
+                    "key in keys[]: node_type=[\"<node type name>\"], "
+                    "variant_key=<the key>, discriminator_attr=<the "
+                    "shared discriminator> (part of the natural key — "
+                    "write it explicitly; null marks a props variant "
+                    "resolved through props_node_type), props_node_type="
+                    "[\"<node type name>\"] or null."
+                ),
+            },
+            {
+                "resolved": "domains — {domain_name: [{value, label}]}",
+                "fixture": "schemas.domain + schemas.domainitem",
+                "notes": (
+                    "one domain object per dict key (fields."
+                    "domain_name) plus one domainitem per {value, "
+                    "label} entry with fields.domain="
+                    "[\"<domain_name>\"]."
+                ),
+            },
+            {
+                "resolved": (
+                    "node_types[].compositions[] — {collection_key, "
+                    "child_types[{name, min_children, max_children}]}"
+                ),
+                "fixture": "schemas.nodetypecomposition",
+                "notes": (
+                    "one object per child_types entry — parent_type "
+                    "and child_type are natural-key lists, "
+                    "collection_key/min_children/max_children go in "
+                    "fields. collection_key is part of the natural "
+                    "key — write it explicitly, null for the "
+                    "structural (ungrouped) children. child "
+                    "default_json_key is read context; it belongs to "
+                    "the child's nodetype object."
+                ),
+            },
+        ],
+        "example": {
+            "resolved": {
+                "scope": "example_scope",
+                "root_node_type": "example_root",
+                "node_types": [
+                    {
+                        "name": "example_root",
+                        "label": "Example root",
+                        "is_root": True,
+                        "is_container": True,
+                        "default_json_key": None,
+                        "is_json_map": False,
+                        "json_scalar_attribute": None,
+                        "attributes": [
+                            {
+                                "json_key": "answer",
+                                "name": "answer",
+                                "data_type": "string",
+                                "domain": "yes_no",
+                                "required": True,
+                                "server_generated": False,
+                                "common": True,
+                                "variant_key": None,
+                            },
+                            {
+                                "json_key": "natural_uuid",
+                                "name": "natural_uuid",
+                                "data_type": "natural_uuid",
+                                "domain": None,
+                                "required": False,
+                                "server_generated": True,
+                                "common": True,
+                                "variant_key": None,
+                            },
+                        ],
+                        "variants": None,
+                        "compositions": [],
+                    },
+                ],
+                "domains": {
+                    "yes_no": [
+                        {"value": "yes", "label": "Yes"},
+                        {"value": "no", "label": "No"},
+                    ],
+                },
+                "datatypes": {},
+                "example": {"example_scope": {"answer": "yes"}},
+            },
+            "import": {
+                "objects": [
+                    {
+                        "model": "schemas.nodetype",
+                        "fields": {
+                            "name": "example_root",
+                            "label": "Example root",
+                            "is_container": True,
+                            "is_root": True,
+                            "json_scope": "example_scope",
+                        },
+                    },
+                    {
+                        "model": "schemas.domain",
+                        "fields": {
+                            "domain_name": "yes_no",
+                        },
+                    },
+                    {
+                        "model": "schemas.domainitem",
+                        "fields": {
+                            "domain": ["yes_no"],
+                            "value": "yes",
+                            "label": "Yes",
+                        },
+                    },
+                    {
+                        "model": "schemas.domainitem",
+                        "fields": {
+                            "domain": ["yes_no"],
+                            "value": "no",
+                            "label": "No",
+                        },
+                    },
+                    {
+                        "model": "schemas.attributedef",
+                        "fields": {
+                            "node_type": ["example_root"],
+                            "json_key": "answer",
+                            "variant_key": None,
+                            "name": "answer",
+                            "data_type": ["string"],
+                            "domain": ["yes_no"],
+                            "is_required": True,
+                            "is_common": True,
+                        },
+                    },
+                ],
+            },
+        },
+        "notes": [
+            (
+                "datatypes — the resolved 'datatypes' block documents "
+                "the value grammar of the non-trivial datatypes in "
+                "use; it is instance-authoring guidance, not fixture "
+                "rows."
+            ),
+            (
+                "no catalog row carries a 'version' field — schema "
+                "'version' belongs to instance documents (the "
+                "s7_import_draft payload), never to s7_import_catalog "
+                "objects."
+            ),
+        ],
     },
 }

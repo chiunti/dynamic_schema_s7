@@ -578,6 +578,144 @@ class CatalogGrammarDataTests(unittest.TestCase):
             json.loads(json.dumps(CATALOG_GRAMMAR)), CATALOG_GRAMMAR
         )
 
+    def test_resolved_vs_import_section_shape(self):
+        """The read-vs-write table is a top-level sibling of ``models``:
+        a ``mapping`` list of resolved→fixture rows plus a worked
+        ``example``."""
+        section = CATALOG_GRAMMAR["resolved_vs_import"]
+        self.assertIsInstance(section["summary"], str)
+        self.assertTrue(section["summary"].strip())
+        self.assertIsInstance(section["mapping"], list)
+        self.assertTrue(section["mapping"])
+        for entry in section["mapping"]:
+            with self.subTest(entry=entry.get("resolved")):
+                self.assertTrue(entry["resolved"].strip())
+                self.assertTrue(entry["fixture"].strip())
+        example = section["example"]
+        self.assertIn("resolved", example)
+        self.assertIn("import", example)
+        self.assertIsInstance(example["import"]["objects"], list)
+        self.assertTrue(example["import"]["objects"])
+
+    def test_resolved_vs_import_covers_the_catalog_blocks(self):
+        """Every resolved block that confused pilot agents has a mapping
+        row, and every fixture target names an authorizable model."""
+        section = CATALOG_GRAMMAR["resolved_vs_import"]
+        resolved_text = " ".join(
+            entry["resolved"] for entry in section["mapping"]
+        )
+        for block in (
+            "root_node_type", "node_types", "attributes", "data_type",
+            "domain", "server_generated", "variants", "compositions",
+            "domains",
+        ):
+            with self.subTest(block=block):
+                self.assertIn(block, resolved_text)
+        fixture_text = " ".join(
+            entry["fixture"] for entry in section["mapping"]
+        )
+        for label in self.EXPECTED_MODELS:
+            with self.subTest(model=label):
+                self.assertIn(label, fixture_text)
+
+    def test_resolved_vs_import_documents_the_field_renames(self):
+        """The renames behind the cryptic pilot errors are spelled out:
+        ``required``→``is_required``, ``common``→``is_common`` and the
+        natural-key list shape of the ``data_type``/``domain`` FKs."""
+        section = CATALOG_GRAMMAR["resolved_vs_import"]
+        text = json.dumps(section)
+        for needle in (
+            "is_required", "is_common", "is_root", "json_scope",
+            "natural-key",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+
+    def test_resolved_vs_import_example_resolved_fragment_shape(self):
+        """The resolved fragment mirrors the read contract: node types
+        carry attributes/variants/compositions and attributes carry the
+        flat read fields."""
+        resolved = CATALOG_GRAMMAR["resolved_vs_import"]["example"][
+            "resolved"
+        ]
+        self.assertIn("root_node_type", resolved)
+        self.assertIn("node_types", resolved)
+        for node_type in resolved["node_types"]:
+            for key in (
+                "name", "label", "is_root", "attributes", "variants",
+                "compositions",
+            ):
+                self.assertIn(key, node_type)
+            for attr in node_type["attributes"]:
+                for key in (
+                    "json_key", "data_type", "domain", "required",
+                    "server_generated", "common", "variant_key",
+                ):
+                    self.assertIn(key, attr)
+
+    def test_resolved_vs_import_example_objects_are_payload_valid(self):
+        """The worked example must survive the import contract: real
+        labels, no ``id`` inside ``fields``, every natural-key and
+        required component present, and FK values shaped as
+        ``[natural_key]`` lists or null."""
+        objects = CATALOG_GRAMMAR["resolved_vs_import"]["example"][
+            "import"
+        ]["objects"]
+        for obj in objects:
+            label = obj["model"]
+            with self.subTest(model=label):
+                self.assertIn(label, self.EXPECTED_MODELS)
+                model = CATALOG_GRAMMAR["models"][label]
+                fields = obj["fields"]
+                # 'id' is forbidden inside fields; 'version' is an
+                # instance-document field, never a catalog row field.
+                for forbidden in ("id", "version"):
+                    self.assertNotIn(forbidden, fields)
+                for name in model["natural_key"]:
+                    self.assertIn(name, fields)
+                for name, spec in model["fields"].items():
+                    if spec["required"]:
+                        self.assertIn(name, fields)
+                for name, spec in model["fks"].items():
+                    if spec["required"]:
+                        self.assertIn(name, fields)
+                for name, value in fields.items():
+                    self.assertTrue(
+                        name in model["fields"] or name in model["fks"],
+                        f"{label}.{name} not in the grammar",
+                    )
+                    if name in model["fks"]:
+                        self.assertTrue(
+                            value is None
+                            or (
+                                isinstance(value, list)
+                                and all(
+                                    isinstance(item, str)
+                                    for item in value
+                                )
+                            ),
+                            f"{label}.{name} not a [natural_key] list",
+                        )
+
+    def test_resolved_vs_import_example_skips_server_generated(self):
+        """The example resolves a ``server_generated`` attribute but no
+        attributedef object authors it — the divergence the section
+        exists to teach."""
+        example = CATALOG_GRAMMAR["resolved_vs_import"]["example"]
+        generated = {
+            attr["json_key"]
+            for node_type in example["resolved"]["node_types"]
+            for attr in node_type["attributes"]
+            if attr["server_generated"]
+        }
+        self.assertTrue(generated)
+        authored = {
+            obj["fields"]["json_key"]
+            for obj in example["import"]["objects"]
+            if obj["model"] == "schemas.attributedef"
+        }
+        self.assertFalse(generated & authored)
+
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class PromptTests(unittest.TestCase):
@@ -623,6 +761,14 @@ class PromptContentTests(unittest.TestCase):
             with self.subTest(prompt=prompt.splitlines()[0][:50]):
                 self.assertIn("scope_not_found", prompt)
                 self.assertIn("available_scopes", prompt)
+
+    def test_author_catalog_warns_resolved_is_a_read_shape(self):
+        """Agents must not resubmit the resolved catalog as the import
+        payload — the prompt states the read-vs-write gap and points at
+        the ``resolved_vs_import`` section of ``s7://catalog-grammar``."""
+        self.assertIn("*read* shape", AUTHOR_CATALOG_PROMPT)
+        self.assertIn("fixture objects", AUTHOR_CATALOG_PROMPT)
+        self.assertIn("resolved_vs_import", AUTHOR_CATALOG_PROMPT)
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")

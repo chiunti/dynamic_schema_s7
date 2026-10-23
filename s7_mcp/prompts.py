@@ -69,7 +69,11 @@ by rejection. Also read `s7://datatypes` for the data-type catalog \
 payload cannot create new ones) and `s7://catalog/{scope}` of a \
 related existing scope for reference shapes — the scope is the root \
 node type's `json_scope`, and a `scope_not_found` error response \
-carries `available_scopes` listing every live root scope.
+carries `available_scopes` listing every live root scope. Mind the \
+shape gap: the resolved catalog is a *read* shape — `s7_import_catalog` \
+takes fixture objects; the `resolved_vs_import` section of \
+`s7://catalog-grammar` maps each resolved block to the objects it \
+becomes — never resubmit a resolved catalog as the import payload.
 
 2. BUILD — assemble the `objects` list in fixture format: each element is \
 `{"model": "schemas.<label>", "pk": <optional uuid>, "fields": {...}}` with \

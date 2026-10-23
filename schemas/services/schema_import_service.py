@@ -18,6 +18,7 @@ from ..constants import (
 )
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..repositories.project_repository import ProjectRepository
+from ..repositories.schema_repository import SchemaRepository
 from .exceptions import SchemaValidationError
 from .schema_service import SchemaService
 from .schema_validation_service import SchemaValidationService
@@ -31,6 +32,7 @@ class SchemaImportService:
     def __init__(self):
         self.node_type_repository = NodeTypeRepository()
         self.project_repository = ProjectRepository()
+        self.schema_repository = SchemaRepository()
         self.schema_service = SchemaService()
         self.validation_service = SchemaValidationService()
 
@@ -122,6 +124,12 @@ class SchemaImportService:
         by datatype validators in permissive mode and for server-managed
         attributes whose payload value is ignored. The same drops are also
         folded into the returned warning string.
+
+        Attribution: a real user principal leaves a durable ``LogEntry`` in
+        ``django_admin_log`` anchored to the imported root node. A project
+        credential or ``None`` user records no entry — credential imports
+        are audited by the token used. The validate dry-run records none
+        either: the write rolls back with its outer atomic block.
 
         Returns the imported schema root node ID, a warning string, and the
         status originally requested by the caller (before enforcement).
@@ -244,6 +252,20 @@ class SchemaImportService:
             for drop in dropped_attributes
         )
         warning = "; ".join(part for part in warning_parts if part)
+
+        # Durable attribution: a real user principal leaves an admin
+        # LogEntry anchored to the imported root node; project
+        # credentials and dry-runs record none (see record_schema_import).
+        root = self.schema_repository.get_node_by_id(schema_id)
+        change_message = f"imported schema as {schema_status}"
+        if requested_status != schema_status:
+            change_message += f" (requested: {requested_status})"
+        self.schema_repository.record_schema_import(
+            user,
+            object_id=str(schema_id),
+            object_repr=f"{root.key}@{root.version}",
+            change_message=change_message,
+        )
 
         return schema_id, warning, requested_status
 

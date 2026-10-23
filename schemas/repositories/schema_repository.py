@@ -1,4 +1,6 @@
-from django.db import connection
+from django.apps import apps
+from django.contrib.admin.models import CHANGE
+from django.db import connection, transaction
 import json
 import uuid
 from ..models import BuildState
@@ -287,7 +289,43 @@ class SchemaRepository:
             )
             schema_id = cursor.fetchone()[0]
         return schema_id
-    
+
+    def record_schema_import(
+        self, user, object_id: str, object_repr: str, change_message: str,
+    ) -> None:
+        """Attribute a schema import to ``user`` via an admin LogEntry.
+
+        The imported schema's root node is the audit subject: the entry
+        is anchored to the ``Node`` content type and carries the root's
+        id as ``object_id`` and its post-sync ``key@version`` as
+        ``object_repr``.
+
+        Best-effort audit inside its own savepoint: any failure is
+        swallowed so bookkeeping can never break or poison the import
+        transaction. Users without a pk are skipped silently — project
+        credentials (a ``ProjectPrincipal`` has no pk) produce no entry;
+        they are audited by the token used.
+        """
+        user_id = getattr(user, 'pk', None)
+        if user_id is None:
+            return
+        try:
+            log_entry = apps.get_model('admin', 'LogEntry')
+            content_type = apps.get_model('contenttypes', 'ContentType')
+            node = apps.get_model('schemas', 'Node')
+            with transaction.atomic():
+                log_entry.objects.create(
+                    user_id=user_id,
+                    content_type_id=content_type.objects
+                    .get_for_model(node).pk,
+                    object_id=object_id,
+                    object_repr=object_repr,
+                    action_flag=CHANGE,
+                    change_message=change_message,
+                )
+        except Exception:
+            pass
+
     def publish_schema(self, key, version, project_id):
         """
         Publish a schema using PostgreSQL function.

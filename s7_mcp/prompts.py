@@ -6,11 +6,13 @@ You are authoring a form schema for a government procedure ("tramite") using \
 the dynamic-schema dialect served by this MCP server. Follow these steps:
 
 1. DISCOVER — read the resource `s7://catalog/{scope}` for the scope you are \
-authoring (for example `s7://catalog/survey`; ask the user which scope to use \
-if unsure). The resolved catalog lists every reachable node type with its \
-`attributes` (json_key, data_type, required, domain, variant_key, \
-server_generated — attributes flagged `server_generated`, such as `id`, are \
-emitted by the engine on read and must not be authored), the \
+authoring (for example `s7://catalog/survey_root`; ask the user which scope \
+to use if unsure). The scope is the root node type's `json_scope`, not its \
+`name`; a `scope_not_found` error response carries `available_scopes` \
+listing every live root scope. The resolved catalog lists every reachable \
+node type with its `attributes` (json_key, data_type, required, domain, \
+variant_key, server_generated — attributes flagged `server_generated`, such \
+as `id`, are emitted by the engine on read and must not be authored), the \
 `variants` block (`discriminator_attr` tells which attribute selects the \
 variant, `props_node_type` tells which child node type carries \
 variant-specific properties, `keys` lists the allowed variant values), \
@@ -65,7 +67,9 @@ authoritative field table, so field names never have to be discovered \
 by rejection. Also read `s7://datatypes` for the data-type catalog \
 (attribute definitions reference existing data types only — the \
 payload cannot create new ones) and `s7://catalog/{scope}` of a \
-related existing scope for reference shapes.
+related existing scope for reference shapes — the scope is the root \
+node type's `json_scope`, and a `scope_not_found` error response \
+carries `available_scopes` listing every live root scope.
 
 2. BUILD — assemble the `objects` list in fixture format: each element is \
 `{"model": "schemas.<label>", "pk": <optional uuid>, "fields": {...}}` with \

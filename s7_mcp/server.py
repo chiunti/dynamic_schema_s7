@@ -81,7 +81,10 @@ def s7_get_catalog(scope: str) -> dict:
     example}`` where each node-type entry carries its attributes, resolved
     ``variants`` block and ``compositions`` grouped by collection_key, and
     ``datatypes`` carries grammar docs for the non-trivial data types used
-    by the scope. ``{"error": ...}`` when the scope does not exist.
+    by the scope. ``scope`` is the root node type's ``json_scope``, not its
+    ``name`` — an unknown scope answers
+    ``{"error": "scope_not_found", "available_scopes": [...]}``, where
+    ``available_scopes`` lists every live root scope.
     """
     return _get_client().get_json(f"catalog/{_q(scope)}/")
 
@@ -193,7 +196,11 @@ def s7_import_catalog(objects: list[dict]) -> dict:
 
 @mcp.resource("s7://catalog/{scope}", mime_type="application/json")
 def catalog_resource(scope: str) -> dict:
-    """Resolved authoring catalog for ``scope`` (same payload as s7_get_catalog)."""
+    """Resolved authoring catalog for ``scope`` (same payload as s7_get_catalog).
+
+    ``scope`` is the root node type's ``json_scope``; an unknown scope
+    answers ``{"error": "scope_not_found", "available_scopes": [...]}``.
+    """
     return _get_client().get_json(f"catalog/{_q(scope)}/")
 
 

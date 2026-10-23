@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import inspect
 import json
+import re
 import sys
 import types
 import unittest
@@ -21,11 +22,12 @@ _DEPS = (
 
 if _DEPS:
     import s7_mcp.server as server
-    from s7_mcp.prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
 
-# Pure-Python data module — importable without mcp/httpx, so the grammar
-# tests below run even when the optional dependencies are not installed.
+# Pure-Python modules — importable without mcp/httpx, so the grammar and
+# prompt-content tests below run even when the optional dependencies are
+# not installed.
 from s7_mcp.catalog_grammar import CATALOG_GRAMMAR
+from s7_mcp.prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
 
 EXPECTED_TOOLS = {
     "s7_get_catalog",
@@ -590,6 +592,37 @@ class PromptTests(unittest.TestCase):
         self.assertIs(result, AUTHOR_CATALOG_PROMPT)
         self.assertIsInstance(result, str)
         self.assertTrue(result.strip())
+
+
+class PromptContentTests(unittest.TestCase):
+    """Prompt template content checks.
+
+    No ``_DEPS`` guard: ``s7_mcp.prompts`` holds pure string constants and
+    is importable without the optional mcp/httpx dependencies — the
+    regression guards must not skip silently in minimal environments.
+    """
+
+    def test_tramite_prompt_catalog_example_is_a_resolvable_scope(self):
+        """Regression guard: the step-1 catalog literal must be a real
+        ``json_scope`` — ``survey`` is the root node type's *name* and
+        resolves to ``scope_not_found`` every time."""
+        self.assertIn("`s7://catalog/survey_root`", CREATE_TRAMITE_FORM_PROMPT)
+        # ``survey_root`` carries the broken ``survey`` literal as a prefix,
+        # so a plain substring check would false-positive — the broken form
+        # is ``survey`` not followed by another word character.
+        self.assertIsNone(
+            re.search(
+                r"s7://catalog/survey(?![\w])", CREATE_TRAMITE_FORM_PROMPT
+            )
+        )
+
+    def test_prompts_document_scope_discovery_via_the_error_envelope(self):
+        """Both workflows name ``available_scopes`` on ``scope_not_found``
+        as the supported way to discover valid scope names."""
+        for prompt in (CREATE_TRAMITE_FORM_PROMPT, AUTHOR_CATALOG_PROMPT):
+            with self.subTest(prompt=prompt.splitlines()[0][:50]):
+                self.assertIn("scope_not_found", prompt)
+                self.assertIn("available_scopes", prompt)
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")

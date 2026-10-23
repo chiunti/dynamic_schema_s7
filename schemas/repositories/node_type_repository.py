@@ -85,6 +85,22 @@ class NodeTypeRepository:
         """
         return NodeType.objects.filter(is_root=True)
 
+    def list_root_scopes(self) -> list[str]:
+        """
+        List the json_scope values declared by root node types.
+
+        Returns:
+            Sorted list of non-empty json_scope strings of root NodeTypes —
+            null and blank scopes are not addressable via catalog routes
+        """
+        return list(
+            NodeType.objects.filter(is_root=True)
+            .exclude(json_scope__isnull=True)
+            .exclude(json_scope="")
+            .order_by("json_scope")
+            .values_list("json_scope", flat=True)
+        )
+
     def get_scopeless_root_node_type(self) -> Optional[NodeType]:
         """
         Get the root node type without a json_scope (json_scope IS NULL).

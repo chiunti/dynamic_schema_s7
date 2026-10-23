@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from ..constants import ERR_INVALID_SCHEMA
+from ..constants import ERR_INVALID_SCHEMA, ERR_SCOPE_NOT_FOUND
 
 
 class SchemaValidationError(ValueError):
@@ -41,3 +41,17 @@ class SchemaValidationError(ValueError):
             "expected": self.expected,
             "received": self.received,
         }
+
+
+class ScopeNotFoundError(LookupError):
+    """Scope lookup failure raised by the resolved catalog service.
+
+    Carries the list of valid root scopes so consumers can discover them
+    from the error envelope itself. Subclasses ``LookupError`` so existing
+    callers that catch ``LookupError`` keep working; ``str(exc)`` yields
+    ``ERR_SCOPE_NOT_FOUND``.
+    """
+
+    def __init__(self, available_scopes: list[str]) -> None:
+        super().__init__(ERR_SCOPE_NOT_FOUND)
+        self.available_scopes = available_scopes

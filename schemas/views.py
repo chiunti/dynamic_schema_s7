@@ -26,6 +26,7 @@ from .constants import (
 from .serializers import CatalogImportSerializer, SchemaImportSerializer
 from .services.catalog_import_service import CatalogImportService
 from .services.catalog_service import CatalogService
+from .services.exceptions import ScopeNotFoundError
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
 from .services.schema_read_service import SchemaReadService
@@ -330,7 +331,12 @@ class SchemaPublishView(APIView):
 
 
 class CatalogScopeView(APIView):
-    """Serve the resolved catalog for a json_scope to project credentials or user MCP tokens."""
+    """Serve the resolved catalog for a json_scope to project credentials or user MCP tokens.
+
+    An unknown scope answers 404 with ``{"error": "scope_not_found",
+    "available_scopes": [...]}`` — ``available_scopes`` lists every live
+    root scope so agents can self-correct.
+    """
 
     authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
     permission_classes = [CanReadSchema | UserMCPTokenPermission]
@@ -338,8 +344,11 @@ class CatalogScopeView(APIView):
     def get(self, request, scope):
         try:
             catalog = CatalogService().get_resolved_catalog(scope)
-        except LookupError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except ScopeNotFoundError as exc:
+            return Response(
+                {"error": str(exc), "available_scopes": exc.available_scopes},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         except Exception:
             logger.exception("Catalog retrieval failed")
             return Response(

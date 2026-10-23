@@ -112,7 +112,7 @@ of `mcpServers`.
 
 | URI | Content |
 |---|---|
-| `s7://catalog/{scope}` | Resolved catalog JSON. |
+| `s7://catalog/{scope}` | Resolved catalog JSON — `scope` is the root node type's `json_scope`, not its `name`. |
 | `s7://datatypes` | DataType catalog JSON. |
 | `s7://examples/{scope}` | Generated example JSON for the scope. |
 | `s7://schemas/{node_type}/{key}/{version}` | Published schema JSON (few-shot). Dual auth — user tokens need `S7_PROJECT_ID`; see `s7_get_schema`. |
@@ -142,7 +142,9 @@ of `mcpServers`.
 - **HTTP 403** — the token's owner lacks permission over the target
   project/organization, or the token's MCP level does not cover the
   capability — the backend's error envelope is returned verbatim.
-- **HTTP 404** — unknown catalog scope (`{"error": ...}`), or the schema is
+- **HTTP 404** — unknown catalog scope
+  (`{"error": "scope_not_found", "available_scopes": [...]}` —
+  `available_scopes` lists every live root scope), or the schema is
   not found/not in the requested status — published for `s7_get_schema`,
   draft for `s7_get_draft` (RFC-7807 body
   `{"type": "schema_not_found", "title", "detail", "status": 404}`).

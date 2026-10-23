@@ -11,12 +11,12 @@ replicating the internal variant/composition resolution logic.
 from copy import deepcopy
 from typing import Any, Optional
 
-from ..constants import ERR_SCOPE_NOT_FOUND
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.data_type_repository import DataTypeRepository
 from ..repositories.node_type_repository import NodeTypeRepository
 from .datatype_plugins import get_datatype_doc, is_server_managed_attribute
+from .exceptions import ScopeNotFoundError
 from .schema_service import SchemaService
 
 
@@ -38,6 +38,14 @@ class CatalogService:
             primary_storage_type} entries ordered by name.
         """
         return {"datatypes": self.data_type_repository.list_data_types()}
+
+    def list_root_scopes(self) -> list[str]:
+        """Return the json_scope values declared by root NodeTypes.
+
+        Returns:
+            Sorted list of non-null json_scope strings.
+        """
+        return self.node_type_repository.list_root_scopes()
 
     def get_resolved_catalog(self, scope: str) -> dict:
         """Return the resolved catalog for a root json_scope.
@@ -66,12 +74,13 @@ class CatalogService:
             - example: embedded JSON example for the scope, or None
 
         Raises:
-            LookupError: ERR_SCOPE_NOT_FOUND when no root NodeType matches
-            the given scope.
+            ScopeNotFoundError: a LookupError subclass carrying the valid
+            root scopes in ``available_scopes`` when no root NodeType
+            matches the given scope.
         """
         root = self.node_type_repository.get_root_node_type_by_scope(scope)
         if root is None:
-            raise LookupError(ERR_SCOPE_NOT_FOUND)
+            raise ScopeNotFoundError(self.list_root_scopes())
 
         type_ids = self.node_type_repository.get_node_type_ids_for_root(root.id)
         node_types = list(self.node_type_repository.get_node_types_by_ids(type_ids))

@@ -854,8 +854,10 @@ class SchemaService:
     def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process a collection of items as child nodes using NodeTypeComposition.
 
-        ``dropped_attributes`` is forwarded to _process_node_attributes as the
-        shared out-list for validator-rejected attribute values.
+        ``dropped_attributes`` is the shared out-list for validator-rejected
+        values: an item containing an invalid conditional structure is dropped
+        wholesale in permissive mode (strict mode raises), and the list is
+        forwarded to _process_node_attributes for attribute-level drops.
         """
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
@@ -897,17 +899,24 @@ class SchemaService:
 
             item_path = f"{path}.{collection_key}[{idx}]"
 
-            # Validate conditional structures within the item
-            for item_key, item_value in item.items():
-                if isinstance(item_value, dict) and self._is_conditional_structure(item_value):
-                    try:
-                        validate_conditional_structure(item_value)
-                    except Exception as e:
-                        raise SchemaValidationError(
-                            f"Invalid conditional structure for '{item_key}' in item {idx} of '{collection_key}': {str(e)}",
-                            code=ERR_INVALID_SCHEMA,
-                            path=f"{item_path}.{item_key}",
-                        ) from e
+            # Validate conditional structures within the item. Strict mode
+            # aborts; permissive mode records a dropped_attribute warning and
+            # omits the whole item — the dropped unit is the item itself.
+            invalid_conditional = self._find_invalid_item_conditional(item)
+            if invalid_conditional is not None:
+                item_key, conditional_error = invalid_conditional
+                message = (
+                    f"Invalid conditional structure for '{item_key}' in item {idx} "
+                    f"of '{collection_key}': {conditional_error}"
+                )
+                if strict_keys:
+                    raise SchemaValidationError(
+                        message,
+                        code=ERR_INVALID_SCHEMA,
+                        path=f"{item_path}.{item_key}",
+                    ) from conditional_error
+                self._record_dropped_attribute(item_path, message, dropped_attributes)
+                continue
 
             child_node_type = self._resolve_child_type_for_item(item, compositions)
             _, json_key_to_field_map = field_maps[child_node_type.id]
@@ -1007,23 +1016,36 @@ class SchemaService:
     def _process_single_child_node(self, parent_id: uuid.UUID, json_key: str, value: dict, child_type, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, index: Optional[int] = None, sort_order: int = 0, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process a single child node from a dict value (composition without collection_key).
 
-        ``dropped_attributes`` is forwarded to _process_node_attributes as the
-        shared out-list for validator-rejected attribute values.
+        ``dropped_attributes`` is the shared out-list for validator-rejected
+        values: a child dict that is itself an invalid conditional structure
+        is dropped wholesale in permissive mode (strict mode raises), and the
+        list is forwarded to _process_node_attributes for attribute-level
+        drops.
         """
         # JSON path of this child node within the payload (indexed when the
         # child comes from a list slot).
         child_path = f"{path}.{json_key}" if index is None else f"{path}.{json_key}[{index}]"
 
-        # Validate conditional structure if value has conditional structure
+        # Validate conditional structure if value has conditional shape.
+        # Strict mode aborts; permissive mode records a dropped_attribute
+        # warning and skips the whole child node — the dropped unit is the
+        # structural child itself, so nothing invalid is persisted.
         if self._is_conditional_structure(value):
             try:
                 validate_conditional_structure(value)
             except Exception as e:
-                raise SchemaValidationError(
-                    f"Invalid conditional structure for '{json_key}': {str(e)}",
-                    code=ERR_INVALID_SCHEMA,
-                    path=child_path,
-                ) from e
+                if strict_keys:
+                    raise SchemaValidationError(
+                        f"Invalid conditional structure for '{json_key}': {str(e)}",
+                        code=ERR_INVALID_SCHEMA,
+                        path=child_path,
+                    ) from e
+                self._record_dropped_attribute(
+                    child_path,
+                    f"Invalid conditional structure for '{json_key}': {e}",
+                    dropped_attributes,
+                )
+                return
 
         # Generate unique name/key based on index
         if index is not None:
@@ -1286,6 +1308,25 @@ class SchemaService:
                 path, json_key, message,
             )
 
+    @staticmethod
+    def _record_dropped_attribute(attr_path: str, message: str, dropped_attributes: Optional[list]) -> None:
+        """Record an attribute-level value dropped in permissive mode.
+
+        Appends a ``dropped_attribute`` entry to the out-list, or logs a
+        warning when the caller carries no out-list (e.g. direct
+        ``import_schema`` calls) — nothing is dropped silently.
+        """
+        if dropped_attributes is not None:
+            dropped_attributes.append(
+                {
+                    "code": WARN_DROPPED_ATTRIBUTE,
+                    "path": attr_path,
+                    "message": message,
+                }
+            )
+        else:
+            logging.getLogger(__name__).warning("%s: %s", attr_path, message)
+
     def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process attributes for a node, creating AttributeDefs dynamically if needed.
 
@@ -1308,9 +1349,10 @@ class SchemaService:
                 payload; errors are reported as ``{path}.{json_key}``.
             dropped_attributes: Optional out-list collecting
                 ``{"code", "path", "message"}`` dicts for attribute values
-                rejected by datatype validators in permissive mode (under
-                ``strict_keys`` those failures raise instead) and for
-                server-managed attributes whose payload value is ignored.
+                rejected in permissive mode (under ``strict_keys`` those
+                failures raise instead): datatype-validator rejections,
+                invalid conditional structures, and server-managed
+                attributes whose payload value is ignored.
         """
         # Get Node model field names (these are not attributes)
         node_field_names = self.repository.get_node_field_names()
@@ -1576,16 +1618,27 @@ class SchemaService:
 
                     # If not found, create AttributeDef dynamically
                     if not attr_def:
-                        attr_def = self._create_attribute_def(node_type, json_key, value, node_variant, strict_keys=strict_keys, path=path)
+                        attr_def = self._create_attribute_def(node_type, json_key, value, node_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
 
                     if attr_def:
-                        # Validate conditional structures recursively in the value
-                        # Do this before the try-except to ensure validation errors propagate
+                        # Validate conditional structures recursively in the
+                        # value before any persistence. Strict mode re-raises
+                        # ValueError so the per-key wrapper maps it to
+                        # SchemaValidationError at '{path}.{json_key}';
+                        # permissive mode records a dropped_attribute warning
+                        # and skips the attribute — nothing invalid is stored.
                         if isinstance(value, (list, dict)):
                             try:
-                                self._validate_conditional_recursively(value, json_key)
+                                self._validate_conditional_recursively(value, f"{path}.{json_key}")
                             except Exception as e:
-                                raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+                                if strict_keys:
+                                    raise ValueError(f"Invalid conditional structure for '{json_key}': {str(e)}")
+                                self._record_dropped_attribute(
+                                    f"{path}.{json_key}",
+                                    f"Invalid conditional structure for '{json_key}': {e}",
+                                    dropped_attributes,
+                                )
+                                continue
 
                         # Strict mode: scalar values must belong to the declared domain.
                         if (strict_keys and value is not None
@@ -1617,22 +1670,9 @@ class SchemaService:
                                     code=ERR_INVALID_SCHEMA,
                                     path=f"{path}.{json_key}",
                                 ) from exc
-                            if dropped_attributes is not None:
-                                dropped_attributes.append(
-                                    {
-                                        "code": WARN_DROPPED_ATTRIBUTE,
-                                        "path": f"{path}.{json_key}",
-                                        "message": str(exc),
-                                    }
-                                )
-                            else:
-                                # Callers without the out-list (e.g. direct
-                                # import_schema calls) still get a trace —
-                                # nothing is dropped silently.
-                                logging.getLogger(__name__).warning(
-                                    "Dropped attribute %s.%s: %s",
-                                    path, json_key, exc,
-                                )
+                            self._record_dropped_attribute(
+                                f"{path}.{json_key}", str(exc), dropped_attributes
+                            )
                             continue
 
                         # Store the value in the column declared by
@@ -1664,7 +1704,7 @@ class SchemaService:
             # Re-enable triggers
             self.repository.enable_triggers()
 
-    def _create_attribute_def(self, node_type, json_key: str, value, variant_key=None, strict_keys: bool = False, path: str = "$"):
+    def _create_attribute_def(self, node_type, json_key: str, value, variant_key=None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Create an AttributeDef dynamically based on the value type
 
         New properties are created as variant-specific by default (for the current node variant).
@@ -1675,7 +1715,10 @@ class SchemaService:
         Under ``strict_keys``, keys with no AttributeDef declaration for the
         node type and the node's active variant are rejected instead of
         auto-creating catalog entries, and non-collection values on declared
-        collection keys raise instead of being silently dropped.
+        collection keys raise instead of being silently dropped. An invalid
+        conditional structure raises in strict mode; in permissive mode it
+        records a ``dropped_attribute`` warning on ``dropped_attributes``
+        and returns None so the caller skips the attribute.
         """
         # Check if json_key corresponds to a collection_key in NodeTypeComposition
         composition_exists = self.composition_repository.composition_exists_by_collection_key(
@@ -1723,16 +1766,25 @@ class SchemaService:
         if not data_type:
             return None
 
-        # Validate conditional structure if value has conditional structure
+        # Validate conditional structure if value has conditional shape.
+        # Strict mode aborts; permissive mode records a dropped_attribute
+        # warning and returns None so the caller skips the attribute.
         if self._is_conditional_structure(value):
             try:
                 validate_conditional_structure(value)
             except Exception as e:
-                raise SchemaValidationError(
-                    f"Invalid conditional structure for '{json_key}': {str(e)}",
-                    code=ERR_INVALID_SCHEMA,
-                    path=f"{path}.{json_key}",
-                ) from e
+                if strict_keys:
+                    raise SchemaValidationError(
+                        f"Invalid conditional structure for '{json_key}': {str(e)}",
+                        code=ERR_INVALID_SCHEMA,
+                        path=f"{path}.{json_key}",
+                    ) from e
+                self._record_dropped_attribute(
+                    f"{path}.{json_key}",
+                    f"Invalid conditional structure for '{json_key}': {e}",
+                    dropped_attributes,
+                )
+                return None
 
         # Decide whether to create as universal or variant-specific
         final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -1865,7 +1917,21 @@ class SchemaService:
         if not isinstance(value, dict):
             return False
         return 'logic' in value and 'conditions' in value
-    
+
+    def _find_invalid_item_conditional(self, item: dict) -> Optional[tuple]:
+        """Return ``(item_key, exception)`` for the first value of a collection
+        item that has conditional shape but fails structural validation.
+
+        Returns None when every conditional in the item is valid.
+        """
+        for item_key, item_value in item.items():
+            if isinstance(item_value, dict) and self._is_conditional_structure(item_value):
+                try:
+                    validate_conditional_structure(item_value)
+                except Exception as exc:
+                    return item_key, exc
+        return None
+
     def _validate_conditional_recursively(self, value, path: str = ""):
         """Recursively validate all conditional structures in a value."""
         if isinstance(value, dict):

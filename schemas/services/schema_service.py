@@ -1098,6 +1098,7 @@ class SchemaService:
                 inherited_variant,
                 strict_keys=strict_keys,
                 path=child_path,
+                dropped_attributes=dropped_attributes,
             )
 
         # Process the dict as attributes and nested structures.
@@ -1128,8 +1129,15 @@ class SchemaService:
             dropped_attributes=dropped_attributes,
         )
 
-    def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None, strict_keys: bool = False, path: str = "$"):
-        """Set a node attribute value, creating AttributeDef if needed"""
+    def _set_node_attribute(self, node_id: uuid.UUID, json_key: str, value, node_type, variant_key: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
+        """Set a node attribute value, creating AttributeDef if needed.
+
+        In permissive mode (strict_keys=False), validation failures from
+        validate_conditional_structure and validate_datatype_value are recorded
+        as dropped_attribute warnings and the write is skipped, aligning with
+        the main import path behavior. In strict mode, failures raise
+        SchemaValidationError as before.
+        """
         # Disable triggers to bypass s7 validation
         self.repository.disable_triggers()
 
@@ -1158,12 +1166,21 @@ class SchemaService:
             if self._is_conditional_structure(value):
                 try:
                     validate_conditional_structure(value)
-                except Exception as e:
-                    raise SchemaValidationError(
-                        f"Invalid conditional structure for '{json_key}': {str(e)}",
-                        code=ERR_INVALID_SCHEMA,
-                        path=f"{path}.{json_key}",
-                    ) from e
+                except (ValidationError, SchemaValidationError) as e:
+                    if strict_keys:
+                        raise SchemaValidationError(
+                            f"Invalid conditional structure for '{json_key}': {str(e)}",
+                            code=ERR_INVALID_SCHEMA,
+                            path=f"{path}.{json_key}",
+                        ) from e
+                    else:
+                        # Permissive mode: record as dropped_attribute and skip write
+                        self._record_dropped_attribute(
+                            f"{path}.{json_key}",
+                            f"Invalid conditional structure: {str(e)}",
+                            dropped_attributes
+                        )
+                        return
 
             # Decide whether to create as universal or variant-specific
             final_variant_key = self._determine_variant_key(node_type, json_key, variant_key)
@@ -1206,12 +1223,21 @@ class SchemaService:
                 # Run any datatype-specific plugin validators (e.g. conditional).
                 try:
                     validate_datatype_value(attr_def.data_type, value)
-                except Exception as e:
-                    raise SchemaValidationError(
-                        f"Invalid value for '{json_key}': {str(e)}",
-                        code=ERR_INVALID_SCHEMA,
-                        path=f"{path}.{json_key}",
-                    ) from e
+                except (ValidationError, SchemaValidationError) as e:
+                    if strict_keys:
+                        raise SchemaValidationError(
+                            f"Invalid value for '{json_key}': {str(e)}",
+                            code=ERR_INVALID_SCHEMA,
+                            path=f"{path}.{json_key}",
+                        ) from e
+                    else:
+                        # Permissive mode: record as dropped_attribute and skip write
+                        self._record_dropped_attribute(
+                            f"{path}.{json_key}",
+                            f"Invalid value: {str(e)}",
+                            dropped_attributes
+                        )
+                        return
 
                 # Strict mode: scalar values must belong to the declared domain.
                 if strict_keys and isinstance(value, (str, int, float, bool)):
@@ -1578,7 +1604,7 @@ class SchemaService:
                         if kind_attr_def:
                             # This is a nested object that should be expanded
                             # Set the kind attribute
-                            self._set_node_attribute(node_id, f'{json_key}_kind', kind_key, node_type, node_variant, strict_keys=strict_keys, path=path)
+                            self._set_node_attribute(node_id, f'{json_key}_kind', kind_key, node_type, node_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                             # Set the value attribute based on the kind
                             # Try both patterns: {json_key}_{kind_key}_key (for field) and {json_key}_{kind_key} (for value)
                             value_attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
@@ -1593,7 +1619,7 @@ class SchemaService:
                                     None
                                 )
                             if value_attr_def:
-                                self._set_node_attribute(node_id, value_attr_def.json_key, kind_value, node_type, node_variant, strict_keys=strict_keys, path=path)
+                                self._set_node_attribute(node_id, value_attr_def.json_key, kind_value, node_type, node_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                             continue
 
                     # Try to find existing AttributeDef

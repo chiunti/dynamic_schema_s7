@@ -19,6 +19,7 @@ from django.core.management import call_command
 
 from ..constants import (
     ERR_INVALID_FK_SHAPE,
+    ERR_INVALID_NATURAL_KEY_COMPONENTS,
     ERR_MISSING_NATURAL_KEY_FIELDS,
     ERR_MISSING_REQUIRED_FIELDS,
     ERR_UNKNOWN_OBJECT_KEYS,
@@ -207,7 +208,14 @@ class FixtureService:
         the NK check and are not reported twice), natural key
         presence (every position of the model's natural key must be
         present and non-empty — explicit NULL is accepted only on
-        nullable model fields), in-payload natural key uniqueness, the
+        nullable model fields, and a text component whose ``strip()``
+        is empty counts as absent since whitespace is never deliberate
+        identity), natural-key component types (every present text
+        component must be a ``str``, and every present FK position must
+        serialize as a string or a list of strings — a mistyped
+        component would coerce to a degenerate identity like
+        ``name='0'`` at deserialization, so the object is rejected
+        rather than deduplicated), in-payload natural key uniqueness, the
         shape of every declared FK value (``FK_FIELDS`` positions must
         serialize as natural-key lists of strings — ``None`` is the
         valid "no reference" shape; scalars and lists with non-string
@@ -316,6 +324,25 @@ class FixtureService:
                         )
                     )
                     continue
+                invalid = self._invalid_natural_key_components(
+                    label, fields, nk,
+                )
+                if invalid:
+                    # A wrongly-typed NK component has no valid identity
+                    # either — a CharField would coerce 0 -> '0' at
+                    # deserialization — and unhashable components (dicts,
+                    # lists in text positions) would TypeError the dedup
+                    # set. Reject instead of deduplicating, and skip the
+                    # co-report of 'malformed natural key'. The object
+                    # stays in ``checked``, so the FK-shape pass can still
+                    # flag an FK position carrying a non-reference value.
+                    errors.append(
+                        f'{where}: '
+                        + ERR_INVALID_NATURAL_KEY_COMPONENTS.format(
+                            fields=', '.join(invalid),
+                        )
+                    )
+                    continue
                 try:
                     label_naturals = naturals.setdefault(label, set())
                     if nk in label_naturals:
@@ -385,8 +412,14 @@ class FixtureService:
         A position is absent when its key is missing from the payload
         (an absent key is always an error, even on nullable fields),
         when it resolves to ``None`` on a non-nullable field, or when it
-        serialized as an empty string / empty list (the ``[]`` shape an
-        unresolvable FK reference takes). An explicit ``None`` on a
+        serialized as an empty/whitespace-only string or an empty list
+        (the ``[]`` shape an unresolvable FK reference takes). A string
+        whose ``strip()`` is empty counts as absent: whitespace is never
+        deliberate identity — it would deserialize to a row keyed by
+        ``' '`` that collides with nothing and matches nothing. The
+        ``isinstance`` guard keeps non-string components (``0``, ``[]``)
+        out of the whitespace rule; their type is checked separately by
+        ``_invalid_natural_key_components``. An explicit ``None`` on a
         nullable model field is a legitimate NK NULL — base
         ``attributedef`` rows carry ``variant_key=None``, global defs
         carry ``node_type=None`` — and stays valid.
@@ -407,11 +440,60 @@ class FixtureService:
             if (
                 field_name not in fields
                 or (component is None and field_name not in nullable)
-                or component == ''
+                or (isinstance(component, str)
+                    and component.strip() == '')
                 or component == []
             ):
                 missing.append(field_name)
         return missing
+
+    def _invalid_natural_key_components(
+        self, label: str, fields: dict, natural_key: tuple,
+    ) -> list[str]:
+        """Names of the natural-key positions carrying a wrongly-typed value.
+
+        Presence and type are separate checks: this method runs after
+        ``_missing_natural_key_fields`` and inspects the serialized type
+        of the components that survived it. A CharField silently coerces
+        at deserialization time (``0`` -> ``'0'``, ``False`` ->
+        ``'False'``), so a mistyped component would create a row with a
+        degenerate identity that matches later updates just like a
+        legitimately-authored one. Unhashable components (dicts, lists
+        in text positions) would additionally blow up the dedup set with
+        a ``TypeError``. Nothing is coerced — the object is rejected.
+
+        ``None`` components are skipped: the presence check already
+        classified them (absent on a non-nullable field, legitimate NULL
+        on a nullable one).
+
+        FK positions (declared in ``FK_FIELDS``) validate the raw
+        ``fields`` value — the serialized reference — which must be a
+        string or a list of strings (the fixture natural-key shape);
+        anything else (``123``, ``[123]``, ``{"k": "v"}``, ``true``) is
+        invalid. Every other position is a text component and must be a
+        ``str`` — ``0``, ``False``, ``['x']``, ``{"k": "v"}`` are
+        rejected. String *content* is not judged here: ``'0'``/``'1'``
+        remain valid natural keys; only the serialized type is.
+        """
+        fk_positions = {f for f, _ in FK_FIELDS.get(label, [])}
+        invalid = []
+        for field_name, component in zip(
+            NATURAL_KEY_FIELDS[label], natural_key,
+        ):
+            if component is None:
+                # Already classified by the presence check.
+                continue
+            if field_name in fk_positions:
+                raw = fields.get(field_name)
+                if not (
+                    isinstance(raw, str)
+                    or (isinstance(raw, list)
+                        and all(isinstance(v, str) for v in raw))
+                ):
+                    invalid.append(field_name)
+            elif not isinstance(component, str):
+                invalid.append(field_name)
+        return invalid
 
     def _missing_required_fields(
         self, label: str, fields: dict,

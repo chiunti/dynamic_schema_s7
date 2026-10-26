@@ -151,6 +151,7 @@ ERR_INVALID_REQUEST = "invalid_request"
 # validate_objects.
 ERR_INVALID_CATALOG_OBJECT = "invalid_catalog_object"
 ERR_MISSING_NATURAL_KEY_FIELDS = "missing natural key fields: {fields}"
+ERR_INVALID_NATURAL_KEY_COMPONENTS = "invalid natural key components: {fields}"
 ERR_MISSING_REQUIRED_FIELDS = "missing required fields: {fields}"
 ERR_INVALID_FK_SHAPE = "expected a natural-key list of strings for '{field}', got {received}"
 ERR_UNKNOWN_OBJECT_KEYS = "unknown object keys: {keys}"

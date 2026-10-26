@@ -18,6 +18,7 @@ from ..services.node_service import NodeService
 from ..services.schema_service import SchemaService
 from ..services.schema_validation_service import SchemaValidationService
 from ..repositories.schema_repository import SchemaRepository
+from ..utils import parse_uuid
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_NOT_FOUND,
@@ -174,7 +175,7 @@ class RootNodeAdminMixin:
         key_value = self._get_attr_value(obj, 'key')
         version_value = obj.version
         if key_value and version_value:
-            build_state = self.repository.get_build_state(key_value, version_value)
+            build_state = self.repository.get_build_state(key_value, version_value, project_id=obj.project_id)
             if build_state and build_state.dirty:
                 return mark_safe('<span style="color: orange;">Modified</span>')
             elif build_state:
@@ -224,7 +225,7 @@ class RootNodeAdminMixin:
                 buttons.append(format_html('<a href="{}?node_id={}" class="button">Edit</a>', editor_url, obj.id))
             elif action == 'build':
                 build_url = reverse(f"admin:{self.url_prefix}_build")
-                buttons.append(format_html('<a href="{}?key={}&version={}" class="button">Build</a>', build_url, info["key"], info["version"]))
+                buttons.append(format_html('<a href="{}?key={}&version={}&project_id={}" class="button">Build</a>', build_url, info["key"], info["version"], obj.project_id or ""))
             elif action == 'publish_blocked':
                 buttons.append(format_html(
                     '<span class="button" disabled style="opacity:0.6;cursor:not-allowed;" '
@@ -320,9 +321,15 @@ class RootNodeAdminMixin:
         version = request.GET.get("version")
         if not key or not version:
             return JsonResponse({"error": ERR_KEY_AND_VERSION_REQUIRED}, status=400)
+        project_id = None
+        project_id_raw = request.GET.get("project_id")
+        if project_id_raw:
+            try:
+                project_id = parse_uuid(project_id_raw, "project_id")
+            except ValueError as e:
+                return JsonResponse({"error": str(e)}, status=400)
         try:
-            # Look up the root node and derive project_id inside the service
-            self.schema_service.increment_build_for(key, version)
+            self.schema_service.increment_build_for(key, version, project_id=project_id)
         except LookupError:
             return JsonResponse({"error": ERR_SCHEMA_NOT_FOUND}, status=404)
         except ValueError as e:

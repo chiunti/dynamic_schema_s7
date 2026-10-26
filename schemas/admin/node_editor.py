@@ -23,6 +23,7 @@ from ..services.editor_extension_service import EditorExtensionService
 from ..services.node_service import NodeService
 from ..services.node_json_service import NodeJsonService
 from ..services.schema_validation_service import SchemaValidationService
+from ..utils import parse_uuid
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_INVALID_JSON,
@@ -81,10 +82,16 @@ class NodeEditorMixin:
         return render(request, "admin/schemas/node/editor.html", context)
 
     def _resolve_root_node_id(self, request):
+        raw_project_id = request.GET.get("project_id")
+        try:
+            project_id = parse_uuid(raw_project_id, "project_id") if raw_project_id else None
+        except ValueError:
+            return None
         return self.node_service.resolve_root_node_id(
             node_id=request.GET.get("node_id"),
             key=request.GET.get("key"),
             version=request.GET.get("version"),
+            project_id=project_id,
         )
 
     def _resolve_schema_root_id(self, request):

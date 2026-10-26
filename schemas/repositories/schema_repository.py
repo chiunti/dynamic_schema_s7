@@ -67,15 +67,25 @@ class NodeRepository:
     
     def check_key_version_unique(self, key, version, exclude_node_id=None, project_id=None, organization_id=None):
         """
-        Check if key+version combination is unique, optionally excluding a node.
-        
+        Check if key+version combination is unique within a project scope,
+        optionally excluding a node.
+
+        Uniqueness is scoped per project: the routine compares root
+        ``project_id`` with ``IS NOT DISTINCT FROM``, so passing
+        ``project_id=None`` restricts the check to the NULL bucket (roots with
+        no project) — it does NOT mean "unique across all projects".
+
         Args:
             key: Attribute key to check
             version: Attribute version to check
             exclude_node_id: Optional UUID of node to exclude from check
-            
+            project_id: Optional project UUID scoping the uniqueness check;
+                ``None`` targets the bucket of roots without project
+            organization_id: Legacy parameter kept for signature stability;
+                not used by ``s7_check_key_version_unique``
+
         Returns:
-            Boolean indicating if the combination is unique
+            Boolean indicating if the combination is unique in the scope
         """
         # Validate inputs
         if not isinstance(key, str) or len(key) == 0 or len(key) > 255:
@@ -84,18 +94,20 @@ class NodeRepository:
             raise ValueError(ERR_VERSION_MUST_BE_NON_EMPTY_MAX_255)
         if exclude_node_id is not None and not isinstance(exclude_node_id, (str, uuid.UUID)):
             raise ValueError(ERR_EXCLUDE_NODE_ID_MUST_BE_UUID_OR_NONE)
-        
+
+        # Always bind all four params positionally: p_exclude_node_id (3rd)
+        # sits before p_project_id (4th) in the routine signature, so NULL is
+        # passed explicitly for exclude when there is no node to exclude.
         with connection.cursor() as cursor:
-            if exclude_node_id:
-                cursor.execute(
-                    "SELECT s7.s7_check_key_version_unique(%s, %s, %s::uuid)",
-                    [key, version, str(exclude_node_id)]
-                )
-            else:
-                cursor.execute(
-                    "SELECT s7.s7_check_key_version_unique(%s, %s)",
-                    [key, version]
-                )
+            cursor.execute(
+                "SELECT s7.s7_check_key_version_unique(%s, %s, %s::uuid, %s::uuid)",
+                [
+                    key,
+                    version,
+                    str(exclude_node_id) if exclude_node_id is not None else None,
+                    str(project_id) if project_id is not None else None,
+                ]
+            )
             is_unique = cursor.fetchone()[0]
         return is_unique
     
@@ -423,40 +435,54 @@ class SchemaRepository:
     
     def check_key_version_exists(self, key, version, project_id=None, organization_id=None):
         """
-        Check if a key+version combination already exists.
-        
+        Check if a key+version combination already exists within a project
+        scope.
+
+        Existence is scoped per project: the routine compares root
+        ``project_id`` with ``IS NOT DISTINCT FROM``, so passing
+        ``project_id=None`` restricts the check to the NULL bucket (roots with
+        no project) — it does NOT mean "exists in any project".
+
         Args:
             key: Attribute key to check (max 255 chars)
             version: Attribute version to check (max 255 chars)
-            
+            project_id: Optional project UUID scoping the existence check;
+                ``None`` targets the bucket of roots without project
+            organization_id: Legacy parameter kept for signature stability;
+                not used by ``s7_check_key_version_exists``
+
         Returns:
-            Boolean indicating if the combination exists
+            Boolean indicating if the combination exists in the scope
         """
         # Validate inputs
         if not isinstance(key, str) or len(key) == 0 or len(key) > 255:
             raise ValueError(ERR_KEY_MUST_BE_NON_EMPTY_MAX_255)
         if not isinstance(version, str) or len(version) == 0 or len(version) > 255:
             raise ValueError(ERR_VERSION_MUST_BE_NON_EMPTY_MAX_255)
-        
+
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT s7.s7_check_key_version_exists(%s, %s)",
-                [key, version]
+                "SELECT s7.s7_check_key_version_exists(%s, %s, %s::uuid)",
+                [key, version, str(project_id) if project_id is not None else None]
             )
             exists = cursor.fetchone()[0]
         return exists
     
     def mark_build_state_dirty(self, key, version, project_id=None, organization_id=None):
-        """Mark build state as dirty using Django ORM"""
+        """Mark build state as dirty using Django ORM.
+
+        ``key+version`` identity is scoped per project:
+        ``project_id=None`` restricts the update to the NULL bucket
+        (rows with no project, ``project_id__isnull`` — the ORM equivalent of
+        ``IS NOT DISTINCT FROM NULL``) — it does NOT mean "any project".
+        """
         # Validate inputs
         if not isinstance(key, str) or len(key) == 0 or len(key) > 30:
             raise ValueError(ERR_KEY_MUST_BE_NON_EMPTY_MAX_30)
         if not isinstance(version, str) or len(version) == 0 or len(version) > 20:
             raise ValueError(ERR_VERSION_MUST_BE_NON_EMPTY_MAX_20)
-        
-        qs = BuildState.objects.filter(key=key, version=version)
-        if project_id is not None:
-            qs = qs.filter(project_id=project_id)
+
+        qs = BuildState.objects.filter(key=key, version=version, project_id=project_id)
         if organization_id is not None:
             qs = qs.filter(project__organization_id=organization_id)
         qs.update(dirty=True)
@@ -602,20 +628,38 @@ class SchemaRepository:
             organization_id=organization_id,
         )
 
-    def get_build_state(self, key, version):
-        """Get build state by key and version"""
-        from ..models import BuildState
-        return BuildState.objects.filter(key=key, version=version).first()
+    def get_build_state(self, key, version, project_id=None):
+        """Get build state by key, version and project scope.
 
-    def delete_build_state(self, key, version):
-        """Delete build state by key and version"""
+        ``key+version`` identity is scoped per project:
+        ``project_id=None`` restricts the lookup to the NULL bucket
+        (rows with no project, ``project_id__isnull`` — the ORM equivalent of
+        ``IS NOT DISTINCT FROM NULL``) — it does NOT mean "any project".
+        """
         from ..models import BuildState
-        BuildState.objects.filter(key=key, version=version).delete()
+        return BuildState.objects.filter(key=key, version=version, project_id=project_id).first()
 
-    def delete_schema_cache_by_key_version(self, key, version):
-        """Delete schema cache by key and version"""
+    def delete_build_state(self, key, version, project_id=None):
+        """Delete build state by key, version and project scope.
+
+        ``key+version`` identity is scoped per project:
+        ``project_id=None`` restricts the delete to the NULL bucket
+        (rows with no project, ``project_id__isnull`` — the ORM equivalent of
+        ``IS NOT DISTINCT FROM NULL``) — it does NOT mean "any project".
+        """
+        from ..models import BuildState
+        BuildState.objects.filter(key=key, version=version, project_id=project_id).delete()
+
+    def delete_schema_cache_by_key_version(self, key, version, project_id=None):
+        """Delete schema cache by key, version and project scope.
+
+        ``key+version`` identity is scoped per project:
+        ``project_id=None`` restricts the delete to the NULL bucket
+        (rows with no project, ``project_id__isnull`` — the ORM equivalent of
+        ``IS NOT DISTINCT FROM NULL``) — it does NOT mean "any project".
+        """
         from ..models import SchemaCache
-        SchemaCache.objects.filter(key=key, version=version).delete()
+        SchemaCache.objects.filter(key=key, version=version, project_id=project_id).delete()
 
     def get_node_attributes(self, node, attribute_def):
         """Get node attribute by node and attribute def"""
@@ -837,7 +881,8 @@ class SchemaRepository:
 
     def get_root_node_by_key_version(self, key: str, version: str, project_id: uuid.UUID = None, node_type=None):
         """
-        Get root node by key and version, optionally narrowed by node type.
+        Get root node by key and version within a project scope, optionally
+        narrowed by node type.
 
         ``node_type`` is optional because broad-scope callers (build state,
         build counter increment, generic root resolution) do not know the
@@ -845,10 +890,17 @@ class SchemaRepository:
         it to eliminate the residual key+version ambiguity that appears when
         two roots of different node types share the same key and version.
 
+        Root ``key+version`` uniqueness is scoped per project:
+        the lookup always filters by project so it stays deterministic.
+        ``project_id=None`` restricts the lookup to the NULL bucket (roots
+        with no project, via ``project_id__isnull`` — the ORM equivalent of
+        ``IS NOT DISTINCT FROM NULL``) — it does NOT mean "any project".
+
         Args:
             key: Schema key
             version: Schema version
-            project_id: Optional project UUID scoping the lookup
+            project_id: Project UUID scoping the lookup; ``None`` targets the
+                bucket of roots without project
             node_type: Optional NodeType instance or UUID; when provided,
                 adds a ``node_type_id`` filter to the query
 
@@ -864,6 +916,8 @@ class SchemaRepository:
         filters = {'node_type__is_root': True, 'parent__isnull': True, 'key': key, 'version': version}
         if project_id is not None:
             filters['project_id'] = project_id
+        else:
+            filters['project_id__isnull'] = True
         if node_type is not None:
             filters['node_type_id'] = node_type.pk if isinstance(node_type, NodeType) else node_type
         return Node.objects.filter(**filters).select_related('node_type').first()

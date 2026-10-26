@@ -66,8 +66,13 @@ class NodeService:
             ],
         }
 
-    def resolve_root_node_id(self, node_id=None, key: str | None = None, version: str | None = None) -> uuid.UUID | None:
-        """Resolve a root node ID from an explicit node_id or a key+version pair."""
+    def resolve_root_node_id(self, node_id=None, key: str | None = None, version: str | None = None, project_id=None) -> uuid.UUID | None:
+        """Resolve a root node ID from an explicit node_id or a key+version pair.
+
+        The key+version lookup is scoped per project: ``project_id``
+        is forwarded to the repository, where ``None`` targets the bucket of
+        roots without project — it does not widen the search across projects.
+        """
         if node_id:
             try:
                 node = self.schema_repository.get_node_by_id(node_id)
@@ -76,7 +81,7 @@ class NodeService:
                 return None
         if not key or not version:
             return None
-        root_node = self.schema_repository.get_root_node_by_key_version(key, version)
+        root_node = self.schema_repository.get_root_node_by_key_version(key, version, project_id=project_id)
         return root_node.id if root_node else None
 
     def get_effective_variant_key(self, variant_key: str | None, parent_node_id=None) -> str | None:
@@ -436,7 +441,7 @@ class NodeService:
                 check_version = new_version if new_version is not None else current_version
                 
                 if check_key and check_version:
-                    if not self.node_repository.check_key_version_unique(check_key, check_version, node.id):
+                    if not self.node_repository.check_key_version_unique(check_key, check_version, node.id, project_id=node.project_id):
                         raise ValueError(
                             ERR_SCHEMA_KEY_VERSION_EXISTS.format(key=check_key, version=check_version)
                         )

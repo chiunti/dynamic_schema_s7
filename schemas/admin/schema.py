@@ -233,7 +233,7 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
         version = self._get_version(obj)
         NodeService().delete_node(obj.id)
         if key and version:
-            SchemaService().delete_schema_cache(key, version)
+            SchemaService().delete_schema_cache(key, version, project_id=obj.project_id)
 
     def delete_queryset(self, request, queryset):
         svc = NodeService()
@@ -243,7 +243,7 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             version = self._get_version(obj)
             svc.delete_node(obj.id)
             if key and version:
-                schema_svc.delete_schema_cache(key, version)
+                schema_svc.delete_schema_cache(key, version, project_id=obj.project_id)
 
     def publish_view(self, request):
         if request.method != "GET":

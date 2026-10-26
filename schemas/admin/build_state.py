@@ -14,6 +14,7 @@ from ..services.schema_service import SchemaService
 from ..repositories.schema_repository import SchemaRepository
 from ..repositories.project_repository import ProjectRepository
 from ..repositories.node_type_repository import NodeTypeRepository
+from ..utils import parse_uuid
 from ..constants import (
     ERR_NODE_NOT_FOUND,
     ERR_PUBLISH_FAILED,
@@ -144,7 +145,7 @@ class BuildStateAdmin(admin.ModelAdmin):
     @admin.display(description="Type")
     def schema_type(self, obj):
         try:
-            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version)
+            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version, project_id=obj.project_id)
             if node:
                 scope = node.node_type.json_scope or node.node_type.name
                 label = scope.replace('_root', '').replace('_', ' ').title()
@@ -156,7 +157,7 @@ class BuildStateAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status(self, obj):
         try:
-            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version)
+            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version, project_id=obj.project_id)
             if node:
                 ad_status = self.schema_repository.get_attribute_def_by_node_type_key(node.node_type, 'status')
                 if ad_status:
@@ -175,7 +176,7 @@ class BuildStateAdmin(admin.ModelAdmin):
         node_id = None
 
         try:
-            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version)
+            node = self.schema_repository.get_root_node_by_key_version(obj.key, obj.version, project_id=obj.project_id)
             if node:
                 node_id = node.id
                 ad_status = self.schema_repository.get_attribute_def_by_node_type_key(node.node_type, 'status')
@@ -205,6 +206,8 @@ class BuildStateAdmin(admin.ModelAdmin):
 
         if obj.current_build != obj.last_cached_build and node_status == STATUS_PUBLISHED:
             url = reverse("admin:schemas_buildstate_rebuild_cache", kwargs={"key": obj.key, "version": obj.version})
+            if obj.project_id:
+                url = f"{url}?project_id={obj.project_id}"
             return format_html('<a href="{}" class="button">Rebuild Cache</a>', url)
 
         return "-"
@@ -236,8 +239,15 @@ class BuildStateAdmin(admin.ModelAdmin):
         return HttpResponseRedirect(reverse("admin:schemas_buildstate_changelist"))
 
     def rebuild_cache_view(self, request, key, version):
+        project_id = None
+        project_id_raw = request.GET.get("project_id")
+        if project_id_raw:
+            try:
+                project_id = parse_uuid(project_id_raw, "project_id")
+            except ValueError as e:
+                return JsonResponse({"error": str(e)}, status=400)
         try:
-            self.schema_service.build_schema_cached(key, version)
+            self.schema_service.build_schema_cached(key, version, project_id=project_id)
         except Exception as e:
             return JsonResponse({"error": ERR_REBUILD_FAILED, "detail": str(e)}, status=500)
 

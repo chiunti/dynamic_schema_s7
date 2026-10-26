@@ -627,6 +627,7 @@ class BuildState(models.Model):
             models.UniqueConstraint(
                 fields=["key", "version", "project"],
                 name="uq_schema_build_state_key_version_project",
+                nulls_distinct=False,
             ),
         ]
         indexes = [
@@ -671,6 +672,7 @@ class SchemaCache(models.Model):
             models.UniqueConstraint(
                 fields=["key", "version", "project"],
                 name="uq_schema_cache_key_version_project",
+                nulls_distinct=False,
             ),
         ]
 

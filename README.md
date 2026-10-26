@@ -62,7 +62,7 @@ This system is **domain-agnostic** and can create any type of data structure:
 
 ### Schema Versioning
 - Every schema has a unique `key` + `version` combination
-- `key` + `version` is globally unique across **all** projects (partial unique index `uq_snodes_key_version_root` on root nodes) — two projects cannot reuse the same pair
+- `key` + `version` is unique **per project** (partial unique index `uq_snodes_key_version_root` on root nodes, `NULLS NOT DISTINCT`) — different projects may reuse the same pair; roots without a project share one bucket and stay unique among themselves
 - Strict mutational control (immutable published schemas)
 - Draft → Published → Archived lifecycle
 - Build counter tracking for cache invalidation

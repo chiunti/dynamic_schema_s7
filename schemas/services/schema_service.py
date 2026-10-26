@@ -2262,7 +2262,7 @@ class SchemaService:
         if status != STATUS_ARCHIVED:
             actions.append('edit')
 
-        build_state = self.repository.get_build_state(key, version) if key and version else None
+        build_state = self.repository.get_build_state(key, version, project_id=node.project_id) if key and version else None
         if build_state and build_state.dirty:
             actions.append('build')
 
@@ -2388,7 +2388,7 @@ class SchemaService:
             )
             # Delete schema cache to prevent public access after archiving
             if node.key and node.version:
-                self.delete_schema_cache(node.key, node.version)
+                self.delete_schema_cache(node.key, node.version, project_id=node.project_id)
         except DatabaseError as e:
             raise RuntimeError(ERR_DATABASE_ERROR_ARCHIVE.format(error=e)) from e
         except ValueError as e:
@@ -2434,7 +2434,7 @@ class SchemaService:
             )
             # Delete schema cache to prevent public access after moving to draft
             if node.key and node.version:
-                self.delete_schema_cache(node.key, node.version)
+                self.delete_schema_cache(node.key, node.version, project_id=node.project_id)
         except DatabaseError as e:
             raise RuntimeError(ERR_DATABASE_ERROR_DRAFT.format(error=e)) from e
         except ValueError as e:
@@ -2442,17 +2442,19 @@ class SchemaService:
         except Exception as e:
             raise RuntimeError(ERR_UNEXPECTED_ERROR_DRAFT.format(error=e)) from e
     
-    def increment_build_for(self, key: str, version: str) -> None:
+    def increment_build_for(self, key: str, version: str, project_id: Optional[uuid.UUID] = None) -> None:
         """Resolve the root schema node for key+version and increment its build counter.
 
-        Admin "Build" orchestration: the project_id needed by the s7 function is
-        derived from the root node rather than supplied by the view.
+        Admin "Build" orchestration: ``project_id`` scopes the key+version
+        lookup per project; ``None`` targets the bucket of roots
+        without project, which always fails the build gate below — the build
+        counter stays project-only tooling.
 
         Raises:
-            LookupError: no root node exists for key+version.
+            LookupError: no root node exists for key+version in the scope.
             ValueError: the schema has no project assigned.
         """
-        schema_node = self.repository.get_root_node_by_key_version(key, version)
+        schema_node = self.repository.get_root_node_by_key_version(key, version, project_id=project_id)
         if not schema_node:
             raise LookupError(ERR_SCHEMA_NOT_FOUND)
         project_id = schema_node.project_id
@@ -2493,7 +2495,7 @@ class SchemaService:
 
         # Auto-increment version if key+version already exists
         for attempt in range(MAX_VERSION_AUTO_INCREMENT_ATTEMPTS):
-            if not self.repository.check_key_version_exists(key_value, version_value):
+            if not self.repository.check_key_version_exists(key_value, version_value, project_id=project_id):
                 break
             version_value = str(int(version_value) + 1)
         else:
@@ -2510,8 +2512,10 @@ class SchemaService:
                 update_fields["organization_id"] = organization_id
             self.repository.update_node_fields(node.id, **update_fields)
 
-        # Ensure schema_build_state record exists
-        self.repository.ensure_schema_build_state(key_value, version_value, project_id)
+        # Ensure schema_build_state record exists — project-less roots have
+        # no build state (the column is NOT NULL) and always build fresh
+        if project_id:
+            self.repository.ensure_schema_build_state(key_value, version_value, project_id)
 
         # Disable triggers temporarily
         self.repository.disable_triggers()
@@ -2550,7 +2554,7 @@ class SchemaService:
         self._initialize_metadata(node, version_value, project_id=project_id, organization_id=organization_id)
 
         # Mark as dirty since new nodes have uncommitted changes
-        self.repository.mark_build_state_dirty(key_value, version_value)
+        self.repository.mark_build_state_dirty(key_value, version_value, project_id=project_id, organization_id=organization_id)
 
     @transaction.atomic
     def _initialize_metadata(self, root_node: Node, version_value: str, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None) -> None:
@@ -2616,11 +2620,15 @@ class SchemaService:
         return attr.value_string
 
     @transaction.atomic
-    def delete_schema_cache(self, key: str, version: str) -> None:
+    def delete_schema_cache(self, key: str, version: str, project_id: Optional[uuid.UUID] = None) -> None:
         """Delete build state and schema cache for a given key and version
-        
+
         This method orchestrates the deletion of both build state and schema cache
         within a single transaction to ensure data consistency.
+
+        ``key+version`` identity is scoped per project:
+        ``project_id=None`` restricts the deletion to the NULL bucket — it
+        does not delete across projects.
         """
-        self.repository.delete_build_state(key, version)
-        self.repository.delete_schema_cache_by_key_version(key, version)
+        self.repository.delete_build_state(key, version, project_id=project_id)
+        self.repository.delete_schema_cache_by_key_version(key, version, project_id=project_id)

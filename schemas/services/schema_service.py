@@ -61,6 +61,7 @@ from ..constants import (
     STATUS_DRAFT,
     STATUS_PUBLISHED,
     STATUS_ARCHIVED,
+    VALID_SCHEMA_STATUSES,
     WARN_ATTRIBUTE_IGNORED,
     WARN_DROPPED_ATTRIBUTE,
 )
@@ -230,7 +231,9 @@ class SchemaService:
         node_variant = self._resolve_example_variant(
             node_type, ntv, active_variant, attr_defs
         )
-        example = self._build_example_attributes(attr_defs, node_variant, ntv)
+        example = self._build_example_attributes(
+            attr_defs, node_variant, ntv, is_root=node_type.is_root
+        )
 
         if expandable:
             child_ancestors = ancestors | {node_type.id}
@@ -280,6 +283,7 @@ class SchemaService:
         attr_defs: list,
         active_variant: Optional[str],
         ntv: Optional[NodeTypeVariant],
+        is_root: bool = False,
     ) -> dict:
         """Select and value the attributes emitted by an example node.
 
@@ -293,6 +297,10 @@ class SchemaService:
         then up to two more optional defs by json_key. When the node type
         declares a variant discriminator and a variant was resolved, the
         discriminator json_key is forced to that variant value.
+
+        ``is_root`` marks a root node type: its domain-bound ``status``
+        attribute prefers a schema-lifecycle value over the alphabetical
+        first domain item (see ``_get_example_value``).
         """
         applicable: dict[str, AttributeDef] = {}
         for attr_def in attr_defs:
@@ -321,21 +329,29 @@ class SchemaService:
 
         example = {}
         for attr_def in required:
-            example[attr_def.json_key] = self._get_example_value(attr_def)
+            example[attr_def.json_key] = self._get_example_value(
+                attr_def, is_root=is_root
+            )
         for attr_def in (d for d in optional if self._has_documented_example(d)):
-            example[attr_def.json_key] = self._get_example_value(attr_def)
+            example[attr_def.json_key] = self._get_example_value(
+                attr_def, is_root=is_root
+            )
         required_flag = next(
             (d for d in optional if d.json_key == 'required'), None
         )
         if required_flag is not None and required_flag.json_key not in example:
-            example[required_flag.json_key] = self._get_example_value(required_flag)
+            example[required_flag.json_key] = self._get_example_value(
+                required_flag, is_root=is_root
+            )
         extra_slots = 2
         for attr_def in optional:
             if extra_slots <= 0:
                 break
             if attr_def.json_key in example:
                 continue
-            example[attr_def.json_key] = self._get_example_value(attr_def)
+            example[attr_def.json_key] = self._get_example_value(
+                attr_def, is_root=is_root
+            )
             extra_slots -= 1
 
         # The discriminator must show the variant the example actually
@@ -388,7 +404,13 @@ class SchemaService:
           keeps the variant received from the parent.
         - Otherwise the example self-discriminates on the first
           ``DomainItem.value`` of the discriminator AttributeDef's domain,
-          falling back to the first declared ``variant_key``.
+          falling back to the declared ``variant_key``s. A root node
+          type discriminating on ``status`` prefers a lifecycle domain item
+          (``_first_domain_item_value`` with ``prefer_lifecycle``) so the
+          discriminator overwrite in ``_build_example_attributes`` cannot
+          emit a non-lifecycle ``status`` value — and without a usable
+          domain item it prefers a lifecycle-valid ``variant_key`` for the
+          same reason.
         """
         if ntv is None:
             return None
@@ -410,12 +432,21 @@ class SchemaService:
                 )
             )
         if discriminator_def is not None and discriminator_def.domain_id:
-            first_value = self._first_domain_item_value(discriminator_def.domain)
+            first_value = self._first_domain_item_value(
+                discriminator_def.domain,
+                prefer_lifecycle=(
+                    node_type.is_root and ntv.discriminator_attr == 'status'
+                ),
+            )
             if first_value is not None:
                 return first_value
         variant_keys = self.node_type_repository.get_variant_keys_by_node_type(
             node_type
         )
+        if node_type.is_root and ntv.discriminator_attr == 'status':
+            for status in VALID_SCHEMA_STATUSES:
+                if status in variant_keys:
+                    return status
         return variant_keys[0] if variant_keys else None
 
     def _generate_map_entry_example(
@@ -471,31 +502,62 @@ class SchemaService:
             )
         }
 
-    def _first_domain_item_value(self, domain: Domain) -> Optional[str]:
-        """Return the first ``DomainItem.value`` of a domain, sorted by value."""
+    def _first_domain_item_value(
+        self, domain: Domain, prefer_lifecycle: bool = False
+    ) -> Optional[str]:
+        """Return the ``DomainItem.value`` an example should emit.
+
+        Values are sorted alphabetically. When ``prefer_lifecycle`` is set
+        and the domain declares schema lifecycle statuses, the first
+        ``VALID_SCHEMA_STATUSES`` member present in the domain wins over
+        the alphabetical first item (preference order: ``draft`` >
+        ``published`` > ``archived``); a domain disjoint from the lifecycle
+        set keeps the first-item fallback.
+        """
         items = sorted(
             self.attribute_def_repository.get_domain_items_by_domain(domain),
             key=lambda item: item.value,
         )
+        if prefer_lifecycle:
+            values = {item.value for item in items}
+            for status in VALID_SCHEMA_STATUSES:
+                if status in values:
+                    return status
         return items[0].value if items else None
 
-    def _get_example_value(self, attr_def: AttributeDef) -> Any:
+    def _get_example_value(
+        self, attr_def: AttributeDef, is_root: bool = False
+    ) -> Any:
         """Generate an example value for an AttributeDef.
+
+        ``is_root`` marks AttributeDefs owned by a root node type.
 
         Precedence:
           1. Domain-bound defs: the first ``DomainItem.value`` — domain
              membership always wins so the example survives strict-key
-             validation (out-of-domain scalars are rejected there).
+             validation (out-of-domain scalars are rejected there). For a
+             root's ``status`` attribute a lifecycle status present in the
+             domain is preferred instead: the root object's ``status`` key
+             doubles as the schema lifecycle status on import, so only a
+             lifecycle-valid value produces a self-validating example.
+          1b. A root's ``status`` attribute without a usable domain item
+             emits ``STATUS_DRAFT`` for the same reason.
           2. Datatypes with a ``DATATYPE_DOCS`` entry carrying an
              'example' (e.g. the conditional grammar).
           3. ``_EXAMPLE_STATIC_VALUES`` / ``_EXAMPLE_STRING_DATATYPES``.
           4. The datatype's ``primary_storage_type`` fallback, last resort
              ``f"example_{json_key}"``.
         """
+        lifecycle_status = is_root and attr_def.json_key == 'status'
         if attr_def.domain:
-            first_value = self._first_domain_item_value(attr_def.domain)
+            first_value = self._first_domain_item_value(
+                attr_def.domain,
+                prefer_lifecycle=lifecycle_status,
+            )
             if first_value is not None:
                 return first_value
+        if lifecycle_status:
+            return STATUS_DRAFT
 
         data_type = attr_def.data_type
         data_type_name = data_type.name if data_type else 'string'

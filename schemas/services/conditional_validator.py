@@ -34,6 +34,12 @@ def validate_conditional_value(json_value: Any) -> None:
     """
     Validates that a value is a valid conditional expression.
 
+    This is the registered datatype validator for the ``conditional``
+    datatype (see ``datatype_plugins.DATATYPE_VALIDATORS``). Per the plugin
+    contract documented in ``datatype_plugins``, it raises
+    ``django.core.exceptions.ValidationError`` for invalid input; any other
+    exception type is treated as a bug in the validator.
+
     A conditional value can be either:
     - A boolean literal (True/False)
     - A conditional structure with "logic" and "conditions"

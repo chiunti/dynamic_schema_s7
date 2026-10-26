@@ -1,3 +1,29 @@
+"""
+Datatype Plugins Module
+
+Registry and dispatch for datatype-specific value validators.
+
+This module provides a plugin system where datatype authors can register
+validators for complex value shapes (e.g., conditional expressions). The
+core contract:
+
+- Validators are callables with signature ``(value: Any) -> None``.
+- Validators MUST raise ``django.core.exceptions.ValidationError`` for
+  invalid input. ``SchemaValidationError`` raised by the validator is also
+  routed through the invalid-input channel — but the import pipeline
+  re-wraps it, rooting the reported path at the attribute's json_key, so a
+  path the plugin set on the exception does not survive.
+- Any other exception type (ValueError, RuntimeError, NameError, etc.) is
+  treated as a bug in the validator and propagates as a 500 error or falls
+  into a different error channel (e.g., the per-key wrapper in the import
+  pipeline converts ValueError to SchemaValidationError even in permissive
+  mode).
+
+This contract ensures that validators signal input invalidity through the
+two recognized exception types, which the import pipeline handles
+according to mode (strict vs. permissive).
+"""
+
 from typing import Any, Optional
 
 from django.utils.module_loading import import_string
@@ -72,7 +98,29 @@ def get_datatype_doc(name: str) -> Optional[dict[str, Any]]:
 def validate_datatype_value(data_type, value):
     """
     Validates a value against the validator registered for a datatype.
-    No-op if no validator is registered or value is None.
+
+    This function dispatches to the plugin validator registered in
+    ``DATATYPE_VALIDATORS`` for the given datatype name. Validators MUST
+    raise ``django.core.exceptions.ValidationError`` for invalid input;
+    ``SchemaValidationError`` is also routed through the invalid-input
+    channel (re-wrapped by the pipeline — see module docstring). Any other
+    exception type is treated as a bug in the validator (see module
+    docstring for the full contract).
+
+    Args:
+        data_type: The DataType instance (its ``name`` attribute is used for
+            lookup in ``DATATYPE_VALIDATORS``).
+        value: The value to validate.
+
+    Raises:
+        ValidationError: If the registered validator raises it (invalid input).
+        SchemaValidationError: If the registered validator raises it (routed
+            through the invalid-input channel).
+        ImportError/other: Propagates if the validator path is invalid or the
+            validator itself raises a non-ValidationError exception (bug surface).
+
+    Returns:
+        None. This is a no-op if no validator is registered or value is None.
     """
     if value is None:
         return

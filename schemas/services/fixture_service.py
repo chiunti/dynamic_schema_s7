@@ -20,6 +20,7 @@ from django.core.management import call_command
 from ..constants import (
     ERR_INVALID_FK_SHAPE,
     ERR_MISSING_NATURAL_KEY_FIELDS,
+    ERR_MISSING_REQUIRED_FIELDS,
     ERR_UNKNOWN_OBJECT_KEYS,
 )
 from ..repositories.fixture_repository import FixtureRepository
@@ -199,7 +200,11 @@ class FixtureService:
         allowlist on each object's wrapper keys (any other key — a
         ``delete`` hint, an op verb, a typo — is a per-object error,
         never silently ignored), {model,pk,fields} shape, model whitelist,
-        uuid PKs, field names against the target model, natural key
+        uuid PKs, field names against the target model, required-field
+        presence (every non-PK model field that is not ``null=True``
+        and has no default must carry a key in ``fields`` — an explicit
+        ``null`` counts as absent; natural-key positions are covered by
+        the NK check and are not reported twice), natural key
         presence (every position of the model's natural key must be
         present and non-empty — explicit NULL is accepted only on
         nullable model fields), in-payload natural key uniqueness, the
@@ -281,6 +286,18 @@ class FixtureService:
                             f"for model '{label}'",
                         )
             checked.append((i, label, fields))
+            missing_required = self._missing_required_fields(label, fields)
+            if missing_required:
+                # Non-NK required fields (a CharField that would
+                # silently deserialize to '', a non-nullable FK). No
+                # continue: the object may also carry an NK error and
+                # both entries must accumulate.
+                errors.append(
+                    f'{where}: '
+                    + ERR_MISSING_REQUIRED_FIELDS.format(
+                        fields=', '.join(sorted(missing_required)),
+                    )
+                )
             nk = self.natural_key_for(label, fields)
             if nk is not None:
                 missing = self._missing_natural_key_fields(
@@ -395,6 +412,34 @@ class FixtureService:
             ):
                 missing.append(field_name)
         return missing
+
+    def _missing_required_fields(
+        self, label: str, fields: dict,
+    ) -> Optional[list[str]]:
+        """Names of required non-NK fields absent from ``fields``.
+
+        Required means a concrete model field that is not the primary
+        key, not ``null=True`` and has no default — the model is the
+        source of truth via
+        ``FixtureRepository.get_required_field_names``. Natural-key
+        positions are excluded: ``_missing_natural_key_fields`` already
+        reports them, and a missing field must not be flagged twice.
+
+        A field is absent when its key is missing from ``fields`` or
+        carries an explicit ``null`` — a non-nullable field cannot hold
+        one. Any present value, even ``''`` or ``[]``, counts as
+        present; degenerate values are caught by the shape and
+        FK-resolution checks. Returns ``None`` when the model label
+        does not resolve, so the caller skips the check entirely.
+        """
+        required = self.fixture_repository.get_required_field_names(label)
+        if required is None:
+            return None
+        return [
+            name
+            for name in required - set(NATURAL_KEY_FIELDS.get(label, ()))
+            if name not in fields or fields[name] is None
+        ]
 
     def _resolves_in_db(self, target_label: str, ref: list) -> bool:
         """Natural-key reference resolves against the live database."""

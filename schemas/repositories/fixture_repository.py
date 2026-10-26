@@ -55,6 +55,34 @@ class FixtureRepository:
         except (LookupError, AttributeError):
             return None
 
+    def get_required_field_names(
+        self, model_label: str,
+    ) -> Optional[frozenset[str]]:
+        """Concrete field names a fixture author must supply, or None if
+        unresolvable.
+
+        "Required" mirrors the model definition: concrete, non-PK,
+        ``null=False`` and ``has_default()==False`` — so CharFields that
+        would silently deserialize to ``''`` and required FKs are both
+        captured. Auto-populated fields are excluded: ``auto_now``/
+        ``auto_now_add`` timestamps (e.g. ``Organization.updated_at``)
+        have ``has_default()==False`` yet are filled by the field's
+        ``pre_save`` hook at write time. Validation needs the
+        required-for-the-author set, not the database NOT NULL set.
+        """
+        try:
+            model = apps.get_model('schemas', model_label)
+            return frozenset(
+                f.name for f in model._meta.fields
+                if not f.primary_key
+                and not f.null
+                and not f.has_default()
+                and not getattr(f, 'auto_now', False)
+                and not getattr(f, 'auto_now_add', False)
+            )
+        except (LookupError, AttributeError):
+            return None
+
     def natural_key_exists(self, model_label: str, ref: list) -> bool:
         """Whether a natural-key reference resolves to a live row.
 

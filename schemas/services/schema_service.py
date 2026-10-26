@@ -1652,14 +1652,18 @@ class SchemaService:
                             )
                         continue
                     # Skip natural type attributes (natural_version, natural_key, etc.)
-                    # These are mapped to node columns and handled separately;
-                    # the ones that are server-managed report the ignored value.
+                    # and display_order — they either write through to node
+                    # columns or are derived from them at build time; the ones
+                    # that are server-managed report the ignored value.
                     attr_def = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(
                         node_type,
                         json_key,
                         None
                     )
-                    if attr_def and attr_def.data_type.name.startswith('natural_'):
+                    if attr_def and (
+                        attr_def.data_type.name.startswith('natural_')
+                        or attr_def.data_type.name == 'display_order'
+                    ):
                         if value is not None and is_server_managed_attribute(attr_def.data_type.name, attr_def.name):
                             self._report_server_managed_ignored(
                                 json_key, path, dropped_attributes
@@ -1668,11 +1672,18 @@ class SchemaService:
                     if json_key == 'sort_order':
                         # If a display_order AttributeDef exists, skip: the value is driven by
                         # node.sort_order (loop index) and reconstructed as sort_order+1 in SQL.
+                        # Report the ignored payload value — nothing is dropped
+                        # silently. This is the backstop for display_order defs the
+                        # variant-scoped lookup above does not resolve.
                         has_display_order = self.attribute_def_repository.attribute_def_exists_with_display_order(
                             node_type,
                             'sort_order'
                         )
                         if has_display_order:
+                            if value is not None:
+                                self._report_server_managed_ignored(
+                                    json_key, path, dropped_attributes
+                                )
                             continue
 
                     # Skip the injected parent-discriminator key on props nodes

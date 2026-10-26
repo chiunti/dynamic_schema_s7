@@ -60,8 +60,10 @@ class CatalogService:
             - node_types: denormalized entries ordered by name, each with
               attributes (ordered by json_key; every attribute entry carries
               ``server_generated`` — True for engine-managed ``natural_*``
-              attributes such as ``natural_uuid`` bound to ``id``, which also
-              forces ``required`` to False), a resolved variants block
+              attributes such as ``natural_uuid`` bound to ``id`` and for
+              ``display_order`` defs, whose value derives from
+              ``node.sort_order``; the flag also forces ``required`` to
+              False), a resolved variants block
               (None when the type declares none) and compositions grouped
               by collection_key (groups ordered by key, structural
               None group last)

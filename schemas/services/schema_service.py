@@ -597,7 +597,8 @@ class SchemaService:
         strict_keys: bool = False,
         path: str = "$",
         dropped_attributes: Optional[list] = None,
-    ) -> tuple[uuid.UUID, dict]:
+        version_is_explicit: Optional[bool] = None,
+    ) -> tuple[uuid.UUID, Optional[dict]]:
         """Import a schema with validation.
 
         ``strict_keys`` enables strict mode (credential imports / validate
@@ -610,6 +611,16 @@ class SchemaService:
         ``{"code", "path", "message"}`` dicts for attribute values rejected
         by datatype validators in permissive mode; under ``strict_keys``
         those failures raise ``SchemaValidationError`` instead.
+        ``version_is_explicit`` tells whether ``schema_version`` arrived
+        through the explicit request channel (the ``schema_version``
+        param). ``None`` keeps the legacy derivation — any non-empty
+        ``schema_version`` counts as explicit — for callers that cannot
+        distinguish the request param from the root ``version`` alias.
+
+        Version precedence (see _sync_version_from_metadata): the
+        ``schema_version`` request param (explicit) > declared
+        ``natural_version`` attribute > root object ``version`` (tolerated
+        alias) > ``"1"``.
         """
         if project_id:
             project = ProjectRepository().get_project_by_id(project_id)
@@ -618,9 +629,12 @@ class SchemaService:
             if user and not PermissionService().can_edit_organization(user, project.organization_id):
                 raise PermissionError(ERR_PERMISSION_DENIED)
         
-        # Track if schema_version was explicitly specified by user
-        # Empty string or None means user didn't specify a version
-        form_version_is_explicit = schema_version is not None and schema_version != ""
+        # Track if schema_version was explicitly specified by user.
+        # version_is_explicit=None keeps the legacy derivation — empty
+        # string or None means user didn't specify a version — for callers
+        # that cannot distinguish the request param from the alias.
+        if version_is_explicit is None:
+            version_is_explicit = schema_version is not None and schema_version != ""
         
         # Import the root node using s7_import_schema
         # If schema_version is None, repository will use "1" as fallback
@@ -647,7 +661,7 @@ class SchemaService:
         
         # Sync Node.version from child nodes that have natural_version attributes
         # This allows schemas like 'screen' to define their version in metadata.version
-        version_warning = self._sync_version_from_metadata(schema_id, validated_schema, schema_version, form_version_is_explicit)
+        version_warning = self._sync_version_from_metadata(schema_id, validated_schema, schema_version, version_is_explicit)
         
         # Ensure key and status are set as attributes on the root node
         self._set_schema_metadata(schema_id, schema_key, schema_status)
@@ -661,7 +675,7 @@ class SchemaService:
 
         return schema_id, version_warning
     
-    def _sync_version_from_metadata(self, schema_id: uuid.UUID, validated_schema: dict, form_version: Optional[str], form_version_is_explicit: bool) -> dict:
+    def _sync_version_from_metadata(self, schema_id: uuid.UUID, validated_schema: dict, form_version: Optional[str], form_version_is_explicit: bool) -> Optional[dict]:
         """Sync Node.version from child nodes that have natural_version attributes.
 
         This allows schemas to define their version in a child node (e.g., metadata.version)
@@ -675,23 +689,34 @@ class SchemaService:
         normalized to its first dict item; a list with more than one item logs
         a warning and still uses the first item.
 
-        Priority:
-        - If user specified version in form: use form version (warn if JSON differs)
-        - If form is empty/default: use JSON version
+        Version precedence:
+        1. Explicit version — only the ``schema_version`` request param
+           counts (``form_version_is_explicit=True``): it wins over the
+           declared version and returns a ``version_mismatch`` warning.
+        2. Declared ``natural_version`` — the canonical source: wins
+           silently when no other channel supplies a version, and wins
+           WITH a ``version_mismatch`` warning when the root-level
+           ``version`` alias diverges from it.
+        3. Root object ``version`` — a tolerated, non-explicit alias
+           carried by ``form_version``: ignored when it diverges from the
+           declared version.
+        4. ``"1"`` — fallback when no channel supplies a version.
 
         Args:
             schema_id: Root node ID
             validated_schema: The complete JSON schema
-            form_version: Version from the import form (may be None)
-            form_version_is_explicit: True if user explicitly specified version in form
+            form_version: Merged version value — explicit request param or
+                root 'version' alias (may be None/empty)
+            form_version_is_explicit: True only when the version arrived via
+                the explicit schema_version request param
 
         Returns:
-            dict with warning information if versions mismatched, empty dict otherwise
+            dict with warning information if versions mismatched, empty dict
+            otherwise, ``None`` when no version-bearing child resolves. Two
+            warning shapes: an explicit-param divergence carries
+            'form_version'; an ignored alias divergence carries
+            'ignored_version' — both carry 'type', 'message', 'json_version'.
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
         root_node = self.repository.get_node_by_id(schema_id)
         root_type = root_node.node_type
 
@@ -723,7 +748,7 @@ class SchemaService:
             child_obj = None
             if collection_key and collection_key in root_obj:
                 child_obj = root_obj[collection_key]
-            elif isinstance(root_obj, dict):
+            else:
                 # Fallback: the structural key declared by the child type
                 # (default_json_key), then the child type name itself.
                 child_obj = root_obj.get(child_type.default_json_key or child_type.name)
@@ -737,7 +762,7 @@ class SchemaService:
             # is not an import error.
             if isinstance(child_obj, list):
                 if len(child_obj) > 1:
-                    logger.warning(
+                    logging.getLogger(__name__).warning(
                         "Singleton child slot '%s' received %d items during schema import; using the first item.",
                         collection_key or child_type.default_json_key or child_type.name,
                         len(child_obj),
@@ -747,8 +772,12 @@ class SchemaService:
             if not child_obj or not isinstance(child_obj, dict):
                 continue
 
-            # Extract version from the child object
+            # Extract version from the child object — coerce numeric values
+            # so a numeric JSON version compares equal to the same string
+            # arriving through the explicit/alias channels.
             json_version = child_obj.get('version')
+            if isinstance(json_version, (int, float)) and not isinstance(json_version, bool):
+                json_version = str(json_version)
 
             if not json_version:
                 continue
@@ -756,17 +785,36 @@ class SchemaService:
             # Get the actual form version (may be empty string if not specified)
             actual_form_version = form_version if form_version else "1"
 
-            # Priority: form version > JSON version
+            # Priority: explicit request param > declared JSON version >
+            # root 'version' alias > "1"
             if json_version != actual_form_version:
-                # If user didn't explicitly specify a version, use JSON version without warning
+                # If the version was not explicitly specified, the declared
+                # natural_version (JSON) wins on both nodes
                 if not form_version_is_explicit:
-                    # User didn't specify a version, use JSON version
                     self.repository.update_node_fields(schema_id, version=json_version)
                     # Find and update the metadata child node as well
                     metadata_node = self.repository.get_node_by_parent_and_type(schema_id, child_type)
                     if metadata_node:
                         self.repository.update_node_fields(metadata_node.id, version=json_version)
-                    return {}  # No warning, this is expected behavior
+                    if not form_version:
+                        # No version channel supplied anything — silent
+                        # sync, this is expected behavior
+                        return {}
+                    # The root 'version' alias was supplied and diverges
+                    # from the declared version: the declared one wins and
+                    # the intra-JSON divergence is reported
+                    warning_msg = (
+                        f"Version mismatch for schema {root_node.key}: "
+                        f"root 'version'='{actual_form_version}' ignored in favor of "
+                        f"declared metadata version='{json_version}'."
+                    )
+                    logging.getLogger(__name__).warning(warning_msg)
+                    return {
+                        'type': 'version_mismatch',
+                        'message': warning_msg,
+                        'ignored_version': actual_form_version,
+                        'json_version': json_version
+                    }
 
                 # User specified a version in the form that differs from JSON
                 # Log warning but respect user's choice
@@ -775,7 +823,7 @@ class SchemaService:
                     f"form version='{actual_form_version}', JSON version='{json_version}'. "
                     f"Using form version as specified by user."
                 )
-                logger.warning(warning_msg)
+                logging.getLogger(__name__).warning(warning_msg)
 
                 # Update both root and metadata node to form version for consistency
                 self.repository.update_node_fields(schema_id, version=actual_form_version)

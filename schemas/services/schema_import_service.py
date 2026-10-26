@@ -125,6 +125,14 @@ class SchemaImportService:
         attributes whose payload value is ignored. The same drops are also
         folded into the returned warning string.
 
+        Version channels: the ``schema_version`` request param is the only
+        explicit channel. The root object's ``version`` key is a tolerated
+        alias — it still feeds the merged value sent to ``import_schema``
+        (and hence the routine's ``p_version``) but never counts as
+        explicit. Final precedence: ``schema_version`` request param >
+        declared ``natural_version`` attribute (e.g. ``metadata[].version``)
+        > root object ``version`` alias > ``"1"``.
+
         Attribution: a real user principal leaves a durable ``LogEntry`` in
         ``django_admin_log`` anchored to the imported root node. A project
         credential or ``None`` user records no entry — credential imports
@@ -196,10 +204,14 @@ class SchemaImportService:
                 expected="non-empty schema key",
             )
 
-        schema_version = self._extract_string(
-            data.get("schema_version") or inner.get("version"),
-            "",
-        )
+        # Version channels: the schema_version request param is the
+        # only explicit channel. The root object's 'version' is a tolerated
+        # alias — merged into schema_version so the routine's p_version
+        # honors it when nothing competes, but never explicit itself.
+        param_version = self._extract_string(data.get("schema_version"), "")
+        inner_version = self._extract_string(inner.get("version"), "")
+        schema_version = param_version or inner_version
+        version_is_explicit = bool(param_version)
 
         requested_status = self._extract_string(
             data.get("schema_status") or inner.get("status"),
@@ -237,6 +249,7 @@ class SchemaImportService:
             user=user,
             strict_keys=strict_keys,
             dropped_attributes=dropped_attributes,
+            version_is_explicit=version_is_explicit,
         )
 
         warning_parts = []

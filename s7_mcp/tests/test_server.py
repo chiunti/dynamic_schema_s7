@@ -770,6 +770,36 @@ class PromptContentTests(unittest.TestCase):
         self.assertIn("fixture objects", AUTHOR_CATALOG_PROMPT)
         self.assertIn("resolved_vs_import", AUTHOR_CATALOG_PROMPT)
 
+    def test_tramite_prompt_draft_step_drops_root_version_and_status_requirements(self):
+        """The DRAFT step no longer requires a root ``version`` or a
+        ``"status": "draft"`` field on the authored object — the canonical
+        version lives on the declared ``natural_version`` attribute and the
+        backend forces draft. ``status`` still appears as a *prohibition*
+        ("Never author a `status` field"), so the guard pins the old
+        requirement literals, not the word."""
+        self.assertNotIn(
+            "MUST include `key`, `version`", CREATE_TRAMITE_FORM_PROMPT
+        )
+        self.assertNotIn('"status": "draft"', CREATE_TRAMITE_FORM_PROMPT)
+        self.assertIn(
+            "Never author a `status` field", CREATE_TRAMITE_FORM_PROMPT
+        )
+
+    def test_tramite_prompt_names_natural_version_as_canonical_source(self):
+        """The DRAFT step instructs declaring the version on the catalog
+        attribute whose ``data_type`` is ``natural_version`` (typically
+        ``metadata[].version``), with root ``version`` as a tolerated alias
+        and ``schema_version`` as the overriding tool argument."""
+        self.assertIn("natural_version", CREATE_TRAMITE_FORM_PROMPT)
+        self.assertIn("metadata[].version", CREATE_TRAMITE_FORM_PROMPT)
+        self.assertIn("alias", CREATE_TRAMITE_FORM_PROMPT)
+        self.assertIn(
+            "the declared attribute wins", CREATE_TRAMITE_FORM_PROMPT
+        )
+        self.assertIn(
+            "`schema_version` tool argument", CREATE_TRAMITE_FORM_PROMPT
+        )
+
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class LazyClientTests(unittest.TestCase):

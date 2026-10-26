@@ -106,7 +106,13 @@ of `mcpServers`.
 | `s7_import_draft(node_type, schema, schema_key?, schema_version?, overwrite?)` | `POST schema/import/` | Persist the schema — always as `draft`. |
 | `s7_import_catalog(objects)` | `POST catalog/import/` | Apply a fixture-format catalog payload (`{"objects": [{model, pk?, fields}]}`) → `{applied, created?, updated?, results?, errors?, warnings?}`. Updates replace the whole row — resubmit every field you want to keep, and object keys outside `model`/`pk`/`fields` are rejected. **User token level ≥ 2 + per-model catalog permissions** — anything else gets the 401/403 envelope verbatim. |
 
-`schema` accepts a JSON object or a JSON string.
+`schema` accepts a JSON object or a JSON string. `schema_key` and
+`schema_version` are explicit overrides for the values carried inside the
+payload. Version precedence: the `schema_version` argument > the payload
+attribute whose `data_type` is `natural_version` (typically
+`metadata[].version` on a child node) > a root-level `version` field
+(tolerated alias — when both are present the declared attribute wins, with
+the divergence reported as a warning) > `"1"`.
 
 ### Resources
 
@@ -121,10 +127,10 @@ of `mcpServers`.
 ### Prompts
 
 - `create_tramite_form` — guided workflow: read the catalog → draft the root
-  JSON (`key`, `version`, `"status": "draft"`) → validate until `valid: true` →
-  import draft → verify the draft via `s7_get_draft` → `s7_get_schema` after
-  a human publishes (both reads work with user tokens when `S7_PROJECT_ID`
-  is set).
+  JSON (`key` plus the version on the declared `natural_version` attribute;
+  no `status` field) → validate until `valid: true` → import draft → verify
+  the draft via `s7_get_draft` → `s7_get_schema` after a human publishes
+  (both reads work with user tokens when `S7_PROJECT_ID` is set).
 - `author_catalog` — guided workflow for grammar authoring (level 2): read
   `s7://catalog-grammar` (per-model field table plus the `resolved_vs_import`
   mapping — the resolved catalog is a *read* shape, not the import shape)

@@ -27,10 +27,16 @@ catalog and `s7://examples/{scope}` for few-shot references \
 both credential types — user MCP tokens need `S7_PROJECT_ID` set, sent as \
 `?project_id=`).
 
-2. DRAFT — write the root JSON object for the schema. It MUST include `key`, \
-`version` and `"status": "draft"`. Respect the catalog strictly: use only \
-declared json_keys, domain values, variant keys and composition \
-collection_keys.
+2. DRAFT — write the root JSON object for the schema. It MUST include `key` \
+(the schema's identity — the `schema_key` tool argument overrides it). \
+Declare the version where the catalog declares it: the attribute whose \
+`data_type` is `natural_version` carries the schema version — typically a \
+`version` attribute on a child node such as `metadata[].version`. A \
+root-level `version` is still honored as a tolerated alias, but the declared \
+attribute wins when both are present; the `schema_version` tool argument \
+overrides either source. Never author a `status` field — the backend forces `draft` on \
+import (step 4). Respect the catalog strictly: use only declared json_keys, \
+domain values, variant keys and composition collection_keys.
 
 3. VALIDATE — call `s7_validate_schema` with the root `node_type` (the \
 catalog's `root_node_type`) and the JSON. Iterate on the returned `errors` \

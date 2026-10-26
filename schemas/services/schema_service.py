@@ -55,6 +55,8 @@ from ..constants import (
     ERR_INVALID_COLLECTION_VALUE,
     ERR_INVALID_DOMAIN_VALUE,
     ERR_ROOT_NODE_TYPE_REQUIRED,
+    ERR_MAX_CHILDREN_VIOLATION,
+    ERR_MIN_CHILDREN_NOT_MET,
     MAX_VERSION_AUTO_INCREMENT_ATTEMPTS,
     SCHEMA_KEY_SUFFIX,
     SCHEMA_METADATA_SUFFIX,
@@ -964,10 +966,17 @@ class SchemaService:
     def _process_collection(self, collection_key: str, items: list, parent_id: uuid.UUID, parent_node_type, project_id: Optional[uuid.UUID], organization_id: Optional[uuid.UUID], sort_order_offset: int = 0, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process a collection of items as child nodes using NodeTypeComposition.
 
-        ``dropped_attributes`` is the shared out-list for validator-rejected
-        values: an item containing an invalid conditional structure is dropped
-        wholesale in permissive mode (strict mode raises), and the list is
-        forwarded to _process_node_attributes for attribute-level drops.
+        The composition's ``max_children`` bound is enforced on
+        ``len(items)`` before any child is created — in strict and
+        permissive mode alike. ``min_children`` is intentionally not
+        checked here: it is an aggregate bound, and a short list may still
+        be completed by sibling dispatch paths (shorthand keys feeding the
+        same slot), so the post-loop audit in _process_node_attributes
+        owns it. ``dropped_attributes`` is the shared out-list for
+        validator-rejected values: an item containing an invalid
+        conditional structure is dropped wholesale in permissive mode
+        (strict mode raises), and the list is forwarded to
+        _process_node_attributes for attribute-level drops.
         """
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
@@ -997,8 +1006,26 @@ class SchemaService:
                 field_maps[ct.id] = (ct, self._build_json_key_to_field_map(attr_defs))
 
         # Get max_children from composition to determine if this is a singleton slot
-        max_children = compositions[0].max_children if compositions and hasattr(compositions[0], 'max_children') else None
-        
+        max_children = compositions[0].max_children if hasattr(compositions[0], 'max_children') else None
+
+        # Enforce max_children eagerly — the slot's aggregate count can only
+        # grow past len(items), so an overflowing list is always a
+        # violation, in strict and permissive mode alike (composition bounds
+        # are catalog declarations, not payload conventions). Exceeding it
+        # on a singleton slot would persist siblings sharing the same node
+        # key. min_children is NOT checked here: a short list may still be
+        # completed by shorthand dispatch feeding the same slot, so the
+        # post-loop cardinality audit in _process_node_attributes owns it.
+        if max_children is not None and len(items) > max_children:
+            raise SchemaValidationError(
+                f"Collection '{collection_key}' on node type '{parent_node_type.name}' "
+                f"accepts at most {max_children} item(s), got {len(items)}",
+                code=ERR_MAX_CHILDREN_VIOLATION,
+                path=f"{path}.{collection_key}",
+                expected=f"at most {max_children} item(s)",
+                received=f"{len(items)} item(s)",
+            )
+
         for idx, item in enumerate(items):
             if not isinstance(item, dict):
                 if strict_keys:
@@ -1476,6 +1503,13 @@ class SchemaService:
              child_type.name) -> _process_single_child_node
           4. Scalar/dict value with no composition match -> store as NodeAttribute
 
+        After the dispatch loop, a cardinality audit checks every composition
+        min_children/max_children bound against the number of children actually
+        dispatched into its slot — covering slots absent from the payload and
+        overflow aggregated across dispatch paths (e.g. a list plus shorthand
+        keys feeding the same collection_key). Violations raise
+        SchemaValidationError in strict and permissive mode alike.
+
         Args:
             inherited_variant: Variant key inherited from the parent node
                 (for child node types declared as a parent's props_node_type)
@@ -1515,10 +1549,12 @@ class SchemaService:
         
         # Case 2 — shorthand discriminator map:
         #   For compositions with collection_key whose child type has a required domain-constrained
-        #   AttributeDef, map each domain value -> (child_type, discriminator_json_key).
+        #   AttributeDef, map each domain value -> (composition, discriminator_json_key). The
+        #   composition is kept (not just its child_type) so shorthand-created children can be
+        #   counted against their slot in the cardinality audit.
         #   Example: screen -> screen_section (sections), section_key in ScreenSectionKey
-        #   -> {'body': (screen_section, 'section_key'), 'appbar': (screen_section, 'section_key'), ...}
-        shorthand_map = {}  # domain_value -> (child_type, discriminator_json_key)
+        #   -> {'body': (screen->sections comp, 'section_key'), 'appbar': (..., 'section_key'), ...}
+        shorthand_map = {}  # domain_value -> (composition, discriminator_json_key)
         for comp in compositions:
             if not comp.collection_key:
                 continue
@@ -1526,7 +1562,7 @@ class SchemaService:
             if not discriminator:
                 continue
             for di in self.attribute_def_repository.get_domain_items_by_domain(discriminator.domain):
-                shorthand_map[di.value] = (comp.child_type, discriminator.json_key)
+                shorthand_map[di.value] = (comp, discriminator.json_key)
         
         # Case 3 — structural children: compositions without collection_key
         #   (e.g. 'props' -> props node type, 'layout' -> layout node type).
@@ -1534,7 +1570,7 @@ class SchemaService:
         # type when it equals the child type's declared NodeType.default_json_key
         # or the child type's own name. No name-mangling or shape heuristics —
         # the key→type mapping must be declared in the catalog.
-        json_key_to_child_type = {}
+        json_key_to_comp = {}
         for comp in compositions:
             if comp.collection_key is not None:
                 continue
@@ -1548,9 +1584,9 @@ class SchemaService:
                 if json_key not in structural_keys:
                     continue
                 if isinstance(value, dict):
-                    json_key_to_child_type[json_key] = child_type
+                    json_key_to_comp[json_key] = comp
                 elif isinstance(value, list) and value and isinstance(value[0], dict):
-                    json_key_to_child_type[json_key] = child_type
+                    json_key_to_comp[json_key] = comp
         
         # Disable triggers to bypass s7 validation
         self.repository.disable_triggers()
@@ -1583,6 +1619,15 @@ class SchemaService:
             # Counter to assign unique, sequential sort_orders to all child nodes
             # created by any dispatch path within this call.
             child_sort_order = 0
+
+            # Per-slot dispatch counts for the post-loop cardinality audit:
+            # collection-keyed slots accumulate by collection_key (shorthand
+            # keys feed the same slot); structural compositions (no
+            # collection_key) accumulate by composition identity. Counts are
+            # payload-driven — items dropped by permissive-mode validators
+            # already emit their own dropped_attribute warning.
+            slot_child_counts: dict[str, int] = {}
+            structural_child_counts: dict[int, int] = {}
 
             # Process ALL attributes (no filtering of empty/null/zero values)
             for json_key, value in attributes.items():
@@ -1638,6 +1683,7 @@ class SchemaService:
                     if json_key in collection_keys:
                         if isinstance(value, list):
                             self._process_collection(json_key, value, node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
+                            slot_child_counts[json_key] = slot_child_counts.get(json_key, 0) + len(value)
                             child_sort_order += len(value)
                         elif isinstance(value, dict):
                             # Singleton dict: only dispatch if composition allows exactly one child (max_children=1)
@@ -1652,6 +1698,7 @@ class SchemaService:
                                 else:
                                     item = value
                                 self._process_collection(json_key, [item], node_id, node_type, project_id, organization_id, sort_order_offset=child_sort_order, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
+                                slot_child_counts[json_key] = slot_child_counts.get(json_key, 0) + 1
                                 child_sort_order += 1
                             elif strict_keys:
                                 raise self._invalid_collection_value_error(node_type, json_key, value, path)
@@ -1661,7 +1708,8 @@ class SchemaService:
 
                     # Case 2: shorthand discriminator (e.g. 'body' dict -> screen_section node)
                     if json_key in shorthand_map and isinstance(value, dict):
-                        child_type, discriminator_json_key = shorthand_map[json_key]
+                        slot_comp, discriminator_json_key = shorthand_map[json_key]
+                        child_type = slot_comp.child_type
                         name = json_key
                         child_node = self.repository.create_child_node(
                             child_type,
@@ -1672,6 +1720,7 @@ class SchemaService:
                             sort_order=child_sort_order,
                             name=name,
                         )
+                        slot_child_counts[slot_comp.collection_key] = slot_child_counts.get(slot_comp.collection_key, 0) + 1
                         child_sort_order += 1
                         item_with_discriminator = dict(value)
                         item_with_discriminator.setdefault(discriminator_json_key, json_key)
@@ -1680,8 +1729,9 @@ class SchemaService:
 
                     # Case 3: structural match -> composition without collection_key
                     # (e.g. a props child node, or other named sub-structures)
-                    if json_key in json_key_to_child_type:
-                        child_type = json_key_to_child_type[json_key]
+                    if json_key in json_key_to_comp:
+                        comp = json_key_to_comp[json_key]
+                        child_type = comp.child_type
                         # For props node types (declared via NodeTypeVariant.props_node_type),
                         # pass the parent's variant so the child can resolve
                         # variant-scoped AttributeDefs (keyed by the parent's variant).
@@ -1692,11 +1742,13 @@ class SchemaService:
                         )
                         if isinstance(value, dict):
                             self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
+                            structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
                             child_sort_order += 1
                         elif isinstance(value, list):
                             for idx, item in enumerate(value):
                                 if isinstance(item, dict):
                                     self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
+                                    structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
                                     child_sort_order += 1
                         continue
 
@@ -1836,6 +1888,50 @@ class SchemaService:
                         code=ERR_INVALID_SCHEMA,
                         path=f"{path}.{json_key}",
                     ) from exc
+
+            # Post-loop cardinality audit. _process_collection enforces
+            # max_children eagerly over the items it receives (an aggregate
+            # can only grow past len(items)), but it never runs for a slot
+            # absent from the payload, and shorthand keys (Case 2) feed
+            # their slot without passing through it — this aggregate count
+            # is the only place every dispatch path meets the declared
+            # bound, so it owns min_children entirely and re-checks
+            # max_children across paths. Counts are per slot for
+            # collection-keyed compositions (bounds shared by all
+            # compositions of the key) and per composition for structural
+            # children; enforced in strict and permissive mode alike.
+            for comp in compositions:
+                min_children = getattr(comp, 'min_children', None)
+                max_children = getattr(comp, 'max_children', None)
+                if min_children is None and max_children is None:
+                    continue
+                if comp.collection_key:
+                    count = slot_child_counts.get(comp.collection_key, 0)
+                    slot_key = comp.collection_key
+                else:
+                    count = structural_child_counts.get(id(comp), 0)
+                    slot_key = (
+                        getattr(comp.child_type, 'default_json_key', None)
+                        or getattr(comp.child_type, 'name', 'children')
+                    )
+                if min_children is not None and count < min_children:
+                    raise SchemaValidationError(
+                        f"Slot '{slot_key}' on node type '{node_type.name}' "
+                        f"requires at least {min_children} item(s), got {count}",
+                        code=ERR_MIN_CHILDREN_NOT_MET,
+                        path=f"{path}.{slot_key}",
+                        expected=f"at least {min_children} item(s)",
+                        received=f"{count} item(s)",
+                    )
+                if max_children is not None and count > max_children:
+                    raise SchemaValidationError(
+                        f"Slot '{slot_key}' on node type '{node_type.name}' "
+                        f"accepts at most {max_children} item(s), got {count}",
+                        code=ERR_MAX_CHILDREN_VIOLATION,
+                        path=f"{path}.{slot_key}",
+                        expected=f"at most {max_children} item(s)",
+                        received=f"{count} item(s)",
+                    )
         finally:
             # Re-enable triggers
             self.repository.enable_triggers()

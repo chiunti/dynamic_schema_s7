@@ -36,6 +36,7 @@ ERR_CANNOT_DELETE_PROJECT_WITH_SCHEMAS = "Cannot delete a project that still con
 ERR_MEMBER_NOT_FOUND = "Member not found in this organization"
 ERR_PROPERTIES_REQUIRED = "properties_required"
 ERR_MAX_CHILDREN_VIOLATION = "max_children_violation"
+ERR_MIN_CHILDREN_NOT_MET = "min_children_not_met"
 ERR_VERSION_NOT_AVAILABLE = "Could not find available version for schema with key='{key}' after {attempts} attempts"
 ERR_PERMISSION_DENIED = "You do not have permission to import schemas in this project."
 ERR_ROOT_NODE_TYPE_REQUIRED = "root_node_type_required"

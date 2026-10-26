@@ -1129,9 +1129,9 @@ class SchemaService:
             'key': None,  # Will be generated if not in JSON
         }
         
-        for json_key, field_name in json_key_map.items():
-            if json_key in item and item[json_key] is not None:
-                node_fields[field_name] = item[json_key]
+        for map_key, field_name in json_key_map.items():
+            if map_key in item and item[map_key] is not None:
+                node_fields[field_name] = item[map_key]
         
         # Handle key assignment: if key exists in JSON, assign it to both key and name
         if 'key' in item and item['key']:

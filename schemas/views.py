@@ -35,6 +35,44 @@ from .utils import parse_uuid
 logger = logging.getLogger(__name__)
 
 
+def _resolve_project_scope(request: Request) -> tuple | Response:
+    """Resolve the project scope for schema read endpoints.
+
+    Project credentials are bound to their own project: an optional
+    ``project_id`` query param is accepted only as an echo-check and must
+    match the credential's project. User MCP tokens delegate to the real
+    user and must declare ``project_id`` explicitly so the service can
+    verify access on the target project.
+
+    Returns ``(project_id, user)`` on success — ``user`` is ``None`` for
+    project credentials and ``request.user`` for MCP tokens — or a
+    ``Response`` (400/403) the caller must return unchanged.
+    """
+    if isinstance(request.user, ProjectPrincipal):
+        project_id = request.user.project_id
+        requested_project_id = request.query_params.get('project_id')
+        if requested_project_id:
+            try:
+                requested_uuid = parse_uuid(requested_project_id, "project_id")
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            if requested_uuid != project_id:
+                return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
+                                status=status.HTTP_403_FORBIDDEN)
+        return project_id, None
+    # User MCP tokens delegate to the real user: project_id is
+    # required so the service can check access on the target project.
+    requested_project_id = request.query_params.get('project_id')
+    if not requested_project_id:
+        return Response({'error': ERR_PROJECT_ID_REQUIRED},
+                        status=status.HTTP_400_BAD_REQUEST)
+    try:
+        project_id = parse_uuid(requested_project_id, "project_id")
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return project_id, request.user
+
+
 class SchemaView(APIView):
     """Serve the published schema JSON to credentials or user MCP tokens.
 
@@ -53,30 +91,10 @@ class SchemaView(APIView):
     permission_classes = [CanReadSchema | UserMCPTokenPermission]
 
     def get(self, request, node_type, key, version):
-        if isinstance(request.user, ProjectPrincipal):
-            project_id = request.user.project_id
-            requested_project_id = request.query_params.get('project_id')
-            if requested_project_id:
-                try:
-                    requested_uuid = parse_uuid(requested_project_id, "project_id")
-                except ValueError as exc:
-                    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-                if requested_uuid != project_id:
-                    return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
-                                    status=status.HTTP_403_FORBIDDEN)
-            user = None
-        else:
-            # User MCP tokens delegate to the real user: project_id is
-            # required so the service can check access on the target project.
-            requested_project_id = request.query_params.get('project_id')
-            if not requested_project_id:
-                return Response({'error': ERR_PROJECT_ID_REQUIRED},
-                                status=status.HTTP_400_BAD_REQUEST)
-            try:
-                project_id = parse_uuid(requested_project_id, "project_id")
-            except ValueError as exc:
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-            user = request.user
+        resolved = _resolve_project_scope(request)
+        if isinstance(resolved, Response):
+            return resolved
+        project_id, user = resolved
         try:
             schema_json = SchemaReadService().get_published(
                 node_type, key, version, project_id, user=user
@@ -120,30 +138,10 @@ class SchemaDraftView(APIView):
     permission_classes = [CanReadSchema | UserMCPTokenPermission]
 
     def get(self, request, node_type, key, version):
-        if isinstance(request.user, ProjectPrincipal):
-            project_id = request.user.project_id
-            requested_project_id = request.query_params.get('project_id')
-            if requested_project_id:
-                try:
-                    requested_uuid = parse_uuid(requested_project_id, "project_id")
-                except ValueError as exc:
-                    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-                if requested_uuid != project_id:
-                    return Response({'error': ERR_PROJECT_CREDENTIAL_MISMATCH},
-                                    status=status.HTTP_403_FORBIDDEN)
-            user = None
-        else:
-            # User MCP tokens delegate to the real user: project_id is
-            # required so the service can check access on the target project.
-            requested_project_id = request.query_params.get('project_id')
-            if not requested_project_id:
-                return Response({'error': ERR_PROJECT_ID_REQUIRED},
-                                status=status.HTTP_400_BAD_REQUEST)
-            try:
-                project_id = parse_uuid(requested_project_id, "project_id")
-            except ValueError as exc:
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-            user = request.user
+        resolved = _resolve_project_scope(request)
+        if isinstance(resolved, Response):
+            return resolved
+        project_id, user = resolved
         try:
             schema_json = SchemaReadService().get_draft(
                 node_type, key, version, project_id, user=user

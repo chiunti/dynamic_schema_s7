@@ -120,6 +120,13 @@ class CatalogImportService:
             value is a per-object validation error (the would-be reset
             fields are named), not a silent reset.
 
+            Classification and apply run in one transaction under READ
+            COMMITTED, so a row matched as an update may still be
+            deleted by a concurrent transaction before its write — the
+            save then inserts it. Existence is re-checked per update
+            object right before the save so the envelope reports the
+            action actually taken.
+
             The payload is mutated in place: generated uuid5 pks are
             written into objects that omit ``pk``, and objects whose
             natural key already exists get ``pk`` rewritten to the live
@@ -253,8 +260,29 @@ class CatalogImportService:
             classified,
             key=lambda entry: _APPLY_RANK[entry[2]],
         )
-        for orig_i, obj, label, _ in ordered:
+        # Rows classified as updates may have been deleted after
+        # classification — under READ COMMITTED a concurrent DELETE can
+        # commit between passes, and the save below then INSERTs the
+        # row instead of UPDATEing it. Re-check existence right before
+        # each update write and correct the action/counts so the report
+        # reflects what is actually written (obj['pk'] already carries
+        # the canonical existing_pk from the permission pass).
+        inserted: set[int] = set()
+        for orig_i, obj, label, existing_pk in ordered:
             try:
+                if (existing_pk is not None
+                        and not self.fixture_repository.pk_exists(
+                            label, obj['pk'],
+                        )):
+                    # The matched row vanished — the save inserts it,
+                    # so this object is a create, not an update.
+                    inserted.add(orig_i)
+                    updated[label] -= 1
+                    if not updated[label]:
+                        # Counter keeps zeroed keys; drop them so the
+                        # envelope never reports ``label: 0``.
+                        del updated[label]
+                    created[label] += 1
                 self.fixture_repository.apply_fixture_objects([obj])
             except (DeserializationError, ValueError, RuntimeError,
                     IntegrityError, DatabaseError) as exc:
@@ -283,7 +311,10 @@ class CatalogImportService:
             nk = self.fixture_service.natural_key_for(
                 label, obj['fields'],
             )
-            if existing_pk is None:
+            if existing_pk is None or i in inserted:
+                # ``i in inserted``: the row matched as an update was
+                # gone by write time and got inserted — every payload
+                # field was written and no live baseline exists.
                 action = 'created'
                 changed_fields = sorted(obj['fields'])
             else:

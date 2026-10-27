@@ -18,6 +18,7 @@ from typing import Optional
 from django.core.management import call_command
 
 from ..constants import (
+    ERR_DUPLICATE_PK_IN_PAYLOAD,
     ERR_INVALID_FK_SHAPE,
     ERR_INVALID_NATURAL_KEY_COMPONENTS,
     ERR_MISSING_NATURAL_KEY_FIELDS,
@@ -215,8 +216,13 @@ class FixtureService:
         serialize as a string or a list of strings — a mistyped
         component would coerce to a degenerate identity like
         ``name='0'`` at deserialization, so the object is rejected
-        rather than deduplicated), in-payload natural key uniqueness, the
-        shape of every declared FK value (``FK_FIELDS`` positions must
+        rather than deduplicated), in-payload pk uniqueness (two
+        objects of the same model naming the same pk — compared on the
+        normalized UUID, tracked per label since different models may
+        legitimately share a pk value — would both match-update the
+        same row at import: the last write wins and rewrites the row's
+        natural key), in-payload natural key uniqueness, the shape of
+        every declared FK value (``FK_FIELDS`` positions must
         serialize as natural-key lists of strings — ``None`` is the
         valid "no reference" shape; scalars and lists with non-string
         elements are rejected before resolution), and that every
@@ -240,6 +246,7 @@ class FixtureService:
             return ['Fixture must be a non-empty JSON array of objects']
 
         naturals = {}
+        seen_pks = {}
         checked = []
         for i, obj in enumerate(objects):
             where = f'object[{i}]'
@@ -271,9 +278,28 @@ class FixtureService:
                 errors.append(f'{where}: model {model!r} not allowed')
                 continue
             try:
-                uuid.UUID(str(pk))
+                pk_norm = str(uuid.UUID(str(pk)))
             except (ValueError, AttributeError, TypeError):
+                # An unparseable pk is already rejected — it must not
+                # enter the dedup set and add 'duplicate pk' noise.
                 errors.append(f'{where}: pk is not a UUID')
+            else:
+                # Two objects of the same model naming the same pk
+                # would both match-update the same row at import: the
+                # last write wins and rewrites the row's natural key —
+                # an implicit identity rename. Dedup is per label
+                # (different models may legitimately share a pk value)
+                # and compares the normalized UUID, so spellings like
+                # 'ABC..' vs 'abc..' or braced forms collide the same
+                # way pk_exists matches them in Postgres. No continue:
+                # the object keeps accumulating other errors.
+                label_pks = seen_pks.setdefault(label, set())
+                if pk_norm in label_pks:
+                    errors.append(
+                        f'{where}: ' + ERR_DUPLICATE_PK_IN_PAYLOAD,
+                    )
+                else:
+                    label_pks.add(pk_norm)
             if not isinstance(fields, dict):
                 errors.append(f'{where}: missing fields object')
                 continue

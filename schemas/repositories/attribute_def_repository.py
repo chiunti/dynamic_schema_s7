@@ -444,9 +444,10 @@ class AttributeDefRepository:
             node_type: NodeType instance
 
         Returns:
-            QuerySet of AttributeDef instances
+            QuerySet of AttributeDef instances with data_type and
+            domain select_related
         """
-        return AttributeDef.objects.filter(node_type=node_type)
+        return AttributeDef.objects.filter(node_type=node_type).select_related('data_type', 'domain')
 
     def get_attribute_defs_by_node_type_variant_key(self, node_type, variant_key):
         """

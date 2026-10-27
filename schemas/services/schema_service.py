@@ -225,7 +225,7 @@ class SchemaService:
         attr_defs = list(
             self.attribute_def_repository.get_attribute_defs_by_node_type(
                 node_type
-            ).select_related('data_type', 'domain')
+            )
         )
         ntv = self.node_type_repository.get_node_type_variant_by_node_type(
             node_type

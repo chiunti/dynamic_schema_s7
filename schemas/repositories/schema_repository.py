@@ -672,9 +672,9 @@ class SchemaRepository:
         return AttributeDef.objects.filter(node_type=node_type, json_key__in=json_keys)
 
     def get_attribute_defs_by_node_type(self, node_type):
-        """Get all attribute definitions for a node type with domain prefetch"""
+        """Get all attribute definitions for a node type with data_type/domain select_related"""
         from ..models import AttributeDef
-        return AttributeDef.objects.filter(node_type=node_type).prefetch_related('domain')
+        return AttributeDef.objects.filter(node_type=node_type).select_related('data_type', 'domain')
 
     def get_node_attributes_by_node(self, node):
         """Get all node attributes for a node with attribute_def select_related"""

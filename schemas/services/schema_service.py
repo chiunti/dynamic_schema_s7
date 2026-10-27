@@ -974,9 +974,10 @@ class SchemaService:
         same slot), so the post-loop audit in _process_node_attributes
         owns it. ``dropped_attributes`` is the shared out-list for
         validator-rejected values: an item containing an invalid
-        conditional structure is dropped wholesale in permissive mode
-        (strict mode raises), and the list is forwarded to
-        _process_node_attributes for attribute-level drops.
+        conditional structure — at any depth inside the item — is
+        dropped wholesale in permissive mode (strict mode raises), and
+        the list is forwarded to _process_node_attributes for
+        attribute-level drops.
         """
         # Find ALL valid child types for this parent type matching the collection_key
         compositions = list(
@@ -1037,23 +1038,36 @@ class SchemaService:
             item_path = f"{path}.{collection_key}[{idx}]"
 
             # Validate conditional structures within the item. Strict mode
-            # aborts; permissive mode records a dropped_attribute warning and
-            # omits the whole item — the dropped unit is the item itself.
-            invalid_conditional = self._find_invalid_item_conditional(item)
-            if invalid_conditional is not None:
-                item_key, conditional_error = invalid_conditional
-                message = (
-                    f"Invalid conditional structure for '{item_key}' in item {idx} "
-                    f"of '{collection_key}': {conditional_error}"
-                )
-                if strict_keys:
+            # aborts on the first invalid top-level conditional — nested
+            # ones keep surfacing at '{item_path}.{attr_key}' via the
+            # per-attribute recursive check in _process_node_attributes.
+            # Permissive mode deep-scans the whole item: an invalid
+            # conditional at any depth drops the outermost item
+            # wholesale, reported with a single dropped_attribute
+            # warning carrying the internal path. Depth 0 included: a
+            # conditional-shaped item is dropped here even though the
+            # strict shallow check misses it — it would only
+            # materialize as junk attributes anyway.
+            if strict_keys:
+                invalid_conditional = self._find_invalid_item_conditional(item)
+                if invalid_conditional is not None:
+                    item_key, conditional_error = invalid_conditional
                     raise SchemaValidationError(
-                        message,
+                        f"Invalid conditional structure for '{item_key}' in item {idx} "
+                        f"of '{collection_key}': {conditional_error}",
                         code=ERR_INVALID_SCHEMA,
                         path=f"{item_path}.{item_key}",
                     ) from conditional_error
-                self._record_dropped_attribute(item_path, message, dropped_attributes)
-                continue
+            else:
+                invalid_conditional = self._find_invalid_conditional(item, item_path)
+                if invalid_conditional is not None:
+                    internal_path, conditional_error = invalid_conditional
+                    self._record_dropped_attribute(
+                        item_path,
+                        f"Invalid conditional structure at '{internal_path}': {conditional_error}",
+                        dropped_attributes,
+                    )
+                    continue
 
             child_node_type = self._resolve_child_type_for_item(item, compositions)
             _, json_key_to_field_map = field_maps[child_node_type.id]
@@ -2161,9 +2175,16 @@ class SchemaService:
             return False
         return 'logic' in value and 'conditions' in value
 
-    def _find_invalid_item_conditional(self, item: dict) -> Optional[tuple]:
+    def _find_invalid_item_conditional(self, item: dict) -> Optional[tuple[str, Exception]]:
         """Return ``(item_key, exception)`` for the first value of a collection
         item that has conditional shape but fails structural validation.
+
+        Shallow scan — top-level values only. It backs the strict-mode
+        pre-check in _process_collection, where invalid conditionals
+        nested deeper are intentionally left to the per-attribute
+        recursive check so their error path stays at
+        '{item_path}.{attr_key}'. The permissive branch deep-scans with
+        _find_invalid_conditional instead.
 
         Returns None when every conditional in the item is valid.
         """
@@ -2175,24 +2196,48 @@ class SchemaService:
                     return item_key, exc
         return None
 
-    def _validate_conditional_recursively(self, value, path: str = ""):
-        """Recursively validate all conditional structures in a value."""
+    def _find_invalid_conditional(self, value, path: str = "") -> Optional[tuple[str, Exception]]:
+        """Return ``(path, exception)`` for the first conditional-shaped
+        structure inside ``value`` that fails structural validation.
+
+        Depth-first scan: a container is checked before its children,
+        dict keys in insertion order and list items in index order.
+        ``path`` seeds the reported location of the offending
+        conditional. Returns None when every conditional in the value is
+        valid.
+        """
         if isinstance(value, dict):
-            # Check if this dict itself is a conditional structure
+            # Check this dict itself first, then descend into its values —
+            # a valid conditional may still wrap an invalid nested one.
             if self._is_conditional_structure(value):
                 try:
                     validate_conditional_structure(value)
-                except Exception as e:
-                    raise ValueError(f"Invalid conditional structure at '{path}': {str(e)}")
-            # Recursively validate nested values
+                except Exception as exc:
+                    return path, exc
             for key, nested_value in value.items():
                 nested_path = f"{path}.{key}" if path else key
-                self._validate_conditional_recursively(nested_value, nested_path)
+                found = self._find_invalid_conditional(nested_value, nested_path)
+                if found is not None:
+                    return found
         elif isinstance(value, list):
-            # Recursively validate list items
             for idx, item in enumerate(value):
                 nested_path = f"{path}[{idx}]"
-                self._validate_conditional_recursively(item, nested_path)
+                found = self._find_invalid_conditional(item, nested_path)
+                if found is not None:
+                    return found
+        return None
+
+    def _validate_conditional_recursively(self, value, path: str = ""):
+        """Recursively validate all conditional structures in a value.
+
+        Raises ValueError on the first invalid conditional found by the
+        _find_invalid_conditional depth-first scan; the message carries
+        the offending nested path.
+        """
+        found = self._find_invalid_conditional(value, path)
+        if found is not None:
+            invalid_path, exc = found
+            raise ValueError(f"Invalid conditional structure at '{invalid_path}': {exc}") from exc
     
     def _infer_data_type(self, value) -> str:
         """Infer DataType from value"""

@@ -683,13 +683,16 @@ class SchemaService:
         This allows schemas to define their version in a child node (e.g., metadata.version)
         instead of the root level. The logic is schema-driven:
         1. Find child compositions of the root node type
-        2. Check if any child type has a 'version' attribute with natural_version datatype
+        2. Check if any child type declares a ``natural_version`` attribute (any json_key)
         3. If the JSON has that child with a version value, update Node.version
 
         The child may arrive as a plain dict or as a list — singleton
         composition slots are serialized as an array of items. A list is
         normalized to its first dict item; a list with more than one item logs
-        a warning and still uses the first item.
+        a warning and still uses the first item. When a child type declares
+        several ``natural_version`` attributes a warning is logged and only
+        the first (json_key-ordered) key is read — there is no fallback
+        probing if that key is absent from the child object.
 
         Version precedence:
         1. Explicit version — only the ``schema_version`` request param
@@ -728,13 +731,18 @@ class SchemaService:
         for comp in compositions:
             child_type = comp.child_type
 
-            # Check if this child type has a 'version' attribute with natural_version datatype
-            version_attr = self.attribute_def_repository.get_attribute_def_by_node_type_json_key_variant(child_type, 'version', None)
-            if version_attr and version_attr.data_type.name != 'natural_version':
-                version_attr = None
-
-            if not version_attr:
+            # Check if this child type declares a natural_version attribute (any json_key)
+            version_attrs = list(
+                self.attribute_def_repository.get_attribute_defs_by_data_type(child_type, 'natural_version')
+            )
+            if not version_attrs:
                 continue
+            if len(version_attrs) > 1:
+                logging.getLogger(__name__).warning(
+                    "Child type '%s' declares %d natural_version attributes; using '%s'.",
+                    child_type.name, len(version_attrs), version_attrs[0].json_key,
+                )
+            version_attr = version_attrs[0]
 
             # Get the collection_key to find the child in the JSON
             collection_key = comp.collection_key
@@ -777,7 +785,7 @@ class SchemaService:
             # Extract version from the child object — coerce numeric values
             # so a numeric JSON version compares equal to the same string
             # arriving through the explicit/alias channels.
-            json_version = child_obj.get('version')
+            json_version = child_obj.get(version_attr.json_key)
             if isinstance(json_version, (int, float)) and not isinstance(json_version, bool):
                 json_version = str(json_version)
 

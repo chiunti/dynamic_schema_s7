@@ -480,6 +480,31 @@ class AttributeDefRepository:
             variant_key=variant_key
         ).first()
 
+    def get_attribute_defs_by_data_type(self, node_type, data_type_name, variant_key=None):
+        """
+        Get AttributeDefs of a node type carrying a given data type name.
+
+        ``variant_key=None`` filters to the IS NULL set — covering both
+        common attributes (is_common=True) and catalog templates
+        (is_common=False), same convention as
+        get_attribute_def_by_node_type_json_key_variant.
+
+        Args:
+            node_type: NodeType instance
+            data_type_name: DataType name (e.g. 'natural_version')
+            variant_key: Variant key (can be None)
+
+        Returns:
+            QuerySet of AttributeDef instances ordered by json_key so
+            'first' is deterministic, with data_type and domain
+            select_related
+        """
+        return AttributeDef.objects.filter(
+            node_type=node_type,
+            data_type__name=data_type_name,
+            variant_key=variant_key,
+        ).select_related('data_type', 'domain').order_by('json_key')
+
     def create_attribute_def(self, **kwargs):
         """
         Create an AttributeDef.

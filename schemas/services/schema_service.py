@@ -15,6 +15,7 @@ from ..repositories.node_type_repository import NodeTypeRepository
 from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
+from .expression_validator import is_expression_string
 from .datatype_plugins import (
     get_datatype_doc,
     get_storage_defaults,
@@ -1391,7 +1392,10 @@ class SchemaService:
                         return
 
                 # Strict mode: scalar values must belong to the declared domain.
-                if strict_keys and isinstance(value, (str, int, float, bool)):
+                # Expression strings ('{{...}}') are dynamic values resolved
+                # client-side, so literal domain membership does not apply.
+                if (strict_keys and isinstance(value, (str, int, float, bool))
+                        and not is_expression_string(value)):
                     check_domain = self._effective_domain(
                         node_type, json_key, variant_key, attr_def
                     )
@@ -1916,9 +1920,12 @@ class SchemaService:
                                 )
                                 continue
 
-                        # Strict mode: scalar values must belong to the declared domain.
+                        # Strict mode: scalar values must belong to the declared
+                        # domain. Expression strings ('{{...}}') resolve
+                        # client-side, so literal domain membership is skipped.
                         if (strict_keys and value is not None
-                                and isinstance(value, (str, int, float, bool))):
+                                and isinstance(value, (str, int, float, bool))
+                                and not is_expression_string(value)):
                             check_domain = self._effective_domain(
                                 node_type, json_key, node_variant, attr_def
                             )
@@ -2057,9 +2064,12 @@ class SchemaService:
             # The resolved declaration may be a catalog template whose domain
             # is enforced here so out-of-domain scalars are rejected before
             # creation; the domain is also copied below so the materialized
-            # def keeps enforcing it afterwards.
+            # def keeps enforcing it afterwards. Expression strings
+            # ('{{...}}') resolve client-side — literal domain membership is
+            # skipped for them.
             if (declaration is not None and declaration.domain
                     and isinstance(value, (str, int, float, bool))
+                    and not is_expression_string(value)
                     and not self.attribute_def_repository.domain_item_exists(
                         declaration.domain, self._domain_lookup_value(value)
                     )):

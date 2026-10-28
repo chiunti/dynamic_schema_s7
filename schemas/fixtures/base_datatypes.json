@@ -81,6 +81,16 @@
   },
   {
     "model": "schemas.datatype",
+    "pk": "49abbbec-2677-56bb-877d-32e28f41813e",
+    "fields": {
+      "name": "expression",
+      "description": "Client-side {{expr}} expression string (stored in value_string)",
+      "primary_storage_type": "string",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
     "pk": "209cab81-1c12-54b8-97c7-940772aeafe9",
     "fields": {
       "name": "float",

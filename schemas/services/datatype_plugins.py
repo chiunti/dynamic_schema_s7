@@ -33,9 +33,18 @@ from .conditional_validator import (
     ALLOWED_OPERAND_KINDS,
     ALLOWED_OPERATORS,
 )
+from .expression_validator import (
+    ALLOWED_COALESCE_OPERATORS,
+    ALLOWED_COMPARISON_OPERATORS,
+    ALLOWED_EQUALITY_OPERATORS,
+    ALLOWED_LOGIC_OPERATORS as ALLOWED_EXPRESSION_LOGIC_OPERATORS,
+    ALLOWED_UNARY_OPERATORS,
+    KEYWORD_LITERALS,
+)
 
 DATATYPE_VALIDATORS = {
     'conditional': 'schemas.services.conditional_validator.validate_conditional_value',
+    'expression': 'schemas.services.expression_validator.validate_expression_value',
 }
 
 # Declarative per-datatype documentation surfaced by the resolved catalog
@@ -83,6 +92,41 @@ DATATYPE_DOCS: dict[str, dict[str, Any]] = {
                 {'left': {'field': 'age'}, 'op': '>=', 'right': {'value': 18}},
             ],
         },
+    },
+    'expression': {
+        'description': (
+            'Client-side expression string evaluated by the consumer at '
+            'render time, stored verbatim in value_string. The value is a '
+            'plain string that may embed {{ expression }} tokens: a token '
+            'occupying the whole value resolves to the expression result '
+            'type, inline tokens interpolate into the surrounding text, and '
+            'text without tokens is a literal. Inside a token, expressions '
+            'combine context paths (dotted identifiers with optional '
+            'integer list indices), literals and the operators below; '
+            'validation is syntax-only — operand types resolve in the '
+            'consumer runtime.'
+        ),
+        'shape': {
+            'value': 'string — plain text, or text embedding one or more {{ expression }} tokens',
+            'token': '{{ expression }} — whitespace-insensitive; a token spanning the whole value preserves the result type',
+            'expression': (
+                'literal | path | ( expression ) | unary_operators expression '
+                '| expression coalesce_operators expression '
+                '| expression logic_operators expression '
+                '| expression equality_operators expression '
+                '| expression comparison_operators expression '
+                "| expression '?' expression ':' expression"
+            ),
+            'path': "identifier ('.' identifier | '.' integer)* — e.g. features.flag or items.0.name",
+            'literal': "'string' | number | one of keyword_literals",
+        },
+        'comparison_operators': sorted(ALLOWED_COMPARISON_OPERATORS),
+        'equality_operators': sorted(ALLOWED_EQUALITY_OPERATORS),
+        'logic_operators': sorted(ALLOWED_EXPRESSION_LOGIC_OPERATORS),
+        'unary_operators': sorted(ALLOWED_UNARY_OPERATORS),
+        'coalesce_operators': sorted(ALLOWED_COALESCE_OPERATORS),
+        'keyword_literals': sorted(KEYWORD_LITERALS),
+        'example': "{{wallet.count ?? 0}} {{features.compact ? 'items' : 'rows'}}",
     },
 }
 

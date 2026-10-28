@@ -1423,7 +1423,35 @@ class SchemaService:
         via the recursive _process_node_attributes call.
         ``dropped_attributes`` is forwarded to _process_node_attributes as the
         shared out-list for validator-rejected attribute values.
+
+        Composition cardinality bounds apply to the map as a whole: the map
+        itself is the slot, so every composition declaring
+        ``min_children``/``max_children`` bounds the total entry count. The
+        audit runs once, before any child node is created, and is
+        unconditional — violations raise SchemaValidationError in strict and
+        permissive mode alike.
         """
+        # Cardinality bound audit. The entry count is known upfront, so
+        # bounds are checked before creating any child — fail-fast like the
+        # eager max_children check in _process_collection. The map is the
+        # slot: every composition with declared bounds audits the total
+        # entry count (a collection_key composition on a keyed-map parent
+        # is a catalog anomaly; its bound still reads against the whole
+        # map). The error path is the map's own path, not '{path}.{slot}'.
+        count = len(entries)
+        slot_key = (
+            getattr(node_type, 'default_json_key', None)
+            or getattr(node_type, 'name', 'children')
+        )
+        for comp in compositions:
+            min_children = getattr(comp, 'min_children', None)
+            max_children = getattr(comp, 'max_children', None)
+            if min_children is None and max_children is None:
+                continue
+            self._enforce_slot_cardinality(
+                slot_key, node_type.name, count, min_children, max_children, path
+            )
+
         candidates = [comp.child_type for comp in compositions if comp.collection_key is None]
         typed_objects = [
             (candidate, {
@@ -1512,6 +1540,36 @@ class SchemaService:
         else:
             logging.getLogger(__name__).warning("%s: %s", attr_path, message)
 
+    @staticmethod
+    def _enforce_slot_cardinality(slot_key: str, node_type_name: str, count: int, min_children: Optional[int], max_children: Optional[int], path: str) -> None:
+        """Raise SchemaValidationError when a slot's child count breaks a bound.
+
+        Single error shape shared by the post-loop cardinality audit in
+        _process_node_attributes and the keyed-map bound check: ``slot_key``
+        names the slot in the message while ``path`` locates the violation —
+        ``{path}.{slot_key}`` for attribute-dispatched slots, the map's own
+        path when the whole keyed map is the slot. No-op when both bounds
+        are None.
+        """
+        if min_children is not None and count < min_children:
+            raise SchemaValidationError(
+                f"Slot '{slot_key}' on node type '{node_type_name}' "
+                f"requires at least {min_children} item(s), got {count}",
+                code=ERR_MIN_CHILDREN_NOT_MET,
+                path=path,
+                expected=f"at least {min_children} item(s)",
+                received=f"{count} item(s)",
+            )
+        if max_children is not None and count > max_children:
+            raise SchemaValidationError(
+                f"Slot '{slot_key}' on node type '{node_type_name}' "
+                f"accepts at most {max_children} item(s), got {count}",
+                code=ERR_MAX_CHILDREN_VIOLATION,
+                path=path,
+                expected=f"at most {max_children} item(s)",
+                received=f"{count} item(s)",
+            )
+
     def _process_node_attributes(self, node_id: uuid.UUID, node_type, attributes: dict, project_id: Optional[uuid.UUID] = None, organization_id: Optional[uuid.UUID] = None, inherited_variant: Optional[str] = None, strict_keys: bool = False, path: str = "$", dropped_attributes: Optional[list] = None):
         """Process attributes for a node, creating AttributeDefs dynamically if needed.
 
@@ -1531,6 +1589,11 @@ class SchemaService:
         overflow aggregated across dispatch paths (e.g. a list plus shorthand
         keys feeding the same collection_key). Violations raise
         SchemaValidationError in strict and permissive mode alike.
+
+        Node types flagged ``is_json_map`` skip this entire flow: the early
+        return below delegates to ``_process_keyed_map``, which runs its own
+        cardinality audit — the map itself is the slot, so every bounded
+        composition audits the total entry count.
 
         Args:
             inherited_variant: Variant key inherited from the parent node
@@ -1947,24 +2010,14 @@ class SchemaService:
                         getattr(comp.child_type, 'default_json_key', None)
                         or getattr(comp.child_type, 'name', 'children')
                     )
-                if min_children is not None and count < min_children:
-                    raise SchemaValidationError(
-                        f"Slot '{slot_key}' on node type '{node_type.name}' "
-                        f"requires at least {min_children} item(s), got {count}",
-                        code=ERR_MIN_CHILDREN_NOT_MET,
-                        path=f"{path}.{slot_key}",
-                        expected=f"at least {min_children} item(s)",
-                        received=f"{count} item(s)",
-                    )
-                if max_children is not None and count > max_children:
-                    raise SchemaValidationError(
-                        f"Slot '{slot_key}' on node type '{node_type.name}' "
-                        f"accepts at most {max_children} item(s), got {count}",
-                        code=ERR_MAX_CHILDREN_VIOLATION,
-                        path=f"{path}.{slot_key}",
-                        expected=f"at most {max_children} item(s)",
-                        received=f"{count} item(s)",
-                    )
+                self._enforce_slot_cardinality(
+                    slot_key,
+                    node_type.name,
+                    count,
+                    min_children,
+                    max_children,
+                    f"{path}.{slot_key}",
+                )
         finally:
             # Re-enable triggers
             self.repository.enable_triggers()

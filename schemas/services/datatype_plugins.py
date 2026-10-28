@@ -175,6 +175,31 @@ def validate_datatype_value(data_type, value):
         validator(value)
 
 
+def datatype_validates_expressions(data_type) -> bool:
+    """True when the datatype's registered plugin validator IS the
+    expression validator — ``validate_datatype_value`` already gates
+    ``{{...}}`` syntax for it, so callers must not re-validate.
+
+    Used by the domain-check bypass in the import pipeline: a
+    ``{{``-leading value on a domain-bound attribute skips literal domain
+    membership because its semantics resolve client-side. That skip is
+    only safe when some layer validates the token's syntax — for
+    datatypes whose plugin is not the expression validator, the pipeline
+    re-runs ``validate_expression_value`` itself before allowing the
+    bypass.
+
+    Args:
+        data_type: The DataType instance, or None (``None`` → False —
+            no datatype means no plugin gates the syntax).
+
+    Returns:
+        True when ``DATATYPE_VALIDATORS`` maps the datatype's name to the
+        same validator registered under ``'expression'``.
+    """
+    name = getattr(data_type, 'name', None)
+    return DATATYPE_VALIDATORS.get(name) == DATATYPE_VALIDATORS['expression']
+
+
 def get_storage_type(data_type):
     """
     Returns the effective primary storage type for a DataType.

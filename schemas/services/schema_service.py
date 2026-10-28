@@ -15,8 +15,9 @@ from ..repositories.node_type_repository import NodeTypeRepository
 from .permission_service import PermissionService
 from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
-from .expression_validator import is_expression_string
+from .expression_validator import is_expression_string, validate_expression_value
 from .datatype_plugins import (
+    datatype_validates_expressions,
     get_datatype_doc,
     get_storage_defaults,
     get_storage_type,
@@ -1391,11 +1392,35 @@ class SchemaService:
                         )
                         return
 
+                # A '{{'-leading value asserts expression intent: on a
+                # domain-bound attribute it must parse before it may skip the
+                # domain check — a malformed token must not ride the bypass
+                # and persist verbatim. Defs whose datatype already runs the
+                # expression plugin were gated above, so the re-check skips
+                # them.
+                if is_expression_string(value):
+                    if (self._effective_domain(node_type, json_key, variant_key, attr_def)
+                            and not datatype_validates_expressions(attr_def.data_type)):
+                        try:
+                            validate_expression_value(value)
+                        except (ValidationError, SchemaValidationError) as e:
+                            if strict_keys:
+                                raise SchemaValidationError(
+                                    f"Invalid value for '{json_key}': {str(e)}",
+                                    code=ERR_INVALID_SCHEMA,
+                                    path=f"{path}.{json_key}",
+                                ) from e
+                            self._record_dropped_attribute(
+                                f"{path}.{json_key}",
+                                f"Invalid value: {str(e)}",
+                                dropped_attributes,
+                            )
+                            return
                 # Strict mode: scalar values must belong to the declared domain.
                 # Expression strings ('{{...}}') are dynamic values resolved
-                # client-side, so literal domain membership does not apply.
-                if (strict_keys and isinstance(value, (str, int, float, bool))
-                        and not is_expression_string(value)):
+                # client-side, so literal domain membership does not apply —
+                # the gate above already enforced their syntax.
+                elif strict_keys and isinstance(value, (str, int, float, bool)):
                     check_domain = self._effective_domain(
                         node_type, json_key, variant_key, attr_def
                     )
@@ -1920,12 +1945,37 @@ class SchemaService:
                                 )
                                 continue
 
+                        # A '{{'-leading value asserts expression intent: on a
+                        # domain-bound attribute it must parse before it may
+                        # skip the domain check — a malformed token must not
+                        # ride the bypass and persist verbatim. Defs whose
+                        # datatype runs the expression plugin are gated by the
+                        # validator below, so the re-check skips them.
+                        is_dynamic = is_expression_string(value)
+                        if (is_dynamic
+                                and self._effective_domain(node_type, json_key, node_variant, attr_def)
+                                and not datatype_validates_expressions(attr_def.data_type)):
+                            try:
+                                validate_expression_value(value)
+                            except (ValidationError, SchemaValidationError) as exc:
+                                if strict_keys:
+                                    raise SchemaValidationError(
+                                        f"Invalid value for '{json_key}': {exc}",
+                                        code=ERR_INVALID_SCHEMA,
+                                        path=f"{path}.{json_key}",
+                                    ) from exc
+                                self._record_dropped_attribute(
+                                    f"{path}.{json_key}", str(exc), dropped_attributes
+                                )
+                                continue
+
                         # Strict mode: scalar values must belong to the declared
                         # domain. Expression strings ('{{...}}') resolve
-                        # client-side, so literal domain membership is skipped.
+                        # client-side, so literal domain membership is skipped —
+                        # the gate above already enforced their syntax.
                         if (strict_keys and value is not None
                                 and isinstance(value, (str, int, float, bool))
-                                and not is_expression_string(value)):
+                                and not is_dynamic):
                             check_domain = self._effective_domain(
                                 node_type, json_key, node_variant, attr_def
                             )
@@ -2066,7 +2116,7 @@ class SchemaService:
             # creation; the domain is also copied below so the materialized
             # def keeps enforcing it afterwards. Expression strings
             # ('{{...}}') resolve client-side — literal domain membership is
-            # skipped for them.
+            # skipped for them; the syntax gate below still applies.
             if (declaration is not None and declaration.domain
                     and isinstance(value, (str, int, float, bool))
                     and not is_expression_string(value)
@@ -2074,6 +2124,36 @@ class SchemaService:
                         declaration.domain, self._domain_lookup_value(value)
                     )):
                 raise self._invalid_domain_value_error(json_key, declaration.domain, value, path)
+        elif is_expression_string(value):
+            # Permissive mode fetches the declaration lazily — only needed by
+            # the expression syntax gate below to tell domain-bound attrs
+            # apart.
+            declaration = self.attribute_def_repository.get_attribute_def_declaration(
+                node_type, json_key, variant_key
+            )
+
+        # A '{{'-leading value on a domain-bound declaration asserts
+        # expression intent: it must parse before the domain check is
+        # skipped — a malformed token must not ride the bypass and persist
+        # verbatim. The def to be created infers its datatype from the value
+        # ('string' for '{{...}}'), so no plugin will gate its syntax later.
+        if (declaration is not None and declaration.domain
+                and is_expression_string(value)):
+            try:
+                validate_expression_value(value)
+            except (ValidationError, SchemaValidationError) as e:
+                if strict_keys:
+                    raise SchemaValidationError(
+                        f"Invalid value for '{json_key}': {str(e)}",
+                        code=ERR_INVALID_SCHEMA,
+                        path=f"{path}.{json_key}",
+                    ) from e
+                self._record_dropped_attribute(
+                    f"{path}.{json_key}",
+                    f"Invalid value: {str(e)}",
+                    dropped_attributes,
+                )
+                return None
 
         # Determine data type from value
         data_type_name = self._infer_data_type(value)

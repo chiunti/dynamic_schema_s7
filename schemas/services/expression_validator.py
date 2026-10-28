@@ -470,6 +470,12 @@ def is_expression_string(value: Any) -> bool:
     The predicate is datatype-agnostic — it describes the *value's* shape,
     not the attribute's declared type (a `{{`-leading value on any
     domain-bound attribute is dynamic by contract).
+
+    The predicate is shape-only — it does not check the token's grammar.
+    Callers that skip a check because a value is expression-shaped must
+    ensure the syntax is validated in another layer: the import pipeline's
+    domain checks re-validate via ``validate_expression_value`` unless the
+    attribute's datatype already gates it through its plugin validator.
     """
     if not isinstance(value, str):
         return False

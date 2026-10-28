@@ -1206,28 +1206,20 @@ class SchemaService:
                 )
                 return
 
-        # Generate unique name/key based on index
-        if index is not None:
-            name = f'{json_key}_{index}'
-            key = f'{json_key}_{index}'
-        else:
-            name = json_key
-            key = json_key
-
         # Build map of natural attributes to node fields
         attr_defs = self.attribute_def_repository.get_attribute_defs_by_node_type(child_type)
         json_key_map = self._build_json_key_to_field_map(attr_defs)
         
         # Map JSON properties to Node fields (including natural attributes like version)
         node_fields = self._map_json_to_node_fields(value, json_key_map, child_type, sort_order, json_key)
-        
-        # Override name/key with generated values if not set by mapping
-        # For structural matches (no collection_key), always use json_key as the node key
-        # to preserve original key names like 'props' instead of 'sdui_props_0'
-        if 'name' not in node_fields or not node_fields['name']:
-            node_fields['name'] = name
-        if 'key' not in node_fields or not node_fields['key']:
-            node_fields['key'] = key
+
+        # Structural list items would otherwise collapse: the mapper assigns
+        # the bare json_key to every sibling, and duplicate keys collapse in
+        # s7_build_node_json's jsonb_object_agg. Keep the indexed key/name so
+        # siblings stay distinct; an explicit item 'key' keeps precedence.
+        if index is not None and not value.get('key'):
+            node_fields['key'] = f'{json_key}_{index}'
+            node_fields['name'] = f'{json_key}_{index}'
         node_fields['sort_order'] = sort_order
 
         # Create child node

@@ -501,8 +501,6 @@ class NodeService:
                         self.schema_repository.delete_node_attributes(node, d)
                         continue
                     
-                    domain_name = d.domain.domain_name if d.domain_id else None
-                    
                     # Handle boolean null values
                     if d.data_type.name == 'bool' and value is None:
                         self.node_repository.insert_node_attribute_bool_null(node.id, d.id)

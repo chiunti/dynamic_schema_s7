@@ -210,7 +210,7 @@ def get_storage_type(data_type):
         return storage
 
     name = data_type.name
-    if name in ('string', 'date', 'color', 'internal', 'uuid', 'url', 'auto_uuid'):
+    if name in ('string', 'date', 'color', 'internal', 'uuid', 'url', 'auto_uuid', 'expression'):
         return 'string'
     if name in ('number', 'int', 'float', 'integer', 'decimal'):
         return 'number'

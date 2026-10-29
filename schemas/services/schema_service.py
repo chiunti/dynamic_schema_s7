@@ -21,6 +21,7 @@ from .datatype_plugins import (
     get_datatype_doc,
     get_storage_defaults,
     get_storage_type,
+    is_column_mapped_datatype,
     is_server_managed_attribute,
     validate_datatype_value,
 )
@@ -375,16 +376,14 @@ class SchemaService:
         """Whether an AttributeDef may appear in the generated example.
 
         Excludes json_keys backed by Node columns ('id', 'key', 'version')
-        and the ``natural_*``/``display_order`` datatypes — they map to Node
-        columns and are exempt from the required-attribute check.
+        and the column-mapped datatypes (``natural_*``, ``display_order``) —
+        they map to Node columns and are exempt from the required-attribute
+        check.
         """
         if attr_def.json_key in _EXAMPLE_NODE_FIELD_KEYS:
             return False
         data_type_name = attr_def.data_type.name if attr_def.data_type else ''
-        return (
-            not data_type_name.startswith('natural_')
-            and data_type_name != 'display_order'
-        )
+        return not is_column_mapped_datatype(data_type_name)
 
     @staticmethod
     def _has_documented_example(attr_def: AttributeDef) -> bool:
@@ -1373,9 +1372,8 @@ class SchemaService:
                 # materialized def stays column-mapped, so the guard below
                 # intercepts it instead of persisting a NodeAttribute.
                 is_common = (final_variant_key is None)
-                if declaration and (
-                    declaration.data_type.name.startswith('natural_')
-                    or declaration.data_type.name == 'display_order'
+                if declaration and is_column_mapped_datatype(
+                    declaration.data_type.name
                 ):
                     data_type = declaration.data_type
                 attr_def = self.attribute_def_repository.create_attribute_def(
@@ -1394,9 +1392,8 @@ class SchemaService:
             # NodeAttribute rows. Same interception as _process_node_attributes:
             # server-managed ones report the ignored value instead of dropping
             # it silently; author-settable ones are skipped without report.
-            if attr_def and (
-                attr_def.data_type.name.startswith('natural_')
-                or attr_def.data_type.name == 'display_order'
+            if attr_def and is_column_mapped_datatype(
+                attr_def.data_type.name
             ):
                 if value is not None and is_server_managed_attribute(
                     attr_def.data_type.name, attr_def.name
@@ -1800,9 +1797,8 @@ class SchemaService:
                         json_key,
                         None
                     )
-                    if attr_def and (
-                        attr_def.data_type.name.startswith('natural_')
-                        or attr_def.data_type.name == 'display_order'
+                    if attr_def and is_column_mapped_datatype(
+                        attr_def.data_type.name
                     ):
                         if value is not None and is_server_managed_attribute(attr_def.data_type.name, attr_def.name):
                             self._report_server_managed_ignored(
@@ -1969,9 +1965,8 @@ class SchemaService:
                         # resolve. Server-managed ones report the ignored
                         # value instead of dropping it silently;
                         # author-settable ones are skipped without report.
-                        if (
-                            attr_def.data_type.name.startswith('natural_')
-                            or attr_def.data_type.name == 'display_order'
+                        if is_column_mapped_datatype(
+                            attr_def.data_type.name
                         ):
                             if value is not None and is_server_managed_attribute(
                                 attr_def.data_type.name, attr_def.name
@@ -2268,9 +2263,8 @@ class SchemaService:
         # column-mapped, so the callers' column-mapped guards intercept it
         # instead of persisting a NodeAttribute.
         is_common = (final_variant_key is None)
-        if declaration and (
-            declaration.data_type.name.startswith('natural_')
-            or declaration.data_type.name == 'display_order'
+        if declaration and is_column_mapped_datatype(
+            declaration.data_type.name
         ):
             data_type = declaration.data_type
         attr_def = self.attribute_def_repository.create_attribute_def(

@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from ..repositories.schema_repository import SchemaRepository
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.node_type_repository import NodeTypeRepository
+from .datatype_plugins import is_column_mapped_datatype
 
 
 class SchemaValidationService:
@@ -94,11 +95,16 @@ class SchemaValidationService:
                 d for d in all_defs if d.variant_key is None or d.variant_key == current_variant
             ]
 
+            # Column-mapped datatypes (natural_*, display_order) never
+            # produce NodeAttribute rows — they write schema_nodes columns
+            # or are derived at build time — so a required def bound to one
+            # is unsatisfiable. Exclude the whole column-mapped set, not
+            # just natural_*.
             missing = [
                 d.json_key
                 for d in applicable
                 if d.id not in existing_def_ids
-                and not d.data_type.name.startswith("natural_")
+                and not is_column_mapped_datatype(d.data_type.name)
             ]
 
             if missing:

@@ -50,7 +50,7 @@ def remove_expression_data_type(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('schemas', '0008_mcp_root_key_version_scope'),
+        ('schemas', '0009_mcp_display_order_build_exclusion'),
     ]
 
     operations = [

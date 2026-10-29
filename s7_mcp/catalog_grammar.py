@@ -32,6 +32,13 @@ resource. Shape:
   payload: ``mapping`` translates each resolved block into the fixture
   objects it becomes, ``example`` pairs a resolved fragment with its
   import equivalent, and ``notes`` covers what does not translate.
+
+- ``expressions`` — usage guidance for ``{{ expr }}`` token values on
+  ``expression``-typed attributes: when they apply, the supported
+  syntax subset, explicitly unsupported constructs, worked examples
+  and where errors surface. The canonical grammar lives in the
+  datatype documentation — this section summarizes usage, it is not a
+  second grammar.
 """
 
 CATALOG_GRAMMAR: dict = {
@@ -562,5 +569,121 @@ CATALOG_GRAMMAR: dict = {
                 "objects."
             ),
         ],
+    },
+    "expressions": {
+        "summary": (
+            "Usage guidance for attributes whose data_type is "
+            "'expression': their string value may embed {{ expr }} "
+            "tokens that the consumer evaluates at render time. A "
+            "token spanning the whole value resolves to the "
+            "expression's result type (a boolean, a number), inline "
+            "tokens interpolate into the surrounding text, text "
+            "without tokens is a plain literal, and non-string "
+            "scalars (bool/int/float) are degenerate literals "
+            "coerced to text."
+        ),
+        "when_to_use": (
+            "Only expression-typed attributes interpret {{expr}} "
+            "tokens — no other datatype evaluates them; {{expr}} "
+            "is not a generic templating feature. A "
+            "{{expr}}-leading value on a domain-bound attribute "
+            "of any datatype is treated as dynamic input, though: "
+            "it skips literal domain membership and its token "
+            "syntax is still validated. Reach for it when a "
+            "context flag or value "
+            "customizes that single prop value. Keep "
+            "conditional-typed attributes (show_if / enabled_if) "
+            "structured — conditional varies the tree's structure "
+            "or visibility, {{ expr }} varies one value."
+        ),
+        "syntax": {
+            "paths": (
+                "context paths — dotted identifiers with optional "
+                "integer list indices, e.g. features.flag or "
+                "items.0.name"
+            ),
+            "literals": (
+                "'single-quoted strings' (no escapes, no double "
+                "quotes), numbers, and the keywords true / false / "
+                "null"
+            ),
+            "operators": (
+                "ternary ? :, logic && ||, unary !, equality == "
+                "!=, comparisons > < >= <= (non-associative — a < "
+                "b < c is invalid), null-coalescing ??"
+            ),
+            "grouping": (
+                "parentheses; precedence loosest to tightest: "
+                "? :, ??, ||, &&, == / !=, comparisons, !, primary"
+            ),
+        },
+        "not_supported": [
+            "function calls — there is no name(arg) form",
+            "arithmetic operators (+ - * / and the like)",
+            "a nested {{ token inside another token",
+            "assignment or any statement form",
+            "member access beyond dotted paths (no brackets, no calls)",
+            "double-quoted or escaped string literals",
+            "an unclosed {{ token — validation fails outright",
+            "an empty token — {{}} carries no expression",
+            "negative number literals — no unary minus, a > -1 fails",
+            "chained comparisons such as a < b < c",
+        ],
+        "examples": [
+            {
+                "prop": "logo_asset",
+                "value": (
+                    "{{features.dark_mode ? 'logo_dark' : 'logo_light'}}"
+                ),
+                "notes": (
+                    "whole-value ternary — the prop resolves to one "
+                    "of the two literals, picked by a context flag."
+                ),
+            },
+            {
+                "prop": "title",
+                "value": "Welcome, {{user.display_name ?? 'guest'}}",
+                "notes": (
+                    "inline token — a ?? fallback interpolated into "
+                    "surrounding text; the result is a string."
+                ),
+            },
+            {
+                "prop": "enabled",
+                "value": "{{features.chat && !user.anonymous}}",
+                "notes": (
+                    "whole-value boolean combining && and ! — the "
+                    "prop resolves to a boolean, not text."
+                ),
+            },
+            {
+                "prop": "status_label",
+                "value": (
+                    "{{items.0.score >= pass_mark ? 'pass' : 'fail'}}"
+                ),
+                "notes": (
+                    "integer list index in a path feeding a "
+                    "comparison inside a ternary."
+                ),
+            },
+        ],
+        "validation": (
+            "Malformed {{expr}} values fail the datatype's plugin "
+            "validator and surface through s7_validate_schema / "
+            "s7_import_draft errors[] like any other validation "
+            "error — there is no separate expression-check "
+            "endpoint. Validation is syntax-only: operand types "
+            "resolve in the consumer runtime, not at authoring "
+            "time."
+        ),
+        "canonical_grammar": (
+            "The 'expression' entry of the resolved catalog's "
+            "'datatypes' block — served by s7://catalog/{scope} "
+            "(s7_get_catalog) for scopes that use the datatype — "
+            "is the canonical grammar (operator and literal "
+            "tables); s7://datatypes lists datatype names and "
+            "descriptions only, not the grammar. This section "
+            "summarizes usage and does not redefine it."
+        ),
     },
 }

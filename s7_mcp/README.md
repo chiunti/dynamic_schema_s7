@@ -122,15 +122,16 @@ the divergence reported as a warning) > `"1"`.
 | `s7://datatypes` | DataType catalog JSON. |
 | `s7://examples/{scope}` | Generated example JSON for the scope. |
 | `s7://schemas/{node_type}/{key}/{version}` | Published schema JSON (few-shot). Dual auth — user tokens need `S7_PROJECT_ID`; see `s7_get_schema`. |
-| `s7://catalog-grammar` | Field reference for the six level-2-authorizable catalog models: writable fields, natural keys, FK `[natural_key]` shapes, payload semantics, plus a `resolved_vs_import` table mapping the resolved-catalog read shape to the fixture objects the import accepts (static, shipped with the package). |
+| `s7://catalog-grammar` | Field reference for the six level-2-authorizable catalog models: writable fields, natural keys, FK `[natural_key]` shapes, payload semantics, plus a `resolved_vs_import` table mapping the resolved-catalog read shape to the fixture objects the import accepts, and an `expressions` section with usage guidance for `{{ expr }}` token values on `expression`-typed attributes (static, shipped with the package). |
 
 ### Prompts
 
 - `create_tramite_form` — guided workflow: read the catalog → draft the root
   JSON (`key` plus the version on the declared `natural_version` attribute;
-  no `status` field) → validate until `valid: true` → import draft → verify
-  the draft via `s7_get_draft` → `s7_get_schema` after a human publishes
-  (both reads work with user tokens when `S7_PROJECT_ID` is set).
+  `expression`-typed attributes may embed `{{expr}}` tokens; no `status`
+  field) → validate until `valid: true` → import draft → verify the draft
+  via `s7_get_draft` → `s7_get_schema` after a human publishes (both reads
+  work with user tokens when `S7_PROJECT_ID` is set).
 - `author_catalog` — guided workflow for grammar authoring (level 2): read
   `s7://catalog-grammar` (per-model field table plus the `resolved_vs_import`
   mapping — the resolved catalog is a *read* shape, not the import shape)

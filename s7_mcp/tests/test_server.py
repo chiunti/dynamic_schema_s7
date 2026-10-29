@@ -716,6 +716,76 @@ class CatalogGrammarDataTests(unittest.TestCase):
         }
         self.assertFalse(generated & authored)
 
+    def test_expressions_section_shape(self):
+        """``expressions`` is a top-level sibling of ``models``: a usage
+        summary, the when-to-use rule, the ``syntax`` subset table, an
+        explicit not-supported list, worked examples and the
+        validation / canonical-grammar pointers."""
+        section = CATALOG_GRAMMAR["expressions"]
+        self.assertIsInstance(section, dict)
+        for key in (
+            "summary", "when_to_use", "syntax", "not_supported",
+            "examples", "validation", "canonical_grammar",
+        ):
+            self.assertIn(key, section)
+        for key in ("paths", "literals", "operators", "grouping"):
+            self.assertIn(key, section["syntax"])
+        self.assertIsInstance(section["not_supported"], list)
+        self.assertTrue(section["not_supported"])
+        for entry in section["not_supported"]:
+            with self.subTest(entry=entry[:40]):
+                self.assertIsInstance(entry, str)
+                self.assertTrue(entry.strip())
+
+    def test_expressions_scopes_tokens_to_expression_attributes(self):
+        """The section must teach the boundary agents get wrong:
+        ``{{expr}}`` applies only to attributes whose ``data_type`` is
+        ``expression`` (every other datatype takes its value literally)
+        while ``conditional``-typed attributes — ``show_if`` /
+        ``enabled_if`` — stay structured values."""
+        text = json.dumps(CATALOG_GRAMMAR["expressions"])
+        for needle in (
+            "data_type", "expression", "conditional",
+            "show_if", "enabled_if",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+
+    def test_expressions_examples_shape(self):
+        """Worked examples are the teaching payload: a non-empty list of
+        ``prop``/``value``/``notes`` dicts whose ``value`` strings carry
+        ``{{`` tokens (a plain literal is allowed for contrast). The
+        backend drift suite feeds every value through the real
+        ``{{expr}}`` validator, so grammar correctness is checked there."""
+        examples = CATALOG_GRAMMAR["expressions"]["examples"]
+        self.assertIsInstance(examples, list)
+        self.assertTrue(examples)
+        token_bearing = 0
+        for example in examples:
+            with self.subTest(prop=example.get("prop")):
+                self.assertIsInstance(example, dict)
+                for key in ("prop", "value", "notes"):
+                    self.assertIn(key, example)
+                self.assertIsInstance(example["value"], str)
+                self.assertTrue(example["value"].strip())
+                if "{{" in example["value"]:
+                    token_bearing += 1
+        # A section teaching {{expr}} without a single token example
+        # would teach nothing.
+        self.assertTrue(token_bearing)
+
+    def test_expressions_points_at_canonical_surfaces(self):
+        """``canonical_grammar`` defers to the ``expression`` entry of
+        the resolved catalog's ``datatypes`` block (the surface that
+        actually carries the grammar — ``s7://datatypes`` lists names
+        and descriptions only) and ``validation`` routes errors through
+        ``s7_validate_schema`` — the section summarizes usage; it is
+        not a second grammar or a separate check endpoint."""
+        section = CATALOG_GRAMMAR["expressions"]
+        self.assertIn("s7://catalog/{scope}", section["canonical_grammar"])
+        self.assertIn("datatypes", section["canonical_grammar"])
+        self.assertIn("s7_validate_schema", section["validation"])
+
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class PromptTests(unittest.TestCase):
@@ -799,6 +869,29 @@ class PromptContentTests(unittest.TestCase):
         self.assertIn(
             "`schema_version` tool argument", CREATE_TRAMITE_FORM_PROMPT
         )
+
+    def test_tramite_prompt_teaches_expression_token_values(self):
+        """The DRAFT step teaches the ``{{expr}}`` token dialect for
+        ``expression``-typed attributes and defers to the ``expressions``
+        section of ``s7://catalog-grammar`` for the subset — the guidance
+        added so agents stop guessing the grammar."""
+        for needle in (
+            "{{expr}}", "expression", "expressions",
+            "s7://catalog-grammar",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, CREATE_TRAMITE_FORM_PROMPT)
+
+    def test_tramite_prompt_keeps_conditionals_structured(self):
+        """Same step draws the boundary: ``show_if`` / ``enabled_if`` and
+        other ``conditional``-typed attributes stay structured values —
+        never converted to ``{{}}`` token strings."""
+        for needle in (
+            "show_if", "enabled_if", "conditional",
+            "never convert", "{{}}",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, CREATE_TRAMITE_FORM_PROMPT)
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")

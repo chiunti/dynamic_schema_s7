@@ -36,7 +36,18 @@ root-level `version` is still honored as a tolerated alias, but the declared \
 attribute wins when both are present; the `schema_version` tool argument \
 overrides either source. Never author a `status` field — the backend forces `draft` on \
 import (step 4). Respect the catalog strictly: use only declared json_keys, \
-domain values, variant keys and composition collection_keys.
+domain values, variant keys and composition collection_keys. An attribute \
+whose `data_type` is `expression` may embed `{{expr}}` tokens — context \
+paths, literals, `? :`, `&&`/`||`/`!`, `==`/`!=` and other comparisons, \
+`??` and parentheses \
+(the `expressions` section of `s7://catalog-grammar` summarizes the \
+subset; the `expression` entry of the `datatypes` doc is canonical) — \
+when a context flag or value customizes that single prop value. \
+`show_if`, `enabled_if` and other `conditional`-typed attributes stay \
+STRUCTURED values — never convert them to `{{}}` strings: `conditional` \
+varies the tree's structure or visibility, `{{expr}}` varies one prop's \
+value. Expression syntax errors iterate through `s7_validate_schema` \
+like any other validation error.
 
 3. VALIDATE — call `s7_validate_schema` with the root `node_type` (the \
 catalog's `root_node_type`) and the JSON. Iterate on the returned `errors` \

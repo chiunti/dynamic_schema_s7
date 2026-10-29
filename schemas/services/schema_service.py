@@ -1290,6 +1290,10 @@ class SchemaService:
         as dropped_attribute warnings and the write is skipped, aligning with
         the main import path behavior. In strict mode, failures raise
         SchemaValidationError as before.
+
+        Column-mapped AttributeDefs (natural_*, display_order) are intercepted
+        right after def resolution — they write schema_nodes columns elsewhere
+        or are derived at build time, never NodeAttribute rows.
         """
         # Disable triggers to bypass s7 validation
         self.repository.disable_triggers()
@@ -1371,6 +1375,23 @@ class SchemaService:
                     variant_key=final_variant_key,
                     domain=declaration.domain if declaration else None,
                 )
+
+            # Skip column-mapped datatypes (natural_*, display_order): they
+            # write schema_nodes columns or are derived at build time — never
+            # NodeAttribute rows. Same interception as _process_node_attributes:
+            # server-managed ones report the ignored value instead of dropping
+            # it silently; author-settable ones are skipped without report.
+            if attr_def and (
+                attr_def.data_type.name.startswith('natural_')
+                or attr_def.data_type.name == 'display_order'
+            ):
+                if value is not None and is_server_managed_attribute(
+                    attr_def.data_type.name, attr_def.name
+                ):
+                    self._report_server_managed_ignored(
+                        json_key, path, dropped_attributes
+                    )
+                return
 
             if attr_def and value is not None:
                 # Run any datatype-specific plugin validators (e.g. conditional).

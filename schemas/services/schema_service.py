@@ -1291,6 +1291,11 @@ class SchemaService:
         the main import path behavior. In strict mode, failures raise
         SchemaValidationError as before.
 
+        When the AttributeDef is materialized from a catalog declaration, it
+        inherits the declaration's domain; a column-mapped declaration
+        (natural_*, display_order) also lends its datatype, so the
+        materialized def stays column-mapped.
+
         Column-mapped AttributeDefs (natural_*, display_order) are intercepted
         right after def resolution — they write schema_nodes columns elsewhere
         or are derived at build time, never NodeAttribute rows.
@@ -1363,8 +1368,16 @@ class SchemaService:
                         raise self._undeclared_key_error(node_type, json_key, variant_key, path)
                 # Create AttributeDef with the determined variant_key,
                 # inheriting the declaration's domain so it keeps enforcing
-                # after materialization.
+                # after materialization. A column-mapped declaration
+                # (natural_*, display_order) also lends its datatype: the
+                # materialized def stays column-mapped, so the guard below
+                # intercepts it instead of persisting a NodeAttribute.
                 is_common = (final_variant_key is None)
+                if declaration and (
+                    declaration.data_type.name.startswith('natural_')
+                    or declaration.data_type.name == 'display_order'
+                ):
+                    data_type = declaration.data_type
                 attr_def = self.attribute_def_repository.create_attribute_def(
                     name=json_key,
                     json_key=json_key,
@@ -2127,6 +2140,14 @@ class SchemaService:
         conditional structure raises in strict mode; in permissive mode it
         records a ``dropped_attribute`` warning on ``dropped_attributes``
         and returns None so the caller skips the attribute.
+
+        A resolved declaration (strict mode, or the lazy permissive fetch
+        for the expression gate) lends its ``domain`` to the materialized
+        def so it keeps enforcing after creation; a column-mapped
+        declaration (``natural_*``, ``display_order``) also lends its
+        datatype, so the materialized def stays column-mapped and the
+        callers' column-mapped guards intercept it instead of persisting a
+        NodeAttribute.
         """
         # Check if json_key corresponds to a collection_key in NodeTypeComposition
         composition_exists = self.composition_repository.composition_exists_by_collection_key(
@@ -2242,8 +2263,16 @@ class SchemaService:
 
         # Create AttributeDef with the determined variant_key, inheriting
         # the declaration's domain so the materialized def keeps enforcing
-        # it on subsequent writes.
+        # it on subsequent writes. A column-mapped declaration (natural_*,
+        # display_order) also lends its datatype: the materialized def stays
+        # column-mapped, so the callers' column-mapped guards intercept it
+        # instead of persisting a NodeAttribute.
         is_common = (final_variant_key is None)
+        if declaration and (
+            declaration.data_type.name.startswith('natural_')
+            or declaration.data_type.name == 'display_order'
+        ):
+            data_type = declaration.data_type
         attr_def = self.attribute_def_repository.create_attribute_def(
             name=json_key,
             json_key=json_key,

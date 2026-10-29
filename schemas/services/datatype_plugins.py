@@ -203,7 +203,16 @@ def datatype_validates_expressions(data_type) -> bool:
 def get_storage_type(data_type):
     """
     Returns the effective primary storage type for a DataType.
-    Falls back to the datatype name for legacy datatypes that have not been migrated yet.
+
+    Resolution order: the explicit ``primary_storage_type`` field wins; an
+    empty value falls back to name-based tuples for legacy datatypes that
+    predate the field, and finally to ``'json'``.
+
+    An empty ``primary_storage_type`` is also the declared convention for
+    column-mapped datatypes (``natural_*``, ``display_order``): they write
+    ``schema_nodes`` columns — never ``NodeAttribute`` rows — so every write
+    path intercepts them before storage resolution and the fallback result
+    is never consulted for them.
     """
     storage = data_type.primary_storage_type
     if storage:

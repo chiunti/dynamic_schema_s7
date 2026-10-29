@@ -1947,6 +1947,26 @@ class SchemaService:
                         attr_def = self._create_attribute_def(node_type, json_key, value, node_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
 
                     if attr_def:
+                        # Skip column-mapped datatypes (natural_*,
+                        # display_order): they write schema_nodes columns or
+                        # are derived at build time — never NodeAttribute
+                        # rows. Mirror of the _set_node_attribute guard:
+                        # it catches variant-scoped and materialized
+                        # defs the early None-variant skip above cannot
+                        # resolve. Server-managed ones report the ignored
+                        # value instead of dropping it silently;
+                        # author-settable ones are skipped without report.
+                        if (
+                            attr_def.data_type.name.startswith('natural_')
+                            or attr_def.data_type.name == 'display_order'
+                        ):
+                            if value is not None and is_server_managed_attribute(
+                                attr_def.data_type.name, attr_def.name
+                            ):
+                                self._report_server_managed_ignored(
+                                    json_key, path, dropped_attributes
+                                )
+                            continue
                         # Validate conditional structures recursively in the
                         # value before any persistence. Strict mode re-raises
                         # ValueError so the per-key wrapper maps it to

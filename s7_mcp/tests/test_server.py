@@ -697,11 +697,17 @@ class CatalogGrammarDataTests(unittest.TestCase):
                             f"{label}.{name} not a [natural_key] list",
                         )
 
-    def test_resolved_vs_import_example_skips_server_generated(self):
-        """The example resolves a ``server_generated`` attribute but no
-        attributedef object authors it — the divergence the section
-        exists to teach."""
+    def test_resolved_vs_import_example_authors_server_generated_defs(self):
+        """``server_generated`` flags value emission, not authoring: the
+        resolved example carries one and every resolved attribute —
+        it included — has its attributedef authored on the import
+        side; declaring the def is what makes the key exist."""
         example = CATALOG_GRAMMAR["resolved_vs_import"]["example"]
+        resolved = {
+            attr["json_key"]
+            for node_type in example["resolved"]["node_types"]
+            for attr in node_type["attributes"]
+        }
         generated = {
             attr["json_key"]
             for node_type in example["resolved"]["node_types"]
@@ -714,7 +720,21 @@ class CatalogGrammarDataTests(unittest.TestCase):
             for obj in example["import"]["objects"]
             if obj["model"] == "schemas.attributedef"
         }
-        self.assertFalse(generated & authored)
+        self.assertLessEqual(generated, authored)
+        self.assertEqual(resolved, authored)
+
+    def test_server_generated_mapping_row_targets_attributedef(self):
+        """The mapping row for the flag must point at the authored
+        attributedef row — a "(no object)" fixture target or a
+        'never author' note reintroduces the misleading lesson."""
+        mapping = CATALOG_GRAMMAR["resolved_vs_import"]["mapping"]
+        row = next(
+            entry for entry in mapping
+            if "server_generated" in entry["resolved"]
+        )
+        self.assertEqual(row["fixture"], "schemas.attributedef")
+        self.assertIn("authored", row["notes"].lower())
+        self.assertNotIn("never author", row["notes"].lower())
 
     def test_expressions_section_shape(self):
         """``expressions`` is a top-level sibling of ``models``: a usage

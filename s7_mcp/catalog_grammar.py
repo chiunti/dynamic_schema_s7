@@ -406,11 +406,19 @@ CATALOG_GRAMMAR: dict = {
             },
             {
                 "resolved": "attributes[].server_generated=true",
-                "fixture": "(no object — read-only)",
+                "fixture": "schemas.attributedef",
                 "notes": (
-                    "engine-managed attributes (the natural_* family) "
-                    "are emitted on read only — never author an "
-                    "attributedef for them."
+                    "the flag describes VALUE emission, not "
+                    "authoring: the engine derives the value "
+                    "(display_order = node.sort_order + 1, "
+                    "natural_uuid = node.id), forces required "
+                    "to false on read and ignores any non-null "
+                    "value an instance payload sends "
+                    "(attribute_ignored) — the attributedef row "
+                    "itself IS authored like any other; declaring "
+                    "it is what makes the key exist in the "
+                    "dialect. Never send the value in schema "
+                    "payloads."
                 ),
             },
             {
@@ -548,6 +556,19 @@ CATALOG_GRAMMAR: dict = {
                             "name": "answer",
                             "data_type": ["string"],
                             "domain": ["yes_no"],
+                            "is_required": True,
+                            "is_common": True,
+                        },
+                    },
+                    {
+                        "model": "schemas.attributedef",
+                        "fields": {
+                            "node_type": ["example_root"],
+                            "json_key": "natural_uuid",
+                            "variant_key": None,
+                            "name": "natural_uuid",
+                            "data_type": ["natural_uuid"],
+                            "domain": None,
                             "is_required": True,
                             "is_common": True,
                         },

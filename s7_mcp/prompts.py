@@ -12,10 +12,11 @@ to use if unsure). The scope is the root node type's `json_scope`, not its \
 listing every live root scope. The resolved catalog lists every reachable \
 node type with its `attributes` (json_key, data_type, required, domain, \
 variant_key, server_generated — attributes flagged `server_generated`, such \
-as `id`, are emitted by the engine on read and must not be authored), the \
-`variants` block (`discriminator_attr` tells which attribute selects the \
-variant, `props_node_type` tells which child node type carries \
-variant-specific properties, `keys` lists the allowed variant values), \
+as `id` or `sort_order`, are emitted by the engine on read; never send \
+their values in the payload), the `variants` block (`discriminator_attr` \
+tells which attribute selects the variant, `props_node_type` tells which \
+child node type carries variant-specific properties, `keys` lists the \
+allowed variant values), \
 `compositions` grouped by `collection_key` (with per-child min/max \
 cardinalities), the `domains` dictionary of allowed value/label pairs, and a \
 generated `example`. A `datatypes` block documents the value grammar \

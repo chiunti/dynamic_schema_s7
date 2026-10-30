@@ -223,9 +223,14 @@ class FixtureService:
         same row at import: the last write wins and rewrites the row's
         natural key), in-payload natural key uniqueness, the shape of
         every declared FK value (``FK_FIELDS`` positions must
-        serialize as natural-key lists of strings — ``None`` is the
-        valid "no reference" shape; scalars and lists with non-string
-        elements are rejected before resolution), and that every
+        serialize as natural-key lists of strings or nulls — a
+        positional null is a legitimate NULL natural-key component
+        on nullable positions (``attributedef.node_type``,
+        ``variant_key``), and a null that cannot resolve is judged
+        by resolution rather than shape; a whole-field ``None`` is
+        the valid "no reference" shape; scalars and lists with
+        non-string, non-null elements are rejected before
+        resolution), and that every
         natural-key FK resolves — either to an object inside the
         fixture or to a row already in the database (cross-fixture
         references like base datatypes are legitimate).
@@ -397,12 +402,19 @@ class FixtureService:
                     # NULL is the valid "no reference" shape.
                     continue
                 if (not isinstance(ref, list)
-                        or not all(isinstance(v, str) for v in ref)):
-                    # A declared FK must serialize as a natural-key list
-                    # of strings. Anything else would pass validation
-                    # silently and blow up inside the ORM's pk coercion
-                    # at apply time with an uncontextualized conversion
-                    # error.
+                        or not all(v is None or isinstance(v, str)
+                                   for v in ref)):
+                    # A declared FK must serialize as a natural-key
+                    # list of strings or nulls: a positional null is
+                    # a legitimate NULL NK component on nullable
+                    # positions (attributedef.node_type,
+                    # attributedef.variant_key), and a null in a
+                    # position that cannot resolve is judged by the
+                    # resolution pass below — 'does not resolve', not
+                    # a shape error. Anything else would pass
+                    # validation silently and blow up inside the
+                    # ORM's pk coercion at apply time with an
+                    # uncontextualized conversion error.
                     received = (
                         'a scalar'
                         if not isinstance(ref, list)

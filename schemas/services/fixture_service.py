@@ -21,6 +21,7 @@ from ..constants import (
     ERR_DUPLICATE_PK_IN_PAYLOAD,
     ERR_INVALID_FK_SHAPE,
     ERR_INVALID_NATURAL_KEY_COMPONENTS,
+    ERR_INVALID_PK_REF_SHAPE,
     ERR_MISSING_NATURAL_KEY_FIELDS,
     ERR_MISSING_REQUIRED_FIELDS,
     ERR_UNKNOWN_OBJECT_KEYS,
@@ -54,6 +55,9 @@ NATURAL_KEY_FIELDS = {
     'project': ('organization', 'slug'),
 }
 
+# Natural-key FK positions per model: label -> [(field, target_label)]
+# for references whose target model HAS a natural key — the serialized
+# value is the target row's natural key as a list of strings or nulls.
 FK_FIELDS = {
     'domainitem': [('domain', 'domain')],
     'nodetypecomposition': [
@@ -72,6 +76,16 @@ FK_FIELDS = {
         ('organization', 'organization'),
     ],
     'nodeattribute': [('attribute_def', 'attributedef')],
+}
+
+# Primary-key FK positions per model: label -> [(field, target_label)]
+# — the pk-referenced mirror of FK_FIELDS. These are references whose
+# target model has NO natural key (node/nodeattribute are pk-referenced,
+# see natural_key_for), so the serialized value is the target row's pk
+# as a scalar uuid string instead of a natural-key list.
+PK_FK_FIELDS = {
+    'node': [('parent', 'node')],
+    'nodeattribute': [('node', 'node')],
 }
 
 
@@ -230,10 +244,19 @@ class FixtureService:
         by resolution rather than shape; a whole-field ``None`` is
         the valid "no reference" shape; scalars and lists with
         non-string, non-null elements are rejected before
-        resolution), and that every
+        resolution), that every
         natural-key FK resolves — either to an object inside the
         fixture or to a row already in the database (cross-fixture
-        references like base datatypes are legitimate).
+        references like base datatypes are legitimate), and that every
+        pk-referenced FK value (``PK_FK_FIELDS`` positions — references
+        to models without a natural key, which serialize as a scalar
+        uuid instead of a natural-key list) carries a uuid-parseable
+        string and resolves the same way: against the pks carried by
+        the payload itself — a ``nodeattribute`` may target a ``node``
+        defined in the same fixture, or a ``node`` another
+        payload ``node`` via ``parent`` — or against a row already in
+        the database, so a dangling pk is reported per object instead
+        of surfacing as an integrity error inside the apply loop.
 
         ``allowed_models`` narrows the label whitelist when the caller
         accepts only a subset (e.g. catalog-only payloads); the default
@@ -390,11 +413,13 @@ class FixtureService:
                 except TypeError:
                     errors.append(f'{where}: malformed natural key')
 
-        # Second pass: declared FK values must carry the natural-key
-        # shape, and the references must resolve in the fixture or in
-        # the database. Only objects that passed the shape checks above
-        # are inspected — malformed ones already carry an errors[] entry
-        # and must not crash this pass.
+        # Second pass: declared FK values must carry the reference
+        # shape — a natural-key list of strings or nulls for
+        # natural-keyed targets (FK_FIELDS), a scalar uuid for
+        # pk-referenced ones (PK_FK_FIELDS) — and the references must
+        # resolve in the fixture or in the database. Only objects that
+        # passed the shape checks above are inspected — malformed ones
+        # already carry an errors[] entry and must not crash this pass.
         for i, label, fields in checked:
             for field, target_label in FK_FIELDS.get(label, []):
                 ref = fields.get(field)
@@ -435,6 +460,61 @@ class FixtureService:
                     # Unhashable components can never match a natural key.
                     pass
                 if not self._resolves_in_db(target_label, ref):
+                    errors.append(
+                        f'object[{i}]: {label}.{field}={ref} does not '
+                        f'resolve to a {target_label} row in the fixture '
+                        'or the database',
+                    )
+            for field, target_label in PK_FK_FIELDS.get(label, []):
+                ref = fields.get(field)
+                if ref is None:
+                    # NULL is the valid "no reference" shape.
+                    continue
+                pk_norm = None
+                if isinstance(ref, str):
+                    try:
+                        pk_norm = str(uuid.UUID(ref))
+                    except (ValueError, AttributeError, TypeError):
+                        pass
+                if pk_norm is None:
+                    # A pk-referenced FK must serialize as a scalar
+                    # uuid string: a non-string value or an unparseable
+                    # string would pass validation silently and blow up
+                    # inside the ORM's pk coercion at apply time with an
+                    # uncontextualized conversion error — the same
+                    # failure mode the FK_FIELDS shape check removes.
+                    typename = type(ref).__name__
+                    article = (
+                        'an' if typename[:1] in 'aeiou' else 'a'
+                    )
+                    received = (
+                        'a non-uuid string'
+                        if isinstance(ref, str)
+                        else 'a list'
+                        if isinstance(ref, list)
+                        else f'{article} {typename}'
+                    )
+                    errors.append(
+                        f'object[{i}]: '
+                        + ERR_INVALID_PK_REF_SHAPE.format(
+                            field=f'{label}.{field}',
+                            received=received,
+                        )
+                    )
+                    continue
+                # Resolution mirrors the natural-key check: the
+                # payload's own pks first (a nodeattribute may target a
+                # node defined in the same fixture, and a node
+                # may even name its own pk in 'parent'), then the
+                # database. The normalized uuid is compared so
+                # non-canonical spellings — uppercase, braced forms —
+                # resolve the same way pk_exists matches uuids in
+                # Postgres.
+                if pk_norm in seen_pks.get(target_label, set()):
+                    continue
+                if not self.fixture_repository.pk_exists(
+                    target_label, pk_norm,
+                ):
                     errors.append(
                         f'object[{i}]: {label}.{field}={ref} does not '
                         f'resolve to a {target_label} row in the fixture '

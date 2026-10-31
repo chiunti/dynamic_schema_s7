@@ -1,8 +1,144 @@
+import django.db.models.deletion
+import django.utils.timezone
+import uuid
+from django.conf import settings
 from django.db import migrations, models
+from django.db.models import Q
 
-
-# MCP feature batch — root key+version scope (feature tag: mcp).
+# MCP feature batch — consolidated feature migration (feature tag: mcp).
 # feature: mcp
+#
+# Single migration for the whole MCP subsystem wave. Sections, in apply
+# order:
+#
+# 1. Catalog hardening — partial unique constraint on root NodeType
+#    json_scope (NULLS NOT DISTINCT) guarded by a readable pre-check, plus
+#    a backfill copying domain_id onto stale variant-scoped AttributeDefs.
+# 2. Per-user MCP tokens — UserMCPToken L1/L2 bearer credentials storing
+#    only SHA-256 digests.
+# 3. Root key+version scope — per-project uniqueness (NULLS NOT DISTINCT),
+#    scoped lookup/build routine redefinitions, v_schema_published gains
+#    project_id.
+# 4. Build-path hardening — display_order exclusion in
+#    s7_build_node_json's v_attrs, structural list key backfill, and
+#    build-state invalidation.
+
+# --- catalog hardening -------------------------------------------------------
+#
+# --- root scope uniqueness --------------------------------------------------
+#
+# Partial unique constraint: at most one root NodeType per json_scope —
+# including the scope-less case. nulls_distinct=False emits NULLS NOT
+# DISTINCT (PostgreSQL >= 15, already the project floor), so at most one
+# root may also carry json_scope=NULL; without it PostgreSQL treats NULLs
+# as distinct and unscoped roots would never collide.
+#
+# The check below covers both dimensions before the index is built:
+# duplicated named scopes AND multiple NULL-scope roots — either could
+# legitimately exist beforehand. Empty strings DO collide, which is
+# intended: a scope that identifies no catalog must not be shared silently.
+#
+# --- attribute-def domain backfill -----------------------------------------
+#
+# Backfill stale materialized AttributeDefs that carry no domain. The strict
+# validate path resolves the effective domain of an attribute through its
+# declaration: an exact-variant row wins over the variant_key IS NULL
+# template. Materialized defs created before the template declared a domain
+# — or by permissive imports that never copy it — therefore resolved to
+# themselves (domain=None) and silently disabled the domain check. The
+# declaration lookup is now domain-aware, and the backfill repairs the
+# existing rows by copying domain_id from the template row of the same
+# (node_type_id, json_key).
+#
+# The scalar subquery with ORDER BY t.id LIMIT 1 keeps the UPDATE
+# deterministic: uq_sattr_defs_key does not use NULLS NOT DISTINCT, so in
+# theory several variant_key IS NULL rows can coexist for one
+# (node_type_id, json_key) — an UPDATE ... FROM would then pick an
+# arbitrary template among them.
+#
+# The statement is idempotent (rows already carrying a domain, or without
+# a domain-bearing template, are left untouched) and intentionally keeps a
+# noop reverse: backfilled rows cannot be told apart from rows that had
+# domain_id set before this migration ran, so no selective undo is
+# possible.
+
+BACKFILL_DOMAIN_SQL = """
+UPDATE s7.schema_attribute_defs AS d
+SET domain_id = (
+    SELECT t.domain_id
+    FROM s7.schema_attribute_defs AS t
+    WHERE t.node_type_id = d.node_type_id
+      AND t.json_key = d.json_key
+      AND t.variant_key IS NULL
+      AND t.domain_id IS NOT NULL
+    ORDER BY t.id
+    LIMIT 1
+)
+WHERE d.variant_key IS NOT NULL
+  AND d.domain_id IS NULL
+  AND EXISTS (
+      SELECT 1
+      FROM s7.schema_attribute_defs AS t
+      WHERE t.node_type_id = d.node_type_id
+        AND t.json_key = d.json_key
+        AND t.variant_key IS NULL
+        AND t.domain_id IS NOT NULL
+  );
+"""
+
+
+def check_unique_root_scopes(apps, schema_editor):
+    """Abort with a readable listing if root NodeTypes violate scope uniqueness."""
+    NodeType = apps.get_model("schemas", "NodeType")
+
+    null_scope_names = list(
+        NodeType.objects.filter(is_root=True, json_scope__isnull=True)
+        .values_list("name", flat=True)
+        .order_by("name")
+    )
+    if len(null_scope_names) > 1:
+        listing = ", ".join(repr(name) for name in null_scope_names)
+        raise RuntimeError(
+            "Cannot create constraint uq_snode_types_root_scope with "
+            "NULLS NOT DISTINCT: multiple root node types have "
+            f"json_scope=NULL: {listing}. Keep at most one before "
+            "re-running this migration."
+        )
+
+    duplicates = (
+        NodeType.objects.filter(is_root=True)
+        .exclude(json_scope__isnull=True)
+        .values("json_scope")
+        .annotate(total=models.Count("id"))
+        .filter(total__gt=1)
+        .order_by("json_scope")
+    )
+    scopes = [row["json_scope"] for row in duplicates]
+    if scopes:
+        listing = ", ".join(repr(scope) for scope in scopes)
+        raise RuntimeError(
+            "Cannot create constraint uq_snode_types_root_scope: duplicate "
+            f"json_scope among root node types: {listing}. Resolve the "
+            "duplicates before re-running this migration."
+        )
+
+
+# --- per-user MCP tokens ----------------------------------------------------
+#
+# UserMCPToken is a per-user bearer credential for the MCP channel. Unlike
+# project API credentials — a B2B contract scoped by boolean capability
+# flags — each row belongs to one user and carries an mcp_level
+# (1 = schema authoring, 2 = catalog authoring) that the server evaluates to
+# gate MCP-only capabilities; the same user may hold several tokens at
+# different levels and each can be revoked independently.
+#
+# The token secret is never persisted: only its SHA-256 hex digest is stored
+# in token_digest, so a leaked row cannot be replayed as a bearer credential.
+# Tokens expire on expires_at and are revoked by stamping revoked_at; the
+# (user, revoked_at) index supports listing a user's active tokens.
+
+
+# --- root key+version scope --------------------------------------------------
 #
 # --- root key+version uniqueness re-scoped per project ----------------------
 #
@@ -1275,12 +1411,578 @@ def check_null_key_root_versions(apps, schema_editor):
         )
 
 
+# --- build-path hardening ----------------------------------------------------
+#
+# --- display_order build exclusion (routine redefinition) --------------
+#
+# s7_build_node_json emits node JSON from two channels: rows stored in
+# schema_node_attributes aggregated in v_attrs, and values derived from
+# schema_nodes columns in v_natural_attrs. The declared invariant is that
+# natural_* datatypes and display_order never store a value row —
+# display_order is column-mapped and server-managed, derived from
+# sort_order as sort_order + 1.
+#
+# The v_attrs SELECT already filtered out natural_* and internal
+# datatypes, but not display_order: any display_order row that does land
+# in schema_node_attributes anyway (dead data written before the
+# invariant was enforced) was emitted verbatim, leaking the stored value
+# next to the derived one. The SELECT now excludes
+# dt.name = 'display_order' as well, sealing the output channel for rows
+# already persisted in existing databases.
+#
+# The derived v_natural_attrs block is unchanged, including its
+# ad.variant_key IS NULL predicate.
+#
+# The forward also NULLs last_cached_build in schema_build_state: the
+# cache-serving predicate (last_cached_build IS NOT DISTINCT FROM
+# current_build) would otherwise keep serving schema_json rows built by
+# the previous routine body until the next natural invalidation.
+#
+# reverse_sql restores the exact pre-migration routine body — the last
+# definition applied before this migration.
+#
+# --- structural list key backfill --------------------------------------
+#
+# Structural list items imported before the indexed-key write convention
+# existed were persisted with the bare slot json_key as node.key — every
+# sibling sharing e.g. key='props'. s7_build_node_json's v_keyed_children
+# channel emits those children through
+# jsonb_object_agg(COALESCE(ch.key, ch_nt.default_json_key, ch_nt.name), ...),
+# so the siblings collapse into a single entry on rebuild. The write path
+# now stores '{json_key}_{index}' per item; the backfill below repairs the
+# existing stock by rekeying every member of an emitted-key collision group
+# to '<emitted_key>_<0..N-1>' ordered by sort_order — the same convention,
+# with no sibling keeping the bare key.
+#
+# The scope replicates the v_keyed_children join exactly (as an EXISTS —
+# a child enters the channel when at least one matching composition row
+# qualifies): non-json_map children under a composition with
+# collection_key IS NULL, plus shorthand-dispatch singleton children stored
+# under a key other than ntc.collection_key. Outside this scope a shared
+# key can be legitimate (is_json_map entries use key as the map entry;
+# collection_key-ed children are aggregated as arrays), so it is left
+# untouched.
+#
+# Groups are detected on the EMITTED key — the COALESCE the routine
+# aggregates on — rather than the stored key alone. That additionally
+# repairs collisions where a NULL-key row falls back to default_json_key
+# equal to a sibling's stored key; rekeying such a row materializes its
+# previously implicit key, which does not change its emission channel.
+#
+# name is synced to the new key only when it still equals the old emitted
+# key (the write convention assigns the indexed value to both); a name
+# that already diverges came from another mapping and is respected.
+#
+# The statement is idempotent by construction (after rekeying, every
+# scoped (parent_id, emitted_key) group has COUNT = 1) and intentionally
+# keeps a noop reverse: rekeyed rows are indistinguishable from rows that
+# were always stored under the indexed convention, so no selective undo
+# is possible.
+
+
+ # ------------------------------
+ # build_node_json
+ # ------------------------------
+FN_BUILD_NODE_JSON_SQL = r"""
+SET search_path TO s7, public;
+
+CREATE OR REPLACE FUNCTION s7_build_node_json(p_node_id UUID)
+RETURNS JSONB AS $$
+DECLARE
+  v_key             TEXT;
+  v_node_key        TEXT;
+  v_node_id_text    TEXT;
+  v_json_scope      TEXT;
+  v_attrs           JSONB;
+  v_natural_attrs   JSONB;
+  v_children_json   JSONB;
+  v_keyed_children  JSONB;
+  v_map_children    JSONB;
+  v_result          JSONB;
+  v_slots           JSONB;
+  v_node_type_name  TEXT;
+  v_node_sort_order INT;
+BEGIN
+  SELECT nt.json_scope, nt.name, n.key, n.id::text, n.sort_order
+  INTO v_json_scope, v_node_type_name, v_node_key, v_node_id_text, v_node_sort_order
+  FROM s7.schema_nodes n
+  JOIN s7.schema_node_types nt ON nt.id = n.node_type_id
+  WHERE n.id = p_node_id;
+
+  IF v_node_id_text IS NULL THEN
+    RAISE EXCEPTION 'Node not found for id=%', p_node_id;
+  END IF;
+  
+  -- Emit 'key' in the output JSON only when the node type has an explicit AttributeDef for it.
+  -- Metadata nodes do not define a 'key' AttributeDef,
+  -- so v_key remains NULL and is stripped by jsonb_strip_nulls.
+  SELECT na.value_string
+  INTO v_key
+  FROM s7.schema_node_attributes na
+  JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
+  JOIN s7.schema_nodes n ON n.id = p_node_id
+  WHERE na.node_id = p_node_id
+    AND ad.json_key = 'key'
+    AND ad.node_type_id = n.node_type_id
+  LIMIT 1;
+
+  -- Collect stored attributes (excluding natural_*, internal and
+  -- display_order types). display_order never stores a value row: any
+  -- stored row is dead data — the emitted value is derived from
+  -- sort_order in the v_natural_attrs block below.
+  SELECT
+    jsonb_object_agg(ad.json_key,
+                     CASE dt.name
+                       WHEN 'int' THEN to_jsonb(TRUNC(na.value_number)::bigint)
+                       ELSE COALESCE(na.value_number::text::jsonb, na.value_bool::text::jsonb, na.value_json, to_jsonb(na.value_string))
+                     END)
+  INTO v_attrs
+  FROM s7.schema_node_attributes na
+  JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
+  JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
+  WHERE na.node_id = p_node_id
+    AND dt.name NOT LIKE 'natural_%'
+    AND dt.name <> 'internal'
+    AND dt.name <> 'display_order';
+
+  IF EXISTS (
+    SELECT 1 FROM s7.schema_node_types
+    WHERE name = v_node_type_name AND json_scalar_attribute IS NOT NULL
+  ) THEN
+    RETURN v_attrs -> (
+      SELECT json_scalar_attribute FROM s7.schema_node_types WHERE name = v_node_type_name
+    );
+  END IF;
+
+  -- Build natural field overrides from schema_nodes columns, driven by AttributeDef definitions.
+  -- Only include natural fields that are explicitly defined as AttributeDefs for this node's type.
+  SELECT jsonb_object_agg(
+    ad.json_key,
+    CASE dt.name
+      WHEN 'natural_uuid'    THEN to_jsonb(p_node_id::text)
+      WHEN 'natural_key'     THEN to_jsonb(v_node_key)
+      WHEN 'natural_version' THEN to_jsonb(n.version)
+      WHEN 'natural_order'   THEN to_jsonb(v_node_sort_order)
+      WHEN 'display_order'   THEN to_jsonb(v_node_sort_order + 1)
+    END
+  )
+  INTO v_natural_attrs
+  FROM s7.schema_attribute_defs ad
+  JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
+  JOIN s7.schema_nodes n ON n.id = p_node_id
+  WHERE ad.node_type_id = n.node_type_id
+    AND (dt.name LIKE 'natural_%' OR dt.name = 'display_order')
+    AND ad.variant_key IS NULL;
+
+  -- Extract all children grouped by collection_key
+  -- If max_children=1, extract as object (not array)
+  -- For singleton slots (max_children=1): child.key must match collection_key exactly
+  -- For collections (max_children != 1): include all children of the correct type
+  SELECT
+    jsonb_object_agg(
+      col.collection_key,
+      CASE
+        WHEN col.max_children = 1
+        THEN col.children_json->0
+        ELSE col.children_json
+      END
+    )
+  INTO v_children_json
+  FROM (
+    SELECT
+      ntc.collection_key,
+      ntc.max_children,
+      jsonb_agg(s7_build_node_json(ch.id) ORDER BY ch.sort_order) AS children_json
+    FROM s7.schema_nodes parent
+    JOIN s7.schema_node_type_compositions ntc
+      ON ntc.parent_type_id = parent.node_type_id
+      AND ntc.collection_key IS NOT NULL
+    JOIN s7.schema_nodes ch
+      ON ch.parent_id = parent.id
+      AND ch.node_type_id = ntc.child_type_id
+      AND NOT EXISTS (SELECT 1 FROM s7.schema_node_types mapped WHERE mapped.id = ch.node_type_id AND mapped.is_json_map)
+      AND (
+        -- For singleton slots: key must match collection_key exactly
+        (ntc.max_children = 1 AND ch.key = ntc.collection_key)
+        OR
+        -- For collections: include all children of this type under this parent
+        (ntc.max_children IS NULL OR ntc.max_children != 1)
+      )
+    WHERE parent.id = p_node_id
+    GROUP BY ntc.collection_key, ntc.max_children
+  ) AS col;
+
+  -- Extract children without collection_key (e.g. layout, props sub-nodes).
+  -- Also captures shorthand-dispatch children: nodes in singleton compositions
+  -- (max_children=1) that were stored under a key != ntc.collection_key
+  -- (e.g. appbar, fab, drawer stored as screen_section children).
+  -- Fallback key for unkeyed children: the child type's declared
+  -- default_json_key first (e.g. a props node type declares 'props'),
+  -- then the raw node_type name as last resort.
+  SELECT jsonb_object_agg(COALESCE(ch.key, ch_nt.default_json_key, ch_nt.name), s7_build_node_json(ch.id))
+  INTO v_keyed_children
+  FROM s7.schema_nodes ch
+  JOIN s7.schema_node_types ch_nt ON ch_nt.id = ch.node_type_id
+  JOIN s7.schema_node_type_compositions ntc
+    ON ntc.child_type_id = ch.node_type_id
+  JOIN s7.schema_nodes parent ON parent.id = p_node_id
+    AND ntc.parent_type_id = parent.node_type_id
+  WHERE ch.parent_id = p_node_id
+    AND ch_nt.is_json_map = FALSE
+    AND (
+      ntc.collection_key IS NULL
+      OR (ntc.max_children = 1 AND ch.key <> ntc.collection_key)
+    );
+
+  IF v_keyed_children IS NOT NULL THEN
+    v_children_json := COALESCE(v_children_json, '{}'::jsonb) || v_keyed_children;
+  END IF;
+
+  v_result := (
+    jsonb_strip_nulls(
+      COALESCE(v_natural_attrs, '{}'::jsonb)
+    || COALESCE(v_attrs, '{}'::jsonb)
+    )
+    || COALESCE(v_children_json, '{}'::jsonb)
+    || COALESCE(v_natural_attrs, '{}'::jsonb)
+  );
+
+  -- Strip empty objects (e.g., "props": {}, "layout": {}) from the final JSON
+  v_result := s7_strip_empty_values(v_result);
+
+  SELECT jsonb_object_agg(ch.key, s7_build_node_json(ch.id))
+  INTO v_map_children
+  FROM s7.schema_nodes ch
+  JOIN s7.schema_node_types nt ON nt.id = ch.node_type_id
+  WHERE ch.parent_id = p_node_id
+    AND nt.is_json_map = TRUE;
+  v_result := v_result || COALESCE(v_map_children, '{}'::jsonb);
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Force a rebuild of every cached schema so the next read serves output
+-- of this routine body, not stale JSON produced by the previous
+-- definition (the serving predicate is
+-- last_cached_build IS NOT DISTINCT FROM current_build).
+UPDATE s7.schema_build_state SET last_cached_build = NULL;
+"""
+
+FN_BUILD_NODE_JSON_ROLLBACK_SQL = r"""
+SET search_path TO s7, public;
+
+CREATE OR REPLACE FUNCTION s7_build_node_json(p_node_id UUID)
+RETURNS JSONB AS $$
+DECLARE
+  v_key             TEXT;
+  v_node_key        TEXT;
+  v_node_id_text    TEXT;
+  v_json_scope      TEXT;
+  v_attrs           JSONB;
+  v_natural_attrs   JSONB;
+  v_children_json   JSONB;
+  v_keyed_children  JSONB;
+  v_map_children    JSONB;
+  v_result          JSONB;
+  v_slots           JSONB;
+  v_node_type_name  TEXT;
+  v_node_sort_order INT;
+BEGIN
+  SELECT nt.json_scope, nt.name, n.key, n.id::text, n.sort_order
+  INTO v_json_scope, v_node_type_name, v_node_key, v_node_id_text, v_node_sort_order
+  FROM s7.schema_nodes n
+  JOIN s7.schema_node_types nt ON nt.id = n.node_type_id
+  WHERE n.id = p_node_id;
+
+  IF v_node_id_text IS NULL THEN
+    RAISE EXCEPTION 'Node not found for id=%', p_node_id;
+  END IF;
+  
+  -- Emit 'key' in the output JSON only when the node type has an explicit AttributeDef for it.
+  -- Metadata nodes do not define a 'key' AttributeDef,
+  -- so v_key remains NULL and is stripped by jsonb_strip_nulls.
+  SELECT na.value_string
+  INTO v_key
+  FROM s7.schema_node_attributes na
+  JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
+  JOIN s7.schema_nodes n ON n.id = p_node_id
+  WHERE na.node_id = p_node_id
+    AND ad.json_key = 'key'
+    AND ad.node_type_id = n.node_type_id
+  LIMIT 1;
+
+  -- Collect stored attributes (excluding natural_* and internal types)
+  SELECT
+    jsonb_object_agg(ad.json_key,
+                     CASE dt.name
+                       WHEN 'int' THEN to_jsonb(TRUNC(na.value_number)::bigint)
+                       ELSE COALESCE(na.value_number::text::jsonb, na.value_bool::text::jsonb, na.value_json, to_jsonb(na.value_string))
+                     END)
+  INTO v_attrs
+  FROM s7.schema_node_attributes na
+  JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
+  JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
+  WHERE na.node_id = p_node_id
+    AND dt.name NOT LIKE 'natural_%'
+    AND dt.name <> 'internal';
+
+  IF EXISTS (
+    SELECT 1 FROM s7.schema_node_types
+    WHERE name = v_node_type_name AND json_scalar_attribute IS NOT NULL
+  ) THEN
+    RETURN v_attrs -> (
+      SELECT json_scalar_attribute FROM s7.schema_node_types WHERE name = v_node_type_name
+    );
+  END IF;
+
+  -- Build natural field overrides from schema_nodes columns, driven by AttributeDef definitions.
+  -- Only include natural fields that are explicitly defined as AttributeDefs for this node's type.
+  SELECT jsonb_object_agg(
+    ad.json_key,
+    CASE dt.name
+      WHEN 'natural_uuid'    THEN to_jsonb(p_node_id::text)
+      WHEN 'natural_key'     THEN to_jsonb(v_node_key)
+      WHEN 'natural_version' THEN to_jsonb(n.version)
+      WHEN 'natural_order'   THEN to_jsonb(v_node_sort_order)
+      WHEN 'display_order'   THEN to_jsonb(v_node_sort_order + 1)
+    END
+  )
+  INTO v_natural_attrs
+  FROM s7.schema_attribute_defs ad
+  JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
+  JOIN s7.schema_nodes n ON n.id = p_node_id
+  WHERE ad.node_type_id = n.node_type_id
+    AND (dt.name LIKE 'natural_%' OR dt.name = 'display_order')
+    AND ad.variant_key IS NULL;
+
+  -- Extract all children grouped by collection_key
+  -- If max_children=1, extract as object (not array)
+  -- For singleton slots (max_children=1): child.key must match collection_key exactly
+  -- For collections (max_children != 1): include all children of the correct type
+  SELECT
+    jsonb_object_agg(
+      col.collection_key,
+      CASE
+        WHEN col.max_children = 1
+        THEN col.children_json->0
+        ELSE col.children_json
+      END
+    )
+  INTO v_children_json
+  FROM (
+    SELECT
+      ntc.collection_key,
+      ntc.max_children,
+      jsonb_agg(s7_build_node_json(ch.id) ORDER BY ch.sort_order) AS children_json
+    FROM s7.schema_nodes parent
+    JOIN s7.schema_node_type_compositions ntc
+      ON ntc.parent_type_id = parent.node_type_id
+      AND ntc.collection_key IS NOT NULL
+    JOIN s7.schema_nodes ch
+      ON ch.parent_id = parent.id
+      AND ch.node_type_id = ntc.child_type_id
+      AND NOT EXISTS (SELECT 1 FROM s7.schema_node_types mapped WHERE mapped.id = ch.node_type_id AND mapped.is_json_map)
+      AND (
+        -- For singleton slots: key must match collection_key exactly
+        (ntc.max_children = 1 AND ch.key = ntc.collection_key)
+        OR
+        -- For collections: include all children of this type under this parent
+        (ntc.max_children IS NULL OR ntc.max_children != 1)
+      )
+    WHERE parent.id = p_node_id
+    GROUP BY ntc.collection_key, ntc.max_children
+  ) AS col;
+
+  -- Extract children without collection_key (e.g. layout, props sub-nodes).
+  -- Also captures shorthand-dispatch children: nodes in singleton compositions
+  -- (max_children=1) that were stored under a key != ntc.collection_key
+  -- (e.g. appbar, fab, drawer stored as screen_section children).
+  -- Fallback key for unkeyed children: the child type's declared
+  -- default_json_key first (e.g. a props node type declares 'props'),
+  -- then the raw node_type name as last resort.
+  SELECT jsonb_object_agg(COALESCE(ch.key, ch_nt.default_json_key, ch_nt.name), s7_build_node_json(ch.id))
+  INTO v_keyed_children
+  FROM s7.schema_nodes ch
+  JOIN s7.schema_node_types ch_nt ON ch_nt.id = ch.node_type_id
+  JOIN s7.schema_node_type_compositions ntc
+    ON ntc.child_type_id = ch.node_type_id
+  JOIN s7.schema_nodes parent ON parent.id = p_node_id
+    AND ntc.parent_type_id = parent.node_type_id
+  WHERE ch.parent_id = p_node_id
+    AND ch_nt.is_json_map = FALSE
+    AND (
+      ntc.collection_key IS NULL
+      OR (ntc.max_children = 1 AND ch.key <> ntc.collection_key)
+    );
+
+  IF v_keyed_children IS NOT NULL THEN
+    v_children_json := COALESCE(v_children_json, '{}'::jsonb) || v_keyed_children;
+  END IF;
+
+  v_result := (
+    jsonb_strip_nulls(
+      COALESCE(v_natural_attrs, '{}'::jsonb)
+    || COALESCE(v_attrs, '{}'::jsonb)
+    )
+    || COALESCE(v_children_json, '{}'::jsonb)
+    || COALESCE(v_natural_attrs, '{}'::jsonb)
+  );
+
+  -- Strip empty objects (e.g., "props": {}, "layout": {}) from the final JSON
+  v_result := s7_strip_empty_values(v_result);
+
+  SELECT jsonb_object_agg(ch.key, s7_build_node_json(ch.id))
+  INTO v_map_children
+  FROM s7.schema_nodes ch
+  JOIN s7.schema_node_types nt ON nt.id = ch.node_type_id
+  WHERE ch.parent_id = p_node_id
+    AND nt.is_json_map = TRUE;
+  v_result := v_result || COALESCE(v_map_children, '{}'::jsonb);
+
+  RETURN v_result;
+END;
+$$ LANGUAGE plpgsql;
+"""
+
+
+REKEY_STRUCTURAL_KEYS_SQL = r"""
+WITH scoped AS (
+    SELECT
+        s.id,
+        s.parent_id,
+        COALESCE(s.key, snt.default_json_key, snt.name) AS emitted_key,
+        s.sort_order
+    FROM s7.schema_nodes AS s
+    JOIN s7.schema_node_types AS snt ON snt.id = s.node_type_id
+    JOIN s7.schema_nodes AS p ON p.id = s.parent_id
+    WHERE snt.is_json_map = FALSE
+      AND EXISTS (
+          SELECT 1
+          FROM s7.schema_node_type_compositions AS ntc
+          WHERE ntc.child_type_id = s.node_type_id
+            AND ntc.parent_type_id = p.node_type_id
+            AND (
+                ntc.collection_key IS NULL
+                OR (ntc.max_children = 1 AND s.key <> ntc.collection_key)
+            )
+      )
+),
+dup AS (
+    SELECT parent_id, emitted_key
+    FROM scoped
+    GROUP BY parent_id, emitted_key
+    HAVING COUNT(*) > 1
+),
+plan AS (
+    SELECT
+        s.id,
+        s.emitted_key AS old_key,
+        s.emitted_key || '_' || (
+            ROW_NUMBER() OVER (
+                PARTITION BY s.parent_id, s.emitted_key
+                ORDER BY s.sort_order, s.id
+            ) - 1
+        ) AS new_key
+    FROM scoped AS s
+    JOIN dup AS d
+      ON d.parent_id = s.parent_id
+     AND d.emitted_key = s.emitted_key
+)
+UPDATE s7.schema_nodes AS ch
+SET key = p.new_key,
+    name = CASE
+               WHEN ch.name = p.old_key THEN p.new_key
+               ELSE ch.name
+           END
+FROM plan AS p
+WHERE ch.id = p.id;
+"""
+
+# Rekeying changes the output of s7_build_node_json for the affected
+# parents; cached schema_json rows built before the repair would keep
+# serving the collapsed entries. NULLing last_cached_build drops the
+# cache-serving predicate (last_cached_build IS NOT DISTINCT FROM
+# current_build) so the next read rebuilds — the routine redefinition
+# above already NULLs it for its own change, and this statement keeps the
+# backfill's invalidation explicit and independent.
+INVALIDATE_BUILD_STATE_SQL = r"""
+UPDATE s7.schema_build_state SET last_cached_build = NULL;
+"""
+
 class Migration(migrations.Migration):
+
     dependencies = [
-        ("schemas", "0007_mcp_user_tokens"),
+        ("schemas", "0006_conditional_expression_datatype"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
+        migrations.RunPython(
+            check_unique_root_scopes,
+            reverse_code=migrations.RunPython.noop,
+        ),
+        migrations.AddConstraint(
+            model_name="nodetype",
+            constraint=models.UniqueConstraint(
+                fields=["json_scope"],
+                condition=Q(is_root=True),
+                name="uq_snode_types_root_scope",
+                nulls_distinct=False,
+            ),
+        ),
+        migrations.RunSQL(
+            sql=BACKFILL_DOMAIN_SQL,
+            # Intentional noop: rows updated by the backfill are
+            # indistinguishable from rows that already carried a domain,
+            # so the reverse cannot selectively undo only the backfill.
+            reverse_sql=migrations.RunSQL.noop,
+        ),
+        migrations.CreateModel(
+            name="UserMCPToken",
+            fields=[
+                (
+                    "id",
+                    models.UUIDField(
+                        db_default=models.Func(function="gen_random_uuid"),
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                ("name", models.CharField(max_length=255)),
+                ("token_digest", models.CharField(max_length=64, unique=True)),
+                (
+                    "mcp_level",
+                    models.PositiveSmallIntegerField(
+                        choices=[(1, "Schema authoring"), (2, "Catalog authoring")],
+                        default=1,
+                    ),
+                ),
+                ("expires_at", models.DateField()),
+                ("revoked_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(default=django.utils.timezone.now)),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="mcp_tokens",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+            options={
+                "verbose_name": "User MCP token",
+                "verbose_name_plural": "User MCP tokens",
+                "db_table": "schema_user_mcp_tokens",
+                "indexes": [
+                    models.Index(
+                        fields=["user", "revoked_at"], name="idx_user_mcp_tok_active"
+                    )
+                ],
+            },
+        ),
         migrations.RunPython(
             check_null_key_root_versions,
             reverse_code=migrations.RunPython.noop,
@@ -1359,5 +2061,20 @@ class Migration(migrations.Migration):
         migrations.RunSQL(
             sql=SCOPED_IMPORT_SQL,
             reverse_sql=SCOPED_IMPORT_ROLLBACK_SQL,
+        ),
+        migrations.RunSQL(
+            FN_BUILD_NODE_JSON_SQL,
+            reverse_sql=FN_BUILD_NODE_JSON_ROLLBACK_SQL,
+        ),
+        migrations.RunSQL(
+            sql=REKEY_STRUCTURAL_KEYS_SQL,
+            # Intentional noop: rekeyed rows cannot be told apart from rows
+            # that always carried the indexed key convention.
+            reverse_sql=migrations.RunSQL.noop,
+        ),
+        migrations.RunSQL(
+            sql=INVALIDATE_BUILD_STATE_SQL,
+            # Intentional noop: un-invalidating would resurrect stale JSON.
+            reverse_sql=migrations.RunSQL.noop,
         ),
     ]

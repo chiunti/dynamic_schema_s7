@@ -1177,32 +1177,45 @@ class SchemaService:
         """Process a single child node from a dict value (composition without collection_key).
 
         ``dropped_attributes`` is the shared out-list for validator-rejected
-        values: a child dict that is itself an invalid conditional structure
-        is dropped wholesale in permissive mode (strict mode raises), and the
-        list is forwarded to _process_node_attributes for attribute-level
-        drops.
+        values: a child dict containing an invalid conditional structure —
+        at any depth inside the dict — is dropped wholesale in permissive
+        mode with a single warning. Strict mode keeps the shallower split:
+        an invalid depth-0 conditional raises at ``child_path``, while
+        nested ones keep surfacing as attribute-level errors via the
+        recursive check in _process_node_attributes. The list is forwarded
+        to _process_node_attributes for attribute-level drops.
         """
         # JSON path of this child node within the payload (indexed when the
         # child comes from a list slot).
         child_path = f"{path}.{json_key}" if index is None else f"{path}.{json_key}[{index}]"
 
-        # Validate conditional structure if value has conditional shape.
-        # Strict mode aborts; permissive mode records a dropped_attribute
-        # warning and skips the whole child node — the dropped unit is the
-        # structural child itself, so nothing invalid is persisted.
-        if self._is_conditional_structure(value):
-            try:
-                validate_conditional_structure(value)
-            except Exception as e:
-                if strict_keys:
+        # Validate conditional structures within the child dict. Strict mode
+        # aborts on an invalid top-level conditional — nested ones keep
+        # surfacing at '{child_path}.{attr_key}' via the per-attribute
+        # recursive check in _process_node_attributes. Permissive mode
+        # deep-scans the whole child dict: an invalid conditional at any
+        # depth drops the structural child wholesale, reported with a single
+        # dropped_attribute warning carrying the internal path. Depth 0
+        # included: a conditional-shaped child dict is dropped here even
+        # though the strict shallow check misses it — it would only
+        # materialize as junk attributes anyway.
+        if strict_keys:
+            if self._is_conditional_structure(value):
+                try:
+                    validate_conditional_structure(value)
+                except Exception as e:
                     raise SchemaValidationError(
                         f"Invalid conditional structure for '{json_key}': {str(e)}",
                         code=ERR_INVALID_SCHEMA,
                         path=child_path,
                     ) from e
+        else:
+            invalid_conditional = self._find_invalid_conditional(value, child_path)
+            if invalid_conditional is not None:
+                internal_path, conditional_error = invalid_conditional
                 self._record_dropped_attribute(
                     child_path,
-                    f"Invalid conditional structure for '{json_key}': {e}",
+                    f"Invalid conditional structure at '{internal_path}': {conditional_error}",
                     dropped_attributes,
                 )
                 return
@@ -1472,7 +1485,10 @@ class SchemaService:
 
         Map keys are data (map semantics), so strict mode does not reject
         undeclared keys here; strict checks apply to each entry's attributes
-        via the recursive _process_node_attributes call.
+        via the recursive _process_node_attributes call. Map entries keep
+        attribute-level conditional granularity by design — the values are
+        data, not declared node units, so a conditional-shaped entry is
+        legitimate payload and no unit-level drop pre-check runs on them.
         ``dropped_attributes`` is forwarded to _process_node_attributes as the
         shared out-list for validator-rejected attribute values.
 
@@ -1629,7 +1645,9 @@ class SchemaService:
           1. List value whose key matches a composition collection_key -> _process_collection
              Also: dict value whose key matches a collection_key with max_children=1 -> wrapped as [value]
           2. Dict/list value whose key is a domain-discriminator shorthand for a collection
-             (e.g. 'body' -> screen_section with section_key='body') -> create child node
+             (e.g. 'body' -> screen_section with section_key='body') -> create child node;
+             permissive mode deep-scans the dict first and drops the unit
+             wholesale on an invalid conditional at any depth (single warning)
           3. Dict/list value whose key matches a structural child's declared key
              (composition without collection_key; child_type.default_json_key or
              child_type.name) -> _process_single_child_node
@@ -1858,6 +1876,34 @@ class SchemaService:
                         slot_comp, discriminator_json_key = shorthand_map[json_key]
                         child_type = slot_comp.child_type
                         name = json_key
+                        # Permissive-mode deep-scan, same shape as the
+                        # collection item pre-check: an invalid conditional
+                        # at any depth inside the shorthand dict drops the
+                        # unit wholesale with a single dropped_attribute
+                        # warning — create_child_node is never called. That
+                        # also covers a dict that IS itself an invalid
+                        # conditional, which would otherwise persist
+                        # 'logic'/'conditions' as junk attributes. Strict
+                        # mode gets no unit pre-check: failures keep
+                        # surfacing downstream (undeclared-key gate or the
+                        # per-attribute recursive check). The slot count
+                        # and sort order still consume the dropped unit's
+                        # payload position — counts are payload-driven,
+                        # like collection items.
+                        if not strict_keys:
+                            invalid_conditional = self._find_invalid_conditional(
+                                value, f"{path}.{json_key}"
+                            )
+                            if invalid_conditional is not None:
+                                internal_path, conditional_error = invalid_conditional
+                                self._record_dropped_attribute(
+                                    f"{path}.{json_key}",
+                                    f"Invalid conditional structure at '{internal_path}': {conditional_error}",
+                                    dropped_attributes,
+                                )
+                                slot_child_counts[slot_comp.collection_key] = slot_child_counts.get(slot_comp.collection_key, 0) + 1
+                                child_sort_order += 1
+                                continue
                         child_node = self.repository.create_child_node(
                             child_type,
                             node_id,

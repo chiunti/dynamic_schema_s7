@@ -124,8 +124,10 @@ class CatalogImportService:
             COMMITTED, so a row matched as an update may still be
             deleted by a concurrent transaction before its write — the
             save then inserts it. Existence is re-checked per update
-            object right before the save so the envelope reports the
-            action actually taken.
+            object right before the save — and the reclassified insert
+            must then pass the ``add_<label>`` check the permission
+            pass gated only as ``change_<label>`` — so the envelope
+            reports the action actually taken.
 
             The payload is mutated in place: generated uuid5 pks are
             written into objects that omit ``pk``, and objects whose
@@ -134,8 +136,10 @@ class CatalogImportService:
 
         Raises:
             PermissionError: the user lacks a required per-model
-                permission; the message names codename and model. Raised
-                before any write — never partial.
+                permission; the message names codename and model. Never
+                partial — a mid-apply raise (a reclassified insert
+                missing ``add``) rolls back the writes before it with
+                the whole transaction.
         """
         # PK generation runs before validation: validate_objects requires
         # a UUID pk on every entry, so fulfilling the 'pk optional'
@@ -275,7 +279,13 @@ class CatalogImportService:
                             label, obj['pk'],
                         )):
                     # The matched row vanished — the save inserts it,
-                    # so this object is a create, not an update.
+                    # so this object is a create, not an update. The
+                    # real write is an INSERT the permission pass
+                    # gated only as ``change_<label>`` — demand
+                    # ``add_<label>`` as well, before touching the
+                    # report. PermissionError is outside the caught
+                    # tuple, so it propagates for a full rollback.
+                    self._require_perm(user, 'add', label)
                     inserted.add(orig_i)
                     updated[label] -= 1
                     if not updated[label]:

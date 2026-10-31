@@ -695,6 +695,11 @@ class SchemaService:
         the first (json_key-ordered) key is read — there is no fallback
         probing if that key is absent from the child object.
 
+        The version carrier is resolved exclusively at ``variant_key IS
+        NULL`` scope: ``natural_version`` attributes declared under a
+        variant are inert — the structural field-map does not write them to
+        ``Node.version`` and this sync does not read them.
+
         Version precedence:
         1. Explicit version — only the ``schema_version`` request param
            counts (``form_version_is_explicit=True``): it wins over the
@@ -1130,8 +1135,12 @@ class SchemaService:
         # Build map from AttributeDefs - map based on AttributeDef.name to Node field
         json_key_map = {}
         for attr_def in attr_defs:
-            # natural_version AttributeDefs must write to node.version column
+            # natural_version AttributeDefs must write to node.version column,
+            # but only as a non-variant declaration: the version carrier is
+            # resolved at IS NULL scope, so variant-scoped defs stay inert.
             if attr_def.data_type.name == 'natural_version':
+                if attr_def.variant_key is not None:
+                    continue
                 json_key_map[attr_def.json_key] = 'version'
                 continue
             # display_order attrs read from node.sort_order at reconstruction time;

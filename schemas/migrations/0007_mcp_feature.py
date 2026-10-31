@@ -20,8 +20,8 @@ from django.db.models import Q
 #    scoped lookup/build routine redefinitions, v_schema_published gains
 #    project_id.
 # 4. Build-path hardening — display_order exclusion in
-#    s7_build_node_json's v_attrs, structural list key backfill, and
-#    build-state invalidation.
+#    s7_build_node_json's v_attrs, dead-variable removal from the same
+#    routine, structural list key backfill, and build-state invalidation.
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -1433,6 +1433,12 @@ def check_null_key_root_versions(apps, schema_editor):
 # The derived v_natural_attrs block is unchanged, including its
 # ad.variant_key IS NULL predicate.
 #
+# The same redefinition drops two dead declarations inherited from 0002:
+# v_key (populated by a per-node SELECT whose result was never
+# concatenated into v_result — the emitted 'key' comes from
+# v_natural_attrs and the keyed-children channels) and v_slots (declared,
+# never used).
+#
 # The forward also NULLs last_cached_build in schema_build_state: the
 # cache-serving predicate (last_cached_build IS NOT DISTINCT FROM
 # current_build) would otherwise keep serving schema_json rows built by
@@ -1489,7 +1495,6 @@ SET search_path TO s7, public;
 CREATE OR REPLACE FUNCTION s7_build_node_json(p_node_id UUID)
 RETURNS JSONB AS $$
 DECLARE
-  v_key             TEXT;
   v_node_key        TEXT;
   v_node_id_text    TEXT;
   v_json_scope      TEXT;
@@ -1499,7 +1504,6 @@ DECLARE
   v_keyed_children  JSONB;
   v_map_children    JSONB;
   v_result          JSONB;
-  v_slots           JSONB;
   v_node_type_name  TEXT;
   v_node_sort_order INT;
 BEGIN
@@ -1512,19 +1516,6 @@ BEGIN
   IF v_node_id_text IS NULL THEN
     RAISE EXCEPTION 'Node not found for id=%', p_node_id;
   END IF;
-  
-  -- Emit 'key' in the output JSON only when the node type has an explicit AttributeDef for it.
-  -- Metadata nodes do not define a 'key' AttributeDef,
-  -- so v_key remains NULL and is stripped by jsonb_strip_nulls.
-  SELECT na.value_string
-  INTO v_key
-  FROM s7.schema_node_attributes na
-  JOIN s7.schema_attribute_defs ad ON ad.id = na.attribute_def_id
-  JOIN s7.schema_nodes n ON n.id = p_node_id
-  WHERE na.node_id = p_node_id
-    AND ad.json_key = 'key'
-    AND ad.node_type_id = n.node_type_id
-  LIMIT 1;
 
   -- Collect stored attributes (excluding natural_*, internal and
   -- display_order types). display_order never stores a value row: any

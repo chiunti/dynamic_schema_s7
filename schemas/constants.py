@@ -165,6 +165,7 @@ ERR_INVALID_DOMAIN_VALUE = "invalid_domain_value"
 WARN_ATTRIBUTE_IGNORED = "attribute_ignored"
 WARN_DROPPED_ATTRIBUTE = "dropped_attribute"
 WARN_IMPORT = "import_warning"
+WARN_IS_REQUIRED_DEMOTED = "is_required_demoted"
 WARN_MISSING_REQUIRED_ATTRIBUTES = "missing_required_attributes"
 
 # Logging error messages

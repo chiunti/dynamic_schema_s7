@@ -23,9 +23,12 @@ fields whose live value already IS the default stay harmless.
 On success the envelope carries ``results`` — one entry per payload
 object, in payload order, with ``index``, ``model``, ``natural_key``,
 ``action`` (``created``/``updated``) and ``changed_fields`` — so the
-caller can audit exactly which row each object touched. Catalog grammar
-is global and takes effect immediately (no draft lifecycle); every
-import is attributed to the calling user through an admin ``LogEntry``.
+caller can audit exactly which row each object touched. ``warnings``
+reports the non-fatal payload normalizations applied pre-write: an
+``attributedef`` declaring ``is_required`` on a server-managed attribute
+is demoted to ``False``, never rejected. Catalog grammar is global and
+takes effect immediately (no draft lifecycle); every import is
+attributed to the calling user through an admin ``LogEntry``.
 """
 
 import re
@@ -40,8 +43,10 @@ from ..constants import (
     ERR_INVALID_CATALOG_OBJECT,
     ERR_MISSING_MODEL_PERMISSION,
     ERR_UPDATE_RESET_FIELDS,
+    WARN_IS_REQUIRED_DEMOTED,
 )
 from ..repositories.fixture_repository import FixtureRepository
+from .datatype_plugins import is_server_managed_attribute
 from .fixture_service import FixtureService
 
 if TYPE_CHECKING:
@@ -103,7 +108,8 @@ class CatalogImportService:
 
         Returns:
             On success ``{"applied": True, "created": {label: n},
-            "updated": {label: n}, "warnings": [], "results":
+            "updated": {label: n}, "warnings": [{"code", "message",
+            "path"}], "results":
             [{"index", "model", "natural_key", "action",
             "changed_fields"}]}`` — one ``results`` entry per payload
             object, in payload order; on any validation or apply
@@ -114,6 +120,17 @@ class CatalogImportService:
             apply-time failures attribute the ORM error to the object —
             and, when determinable, the field — that broke, so a raw
             conversion message never reaches the client bare.
+
+            ``warnings`` reports the non-fatal normalizations applied to
+            the payload pre-write: an ``attributedef`` declaring
+            ``is_required`` on a server-managed attribute (a generated
+            ``natural_*`` column or ``display_order`` — the engine
+            ignores the payload value entirely, so the flag can never be
+            honored) is demoted to ``False`` and reported with its
+            object path. Author-settable column-mapped attributes
+            (``natural_key`` → ``key``, ``natural_version`` →
+            ``version``) keep the flag — it is legitimate contract
+            metadata the resolved catalog emits as ``required: true``.
 
             An object matched to a live row is updated by full-row
             replace: omitting a field that holds a non-default live
@@ -130,9 +147,11 @@ class CatalogImportService:
             reports the action actually taken.
 
             The payload is mutated in place: generated uuid5 pks are
-            written into objects that omit ``pk``, and objects whose
+            written into objects that omit ``pk``, objects whose
             natural key already exists get ``pk`` rewritten to the live
-            row's pk so deserialization updates it.
+            row's pk so deserialization updates it, and unsatisfiable
+            ``is_required`` flags (see ``warnings``) are demoted to
+            ``False``.
 
         Raises:
             PermissionError: the user lacks a required per-model
@@ -154,6 +173,13 @@ class CatalogImportService:
             return self._error_envelope(
                 [self._to_error_entry(e) for e in errors],
             )
+
+        # Server-managed required demotion — before classification so
+        # the permission pass, the reset guard, the apply pass and the
+        # reported ``changed_fields`` all operate on the flag actually
+        # persisted. The pass mutates ``fields`` in place and returns
+        # the warnings the success envelope reports.
+        warnings = self._demote_server_managed_required(objects)
 
         # Existence + pk-resolution pass. A pk pointing at one row while
         # the natural key resolves to another is a payload conflict —
@@ -346,7 +372,7 @@ class CatalogImportService:
             'applied': True,
             'created': dict(sorted(created.items())),
             'updated': dict(sorted(updated.items())),
-            'warnings': [],
+            'warnings': warnings,
             'results': results,
         }
 
@@ -386,6 +412,76 @@ class CatalogImportService:
             '' if part is None else str(part) for part in natural_key
         )
         return str(uuid.uuid5(SEED_NS, f'{label}:{key}'))
+
+    def _demote_server_managed_required(self, objects: list) -> list[dict]:
+        """Demote ``is_required`` on defs bound to server-managed attributes.
+
+        An ``attributedef`` bound to a server-managed attribute — a
+        ``natural_*`` attribute the engine generates (``natural_uuid`` →
+        ``id``) or any ``display_order`` — can never honor
+        ``is_required``: the payload value is ignored entirely, no
+        ``NodeAttribute`` row is ever written for it (post-AI-94 the
+        required check excludes the whole column-mapped set), and the
+        resolved catalog already emits ``required: false`` for the pair.
+        Persisting the flag would store a promise nothing keeps, so it
+        is rewritten to ``False`` in place and each demotion is returned
+        as a warning — never an error, so a catalog that declares the
+        pattern (e.g. ``forms.json``'s ``natural_uuid`` defs)
+        re-imports cleanly instead of failing validation.
+
+        The gate is exactly ``is_server_managed_attribute`` — not the
+        broader ``is_column_mapped_datatype`` set. Author-settable
+        column-mapped attributes (``natural_key`` → ``key``,
+        ``natural_version`` → ``version``, ``natural_*`` attributes
+        named after writable node columns) keep the flag: the payload
+        does write through to the column there, so ``is_required`` is
+        legitimate client-enforceable contract metadata that the
+        resolved catalog emits as ``required: true``.
+
+        Runs after structural validation — ``fields`` shape, the
+        ``data_type`` natural-key reference and ``name`` presence are
+        already guaranteed — and before the classification pass, so
+        every later stage (permission checks, the reset guard, the
+        apply pass, the reported ``changed_fields``) sees the demoted
+        value. The ``isinstance`` guards keep the pass total on
+        unexpected input: a non-string ``dt_name`` would break the
+        predicate's ``startswith`` and an unhashable ``attr_name`` its
+        membership test.
+        """
+        warnings = []
+        for i, obj in enumerate(objects):
+            if obj['model'].split('.')[1] != 'attributedef':
+                continue
+            fields = obj['fields']
+            if not fields.get('is_required'):
+                continue
+            # ``data_type`` serializes as a natural-key list of strings;
+            # a stray scalar is tolerated and judged as-is.
+            dt_ref = fields.get('data_type')
+            dt_name = (
+                dt_ref[0]
+                if isinstance(dt_ref, list) and dt_ref else dt_ref
+            )
+            attr_name = fields.get('name')
+            if (not isinstance(dt_name, str) or not dt_name
+                    or not isinstance(attr_name, str)):
+                continue
+            if not is_server_managed_attribute(dt_name, attr_name):
+                continue
+            fields['is_required'] = False
+            nk = self.fixture_service.natural_key_for(
+                'attributedef', fields,
+            )
+            warnings.append({
+                'code': WARN_IS_REQUIRED_DEMOTED,
+                'message': (
+                    f'attributedef {list(nk)}: is_required demoted — '
+                    f"attribute '{attr_name}' (data_type '{dt_name}') "
+                    'is server-managed'
+                ),
+                'path': f'$.objects[{i}]',
+            })
+        return warnings
 
     @staticmethod
     def _to_error_entry(error: str) -> dict:

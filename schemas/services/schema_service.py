@@ -1749,7 +1749,7 @@ class SchemaService:
                     continue
                 if isinstance(value, dict):
                     json_key_to_comp[json_key] = comp
-                elif isinstance(value, list) and value and isinstance(value[0], dict):
+                elif isinstance(value, list) and any(isinstance(item, dict) for item in value):
                     json_key_to_comp[json_key] = comp
         
         # Disable triggers to bypass s7 validation
@@ -1947,11 +1947,26 @@ class SchemaService:
                             structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
                             child_sort_order += 1
                         elif isinstance(value, list):
+                            # Non-dict items cannot dispatch to a child node:
+                            # strict mode rejects them (mirror of
+                            # _process_collection), permissive mode records a
+                            # dropped_attribute — nothing is skipped silently.
+                            # The slot count and sort order still consume each
+                            # payload position — counts are payload-driven,
+                            # like collection items and shorthand drops.
                             for idx, item in enumerate(value):
                                 if isinstance(item, dict):
                                     self._process_single_child_node(node_id, json_key, item, child_type, project_id, organization_id, index=idx, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
-                                    structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
-                                    child_sort_order += 1
+                                elif strict_keys:
+                                    raise self._invalid_collection_value_error(node_type, f"{json_key}[{idx}]", item, path)
+                                else:
+                                    self._record_dropped_attribute(
+                                        f"{path}.{json_key}[{idx}]",
+                                        f"Item must be an object, got {type(item).__name__}",
+                                        dropped_attributes,
+                                    )
+                                structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
+                                child_sort_order += 1
                         continue
 
                     # Handle nested objects: if value is a dict with a single key that matches a pattern like {field: "x"} or {value: "y"}

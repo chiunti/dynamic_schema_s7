@@ -516,9 +516,14 @@ class NodeService:
                         self.schema_repository.update_node_key(node.id, node.key)
                         continue
 
-                    # natural_version maps to schema_nodes.version column — update directly
+                    # natural_version maps to schema_nodes.version column — update directly,
+                    # but only as a non-variant declaration: the version carrier is
+                    # resolved at variant_key IS NULL scope, so variant-scoped defs
+                    # stay inert (same rule as the import field map).
                     # Also propagates to the root if called on a metadata child
                     if d.data_type.name == 'natural_version':
+                        if d.variant_key is not None:
+                            continue
                         v = str(value).strip() if value else None
                         if v:
                             node.version = v

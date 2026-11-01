@@ -315,7 +315,8 @@ class AttributeDefService:
         instead of applying a partial selection silently. Mirrors the
         catalog-import rejection of the same declaration shape (AI-117).
 
-        Version-carrier surface verdicts (verified, gated only here):
+        Version-carrier surface verdicts (verified; this is the only
+        rejecting gate — the other carriers' channels skip instead):
         - This method is the only admin vector that propagates a
           template's data_type into a variant-scoped def — gated.
         - create_attribute_def is a non-vector: its datatype is
@@ -335,10 +336,11 @@ class AttributeDefService:
           column-mapped guard never persists a NodeAttribute — the def
           stays inert and the path is near-unreachable. Documented, not
           gated.
-        - NodeService.update_node_properties is a separate real vector:
-          an active variant-scoped 'natural_version' def does write
-          node.version in the editor. Out of scope here — editor
-          semantics, not catalog declaration (known pending finding).
+        - NodeService.update_node_properties was a separate real
+          vector: an active variant-scoped 'natural_version' def did
+          write node.version in the editor. Now gated there (AI-132):
+          the write branch skips defs with a variant_key set, the same
+          variant_key IS NULL rule as the import field map.
         """
         target_names = None
         if scope:

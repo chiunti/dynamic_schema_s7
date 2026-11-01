@@ -31,7 +31,20 @@ class AttributeDefService:
     def get_component_types_for_scope(self, scope: str) -> dict:
         """
         Return the list of component types (DomainItems) reachable from a root scope.
-        Raises ValueError if scope is missing or not found, or if no type domain exists.
+
+        The result is the union of all candidate discriminator domains,
+        deduplicated by ``value``: sibling defs may declare the same
+        discriminator json_key under different ``variant_key``s — each
+        with its own domain — and several scope type_ids may carry a
+        discriminator, so every domain-bound candidate may legitimately
+        own component-type rows. Unlike the AI-113 existence gate, this
+        endpoint materializes a list, so all candidates contribute their
+        items: the first occurrence in candidate order wins on duplicate
+        values, and the final list is sorted by ``value`` for
+        determinism.
+
+        Raises ValueError if scope is missing; LookupError if the scope
+        is not found or no type domain exists.
         """
         if not scope:
             raise ValueError(ERR_SCOPE_REQUIRED)
@@ -39,11 +52,15 @@ class AttributeDefService:
         type_ids = self.node_type_repository.get_node_type_ids_for_scope(scope)
         if not type_ids:
             raise LookupError(ERR_SCOPE_NOT_FOUND)
-        attr_def = self.repository.get_type_attribute_def_for_type_ids(type_ids)
-        if not attr_def:
+        attr_defs = self.repository.get_type_attribute_defs_for_type_ids(type_ids)
+        if not attr_defs:
             raise LookupError(ERR_COMPONENT_TYPE_DOMAIN_NOT_FOUND)
 
-        component_types = self.repository.get_component_types_for_domain(attr_def.domain)
+        items_by_value: dict[str, dict] = {}
+        for attr_def in attr_defs:
+            for item in self.repository.get_component_types_for_domain(attr_def.domain):
+                items_by_value.setdefault(item["value"], item)
+        component_types = [items_by_value[value] for value in sorted(items_by_value)]
         return {"component_types": component_types}
 
     def get_component_properties(self, component_type: str) -> dict:

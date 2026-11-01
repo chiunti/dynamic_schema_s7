@@ -406,47 +406,56 @@ class SchemaService:
         - ``discriminator_attr`` NULL: props/inherited-variant node type —
           keeps the variant received from the parent.
         - Otherwise the example self-discriminates on the first
-          ``DomainItem.value`` of the discriminator AttributeDef's domain,
-          falling back to the declared ``variant_key``s. A root node
-          type discriminating on ``status`` prefers a lifecycle domain item
-          (``_first_domain_item_value`` with ``prefer_lifecycle``) so the
-          discriminator overwrite in ``_build_example_attributes`` cannot
-          emit a non-lifecycle ``status`` value — and without a usable
-          domain item it prefers a lifecycle-valid ``variant_key`` for the
-          same reason.
+          ``DomainItem.value`` of a discriminator AttributeDef's domain,
+          falling back to the declared ``variant_key``s. Sibling defs may
+          declare the same ``(node_type, json_key)`` under different
+          ``variant_key``s — every domain-bound in-memory ``attr_defs``
+          match is tried first in ``variant_key`` order; the repository
+          is only consulted when no in-memory def matches, and the first
+          candidate domain that produces a ``first_value`` wins.
+          A root node type discriminating on ``status`` prefers a
+          lifecycle domain item (``_first_domain_item_value`` with
+          ``prefer_lifecycle``) so the discriminator overwrite in
+          ``_build_example_attributes`` cannot emit a non-lifecycle
+          ``status`` value — and without a usable domain item it prefers
+          a lifecycle-valid ``variant_key`` for the same reason.
         """
         if ntv is None:
             return None
         if not ntv.discriminator_attr:
             return inherited_variant
-        discriminator_def = next(
+        prefer_lifecycle = node_type.is_root and ntv.discriminator_attr == 'status'
+        # Sibling defs may declare the same (node_type, json_key) under
+        # different variant_keys, each with its own domain — every
+        # domain-bound match is tried in variant_key order (NULL last,
+        # mirroring the repository ordering).
+        candidates = sorted(
             (
                 attr_def
                 for attr_def in attr_defs
                 if attr_def.json_key == ntv.discriminator_attr
                 and attr_def.domain_id
             ),
-            None,
+            key=lambda d: (
+                getattr(d, 'variant_key', None) is None,
+                getattr(d, 'variant_key', None) or '',
+            ),
         )
-        if discriminator_def is None:
-            discriminator_def = (
-                self.attribute_def_repository.get_attribute_def_with_domain(
-                    node_type, ntv.discriminator_attr
-                )
+        if not candidates:
+            candidates = self.attribute_def_repository.get_attribute_defs_with_domain(
+                node_type, ntv.discriminator_attr
             )
-        if discriminator_def is not None and discriminator_def.domain_id:
+        for candidate in candidates:
             first_value = self._first_domain_item_value(
-                discriminator_def.domain,
-                prefer_lifecycle=(
-                    node_type.is_root and ntv.discriminator_attr == 'status'
-                ),
+                candidate.domain,
+                prefer_lifecycle=prefer_lifecycle,
             )
             if first_value is not None:
                 return first_value
         variant_keys = self.node_type_repository.get_variant_keys_by_node_type(
             node_type
         )
-        if node_type.is_root and ntv.discriminator_attr == 'status':
+        if prefer_lifecycle:
             for status in VALID_SCHEMA_STATUSES:
                 if status in variant_keys:
                     return status

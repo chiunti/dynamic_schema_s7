@@ -5,6 +5,8 @@ Data access layer for AttributeDef, Domain, DomainItem, NodeType and NodeTypeVar
 import uuid
 from typing import Optional
 
+from django.db.models import Q
+
 from ..models import (
     AttributeDef,
     DataType,
@@ -19,28 +21,62 @@ from ..models import (
 class AttributeDefRepository:
     """Repository for attribute definition and component property data access."""
 
-    def get_type_attribute_def_for_type_ids(self, type_ids: list[uuid.UUID]) -> Optional[AttributeDef]:
-        """Return the first domain-bound discriminator AttributeDef for the given node type IDs.
+    def get_type_attribute_defs_for_type_ids(self, type_ids: list[uuid.UUID]) -> list[AttributeDef]:
+        """Return every domain-bound discriminator AttributeDef for the given node type IDs.
 
         The discriminator json_keys are read from the declarative
         NodeTypeVariant.discriminator_attr values of the given node types
         (usually a single key, e.g. 'type'), instead of assuming a
         fixed attribute name.
+
+        Multi-def semantics: ``uq_sattr_defs_key`` scopes uniqueness to
+        ``(node_type, json_key, variant_key)``, so the same
+        ``(node_type, json_key)`` can legitimately be declared by
+        sibling defs — the ``variant_key=None`` template plus
+        materialized variant-scoped copies. Each sibling may carry its
+        own domain, and several node types may qualify at once, so
+        resolving a single def via an unordered ``.first()`` could
+        inspect the wrong sibling's (or the wrong node type's) domain
+        and silently produce a wrong result. Callers must therefore
+        evaluate every returned candidate's domain.
+
+        The discriminator correlation is per node type: a def only
+        qualifies when ITS OWN node type declares its ``json_key`` as
+        ``discriminator_attr`` in a ``NodeTypeVariant`` row. A
+        domain-bound def on a non-discriminating type (e.g. a props
+        type with ``discriminator_attr=None``) whose ``json_key``
+        happens to equal another scope type's discriminator is NOT a
+        candidate — its domain does not describe component types.
+
+        Args:
+            type_ids: List of node type IDs
+
+        Returns:
+            List of domain-bound discriminator AttributeDef instances
+            with domain select_related, ordered by ``variant_key`` then
+            ``node_type_id`` then ``pk`` for determinism (PostgreSQL ASC
+            sorts the ``variant_key=None`` template last; ``pk`` fully
+            stabilizes the order should duplicate NULL-variant_key rows
+            ever exist, which ``uq_sattr_defs_key`` cannot rule out)
         """
-        discriminator_keys = (
+        discriminator_pairs = list(
             NodeTypeVariant.objects
             .filter(node_type_id__in=type_ids, discriminator_attr__isnull=False)
-            .values_list("discriminator_attr", flat=True)
+            .values_list("node_type_id", "discriminator_attr")
             .distinct()
         )
-        return (
+        def_filter = Q()
+        for pair_node_type_id, json_key in discriminator_pairs:
+            def_filter |= Q(node_type_id=pair_node_type_id, json_key=json_key)
+        if not def_filter:
+            return []
+        return list(
             AttributeDef.objects.filter(
-                node_type_id__in=type_ids,
-                json_key__in=discriminator_keys,
+                def_filter,
                 domain__isnull=False,
             )
             .select_related("domain")
-            .first()
+            .order_by("variant_key", "node_type_id", "pk")
         )
 
     def get_component_types_for_domain(self, domain: Domain) -> list[dict]:
@@ -406,22 +442,39 @@ class AttributeDefRepository:
         """
         return DataType.objects.filter(name=name).first()
 
-    def get_attribute_def_with_domain(self, node_type, json_key):
-        """
-        Get AttributeDef with domain by node type and json_key.
+    def get_attribute_defs_with_domain(self, node_type: NodeType, json_key: str) -> list[AttributeDef]:
+        """Return every domain-bound AttributeDef for ``(node_type, json_key)``.
+
+        Multi-def semantics: ``uq_sattr_defs_key`` scopes uniqueness to
+        ``(node_type, json_key, variant_key)``, so the same
+        ``(node_type, json_key)`` can legitimately be declared by
+        sibling defs — the ``variant_key=None`` template plus
+        materialized variant-scoped copies. Each sibling may carry its
+        own domain, so resolving a single def via an unordered
+        ``.first()`` could inspect the wrong sibling's domain and
+        silently produce a wrong result. Callers must therefore
+        evaluate every returned candidate's domain.
 
         Args:
             node_type: NodeType instance
             json_key: JSON key
 
         Returns:
-            AttributeDef instance or None
+            List of domain-bound AttributeDef instances with domain
+            select_related, ordered by ``variant_key`` then ``pk`` for
+            determinism (PostgreSQL ASC sorts the ``variant_key=None``
+            template last; ``pk`` fully stabilizes the order should
+            duplicate NULL-variant_key rows ever exist)
         """
-        return AttributeDef.objects.filter(
-            node_type=node_type,
-            json_key=json_key,
-            domain__isnull=False,
-        ).first()
+        return list(
+            AttributeDef.objects.filter(
+                node_type=node_type,
+                json_key=json_key,
+                domain__isnull=False,
+            )
+            .select_related("domain")
+            .order_by("variant_key", "pk")
+        )
 
     def domain_item_exists(self, domain, value):
         """

@@ -33,6 +33,13 @@ class SchemaDeleteService:
         removed alongside so no servable leftovers remain — deleting the
         draft also releases the node types it implemented.
 
+        A successful delete with a ``user`` leaves one ``admin.LogEntry``
+        audit row (``action_flag=DELETION``, anchored to the deleted root
+        node, ``object_repr`` = ``key@version``) inside the same
+        transaction — written after the deletes so a rolled-back delete
+        leaves no audit of something that never happened. A ``False``
+        outcome leaves no audit entry.
+
         Args:
             node_type_value: NodeType name or ``json_scope`` of the schema.
             key: Schema key.
@@ -80,4 +87,13 @@ class SchemaDeleteService:
         self.node_repository.delete_node_tree(node.id)
         self.repository.delete_build_state(key, version, project_id=project_id)
         self.repository.delete_schema_cache_by_key_version(key, version, project_id=project_id)
+
+        # Audit after the deletes, same outer transaction: a rolled-back
+        # delete leaves no LogEntry of something that never happened.
+        self.repository.record_schema_delete(
+            user,
+            object_id=str(node.id),
+            object_repr=f"{key}@{version}",
+            change_message=f"deleted draft schema ({node_type.name})",
+        )
         return True

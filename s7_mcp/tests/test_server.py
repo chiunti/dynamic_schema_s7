@@ -26,7 +26,10 @@ if _DEPS:
 # Pure-Python modules — importable without mcp/httpx, so the grammar and
 # prompt-content tests below run even when the optional dependencies are
 # not installed.
-from s7_mcp.catalog_grammar import CATALOG_GRAMMAR
+from s7_mcp.catalog_grammar import (
+    CATALOG_GRAMMAR,
+    validate_example_import_objects,
+)
 from s7_mcp.prompts import AUTHOR_CATALOG_PROMPT, CREATE_TRAMITE_FORM_PROMPT
 
 EXPECTED_TOOLS = {
@@ -738,48 +741,25 @@ class CatalogGrammarDataTests(unittest.TestCase):
                     self.assertIn(key, attr)
 
     def test_resolved_vs_import_example_objects_are_payload_valid(self):
-        """The worked example must survive the import contract: real
-        labels, no ``id`` inside ``fields``, every natural-key and
-        required component present, and FK values shaped as
-        ``[natural_key]`` lists or null."""
+        """The worked example must survive the import contract — shape
+        and completeness checked end to end by the shared validator
+        ``catalog_grammar.validate_example_import_objects``: real
+        labels, no ``id``/``version`` inside ``fields``, every
+        natural-key and required component present, and FK values
+        shaped as ``[natural_key]`` string lists or null only where
+        nullable. The strict semantics live next to the document; the
+        backend suite invokes the same validator with the live
+        ``CATALOG_MODELS`` whitelist, this side passes the static
+        ``EXPECTED_MODELS`` copy."""
         objects = CATALOG_GRAMMAR["resolved_vs_import"]["example"][
             "import"
         ]["objects"]
-        for obj in objects:
-            label = obj["model"]
-            with self.subTest(model=label):
-                self.assertIn(label, self.EXPECTED_MODELS)
-                model = CATALOG_GRAMMAR["models"][label]
-                fields = obj["fields"]
-                # 'id' is forbidden inside fields; 'version' is an
-                # instance-document field, never a catalog row field.
-                for forbidden in ("id", "version"):
-                    self.assertNotIn(forbidden, fields)
-                for name in model["natural_key"]:
-                    self.assertIn(name, fields)
-                for name, spec in model["fields"].items():
-                    if spec["required"]:
-                        self.assertIn(name, fields)
-                for name, spec in model["fks"].items():
-                    if spec["required"]:
-                        self.assertIn(name, fields)
-                for name, value in fields.items():
-                    self.assertTrue(
-                        name in model["fields"] or name in model["fks"],
-                        f"{label}.{name} not in the grammar",
-                    )
-                    if name in model["fks"]:
-                        self.assertTrue(
-                            value is None
-                            or (
-                                isinstance(value, list)
-                                and all(
-                                    isinstance(item, str)
-                                    for item in value
-                                )
-                            ),
-                            f"{label}.{name} not a [natural_key] list",
-                        )
+        errors = validate_example_import_objects(
+            objects,
+            CATALOG_GRAMMAR["models"],
+            allowed_models=self.EXPECTED_MODELS,
+        )
+        self.assertEqual(errors, [])
 
     def test_resolved_vs_import_example_authors_server_generated_defs(self):
         """``server_generated`` flags value emission, not authoring: the

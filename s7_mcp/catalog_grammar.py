@@ -39,6 +39,11 @@ resource. Shape:
   and where errors surface. The canonical grammar lives in the
   datatype documentation — this section summarizes usage, it is not a
   second grammar.
+
+``validate_example_import_objects`` lives next to the document: the
+single check both drift suites run against
+``resolved_vs_import.example.import.objects[]``, so the shipped grammar
+and its validator cannot drift apart.
 """
 
 CATALOG_GRAMMAR: dict = {
@@ -739,3 +744,132 @@ CATALOG_GRAMMAR: dict = {
         ),
     },
 }
+
+
+def validate_example_import_objects(
+    objects: list,
+    models: dict,
+    *,
+    allowed_models: "set | frozenset | list | None" = None,
+) -> list[str]:
+    """Validate the ``example.import.objects[]`` worked example.
+
+    Shared guard living next to the document it checks, so a single
+    implementation governs the example's import validity — both test
+    suites that pin the fragment consume it:
+
+    - ``s7_mcp/tests/test_server.py::CatalogGrammarDataTests`` passes
+      ``objects`` and ``models`` straight from ``CATALOG_GRAMMAR`` plus
+      its static ``EXPECTED_MODELS`` set as ``allowed_models``.
+    - the backend-side drift suite passes the same fragment plus the
+      live ``CATALOG_MODELS`` whitelist from the catalog import service
+      — bare labels (``"domain"``), not the ``schemas.<label>`` form
+      the grammar cites.
+
+    ``allowed_models`` is normalized with ``removeprefix("schemas.")``
+    on both sides, so either label form works transparently; ``None``
+    skips the authorizability check.
+
+    Per object the check is the strict union of the axes the two
+    original guards enforced: ``model`` resolves under ``models`` and
+    (when a whitelist is given) is authorizable; ``fields`` carries no
+    ``id``/``version`` key, holds every ``natural_key`` component and
+    every ``required`` field/fk, and names only keys documented under
+    ``fields``/``fks``; an fk value is ``None`` only where the fk entry
+    is ``nullable`` and is otherwise a list of natural-key strings; a
+    scalar ``fields`` position never takes a list. An empty ``objects``
+    is an error — the example must teach.
+
+    Returns descriptive error strings — each naming ``object[<index>]``,
+    the ``(<model>)`` and the field when relevant — so callers assert
+    ``errors == []``; payload-level problems are reported, never raised.
+    """
+    if not objects:
+        return [
+            "example.import.objects[] is empty — nothing to validate"
+        ]
+    allowed = (
+        None
+        if allowed_models is None
+        else {label.removeprefix("schemas.") for label in allowed_models}
+    )
+    errors: list[str] = []
+    for index, obj in enumerate(objects):
+        label = obj.get("model") if isinstance(obj, dict) else None
+        if not isinstance(label, str):
+            errors.append(
+                f"object[{index}] carries no 'model' label to resolve"
+            )
+            continue
+        where = f"object[{index}] ({label})"
+        if label not in models:
+            errors.append(
+                f"object[{index}] cites model {label!r} which has no "
+                "entry under 'models'"
+            )
+            continue
+        if allowed is not None:
+            bare = label.removeprefix("schemas.")
+            if bare not in allowed:
+                errors.append(
+                    f"object[{index}] cites '{label}' — "
+                    f"'{bare}' is not an authorizable catalog model"
+                )
+        model = models[label]
+        fields = obj.get("fields")
+        if not isinstance(fields, dict):
+            errors.append(f"{where} carries no 'fields' dict to check")
+            continue
+        # 'id' is forbidden inside fields (it belongs at top-level 'pk');
+        # 'version' is an instance-document field, never a catalog row.
+        for forbidden in ("id", "version"):
+            if forbidden in fields:
+                errors.append(
+                    f"{where} carries forbidden key '{forbidden}' "
+                    "inside 'fields'"
+                )
+        for name in model["natural_key"]:
+            if name not in fields:
+                errors.append(
+                    f"{where} is missing natural-key component '{name}'"
+                )
+        for name, spec in model["fields"].items():
+            if spec["required"] and name not in fields:
+                errors.append(
+                    f"{where} is missing required field '{name}'"
+                )
+        for name, spec in model["fks"].items():
+            if spec["required"] and name not in fields:
+                errors.append(
+                    f"{where} is missing required fk '{name}'"
+                )
+        documented = set(model["fields"]) | set(model["fks"])
+        for name, value in fields.items():
+            if name not in documented:
+                errors.append(
+                    f"field '{name}' in {where} is not documented under "
+                    f"'fields' or 'fks' — documented: {sorted(documented)}"
+                )
+                continue
+            if name in model["fks"]:
+                if value is None:
+                    if not model["fks"][name]["nullable"]:
+                        errors.append(
+                            f"fk '{name}' in {where} is documented "
+                            "non-nullable but the example sets null"
+                        )
+                elif not isinstance(value, list) or not all(
+                    isinstance(item, str) for item in value
+                ):
+                    errors.append(
+                        f"fk '{name}' in {where} is documented with "
+                        "shape '[natural_key]' — a list of strings — "
+                        f"but the example carries {value!r}"
+                    )
+            elif isinstance(value, list):
+                errors.append(
+                    f"field '{name}' in {where} carries a natural-key "
+                    "list but is documented as a scalar under 'fields' "
+                    "— list values belong only in fks positions"
+                )
+    return errors

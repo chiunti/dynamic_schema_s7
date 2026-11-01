@@ -160,6 +160,7 @@ ERR_INVALID_PK_REF_SHAPE = "expected a primary-key uuid for '{field}', got {rece
 ERR_UNKNOWN_OBJECT_KEYS = "unknown object keys: {keys}"
 ERR_DUPLICATE_PK_IN_PAYLOAD = "duplicate pk in payload"
 ERR_UPDATE_RESET_FIELDS = "update omits fields that hold non-default values: {fields} (update is a full-row replace)"
+ERR_VARIANT_VERSION_CARRIER_MSG = "attributedef {natural_key}: 'natural_version' under variant_key '{variant_key}' is inert — a version carrier must be a non-variant declaration (variant_key null)"
 ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for model '{label}'"
 ERR_CATALOG_OBJECT_IN_USE = "catalog_object_in_use"
 ERR_CATALOG_OBJECT_IN_USE_MSG = "{label} {natural_key} is implemented by existing schemas ({usage}) — {action} on implemented catalog objects are rejected"

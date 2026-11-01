@@ -133,6 +133,32 @@ def s7_get_draft(node_type: str, key: str, version: str) -> dict:
 
 
 @mcp.tool()
+def s7_delete_draft(node_type: str, key: str, version: str) -> dict:
+    """Delete a draft schema — destructive and irreversible.
+
+    Deleting the draft frees the node types it implemented (the catalog
+    usage gate counts any existing schema). Success returns
+    ``{"deleted": true, "meta": {...}}``. Draft-only: a schema that does
+    not exist or is not a draft answers 404 with the same RFC-7807 body
+    as the read — ``{"type": "schema_not_found", "title", "detail",
+    "status": 404}`` — so published/archived schemas can never be
+    deleted through this endpoint.
+
+    **User MCP token only (any level)** — this is *not* dual-auth:
+    project credentials are rejected with 403. A user MCP token is not
+    bound to a project, so the backend requires ``?project_id=<uuid>`` —
+    set ``S7_PROJECT_ID`` and the client sends it automatically (missing
+    answers ``400 {"error": "project_id is required"}``, a project the
+    user cannot edit 403).
+    """
+    client = _get_client()
+    return client.delete_json(
+        f"schema/draft/{_q(node_type)}/{_q(key)}/{_q(version)}/",
+        params={"project_id": client.project_id},
+    )
+
+
+@mcp.tool()
 def s7_list_datatypes() -> dict:
     """List the universal DataType catalog as ``{"datatypes": [...]}``."""
     return _get_client().get_json("catalog/datatypes/")

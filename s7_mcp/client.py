@@ -35,6 +35,23 @@ def _error(code: str, message: str, status: int | None = None) -> dict[str, Any]
     return {"error": {"code": code, "message": message, "status": status}}
 
 
+def _with_query(path: str, params: dict[str, Any] | None) -> str:
+    """Append ``params`` to ``path`` as a URL-encoded query string.
+
+    Entries whose value is ``None`` are skipped, so optional parameters
+    can be forwarded unconditionally; an empty encoded result (or
+    ``params=None``) leaves ``path`` untouched.
+    """
+    if params is not None:
+        query = urlencode(
+            {key: value for key, value in params.items() if value is not None}
+        )
+        if query:
+            separator = "&" if "?" in path else "?"
+            path = f"{path}{separator}{query}"
+    return path
+
+
 class S7Client:
     """Minimal JSON client for the authenticated ``/api/`` endpoints."""
 
@@ -61,14 +78,19 @@ class S7Client:
         skipped, so optional parameters can be forwarded unconditionally.
         The error contract is identical to a param-less GET.
         """
-        if params is not None:
-            query = urlencode(
-                {key: value for key, value in params.items() if value is not None}
-            )
-            if query:
-                separator = "&" if "?" in path else "?"
-                path = f"{path}{separator}{query}"
-        return self._request("GET", path)
+        return self._request("GET", _with_query(path, params))
+
+    def delete_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """DELETE ``{base}/api/{path}`` and return the decoded JSON body.
+
+        ``params`` is encoded as a query string exactly like ``get_json`` —
+        a DELETE carries no request body, so ``project_id`` travels as
+        ``?project_id=`` (as on the schema reads), passed explicitly by the
+        caller rather than injected into a payload the way ``post_json``
+        does. Entries whose value is ``None`` are skipped. The error
+        contract is identical to GET/POST.
+        """
+        return self._request("DELETE", _with_query(path, params))
 
     def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST ``{base}/api/{path}`` with a JSON body.

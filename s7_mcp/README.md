@@ -23,7 +23,7 @@ The server is configured exclusively through environment variables:
 |---|---|---|---|
 | `S7_BASE_URL` | yes | — | Backend base URL, e.g. `http://localhost:8000`. API paths resolve under `{S7_BASE_URL}/api/`. |
 | `S7_TOKEN` | yes | — | Bearer token of a `UserMCPToken` — a per-user MCP credential (see below). |
-| `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the schema reads (draft and published). Set it when `S7_TOKEN` is a user MCP token — the backend requires `project_id` on those endpoints for user principals. |
+| `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the schema reads (draft and published) and the draft delete. Set it when `S7_TOKEN` is a user MCP token — the backend requires `project_id` on those endpoints for user principals. |
 | `S7_MAX_PAYLOAD_KB` | no | `512` | Outgoing JSON body limit for validate/import (KB). |
 | `S7_TIMEOUT_S` | no | `30` | HTTP timeout in seconds. |
 
@@ -45,10 +45,11 @@ a human action in the admin.
 Because a user token is not bound to a project, set `S7_PROJECT_ID` to the
 target project UUID: the client injects it as `project_id` on
 `schema/validate/` and `schema/import/` and sends it as the `project_id`
-query parameter on `schema/` reads (draft and published) — all required by
-the backend for user principals (without it they answer
-`400 {"error": "project_id is required"}`; a project the user cannot access
-gets `403`). The value is validated as a UUID
+query parameter on `schema/` reads (draft and published) and on the draft
+delete — all required by the backend for user principals (without it they
+answer `400 {"error": "project_id is required"}`; a project the user cannot
+access gets `403` — and the draft delete additionally requires edit
+rights on the project). The value is validated as a UUID
 at startup — a malformed one exits with a stderr diagnostic. For project
 credentials the variable is optional and harmless: the backend enforces its
 own credential scope, so a mismatch is answered with `403`.
@@ -104,6 +105,7 @@ of `mcpServers`.
 | `s7_list_datatypes()` | `GET catalog/datatypes/` | Universal DataType catalog. |
 | `s7_validate_schema(node_type, schema, schema_key?, schema_version?)` | `POST schema/validate/` | Dry-run the import pipeline → `{valid, errors, warnings}`. |
 | `s7_import_draft(node_type, schema, schema_key?, schema_version?, overwrite?)` | `POST schema/import/` | Persist the schema — always as `draft`. |
+| `s7_delete_draft(node_type, key, version)` | `DELETE schema/draft/<node_type>/<key>/<version>/` | Delete a draft schema — destructive and irreversible; frees the node types the draft implemented. Draft-only: a missing or non-draft schema answers the same RFC-7807 404 as the read. **User token only (any level) with edit rights on the project** — project credentials get 403; `S7_PROJECT_ID` is sent as `?project_id=`. |
 | `s7_import_catalog(objects)` | `POST catalog/import/` | Apply a fixture-format catalog payload (`{"objects": [{model, pk?, fields, delete?}]}`) → `{applied, created?, updated?, deleted?, results?, errors?, warnings?}`. Updates replace the whole row — resubmit every field you want to keep, and object keys outside `model`/`pk`/`fields`/`delete` are rejected. A `{"delete": true}` object identified by `pk` XOR natural-key `fields` removes a row: it needs the `delete_<label>` permission and is usage-gated — a row implemented by existing schemas answers `catalog_object_in_use`. Upserts apply first, then deletes children-before-parents, so a rename is a create + delete in one atomic payload. **User token level ≥ 2 + per-model catalog permissions** — anything else gets the 401/403 envelope verbatim. |
 
 `schema` accepts a JSON object or a JSON string. `schema_key` and
@@ -155,8 +157,9 @@ the divergence reported as a warning) > `"1"`.
   (`{"error": "scope_not_found", "available_scopes": [...]}` —
   `available_scopes` lists every live root scope), or the schema is
   not found/not in the requested status — published for `s7_get_schema`,
-  draft for `s7_get_draft` (RFC-7807 body
-  `{"type": "schema_not_found", "title", "detail", "status": 404}`).
+  draft for `s7_get_draft`; `s7_delete_draft` on a missing or non-draft
+  schema answers the same RFC-7807 body
+  `{"type": "schema_not_found", "title", "detail", "status": 404}`.
 - **`{"error": {"code": "payload_too_large", ...}}`** — the outgoing JSON body
   exceeded `S7_MAX_PAYLOAD_KB`; the request was not sent. Split/trim the schema
   or raise the limit.

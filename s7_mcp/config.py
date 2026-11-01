@@ -11,9 +11,11 @@ schema authoring, level 2 catalog authoring). ``ProjectAPICredential``
 remains as the B2B channel, but the MCP authoring tools assume a user token.
 Optional: ``S7_MAX_PAYLOAD_KB`` (default 512), ``S7_TIMEOUT_S`` (default 30)
 and ``S7_PROJECT_ID`` — the target project UUID injected as ``project_id``
-into the validate/import request bodies. It is required in practice when
-``S7_TOKEN`` is a user MCP token (the backend rejects user-principal writes
-without ``project_id``) and ignored/harmless for project credentials — the
+into the validate/import request bodies and sent as the ``?project_id=``
+query parameter on the schema reads and the draft delete. It is required in
+practice when ``S7_TOKEN`` is a user MCP token (the backend rejects
+user-principal reads and writes without ``project_id``) and
+ignored/harmless for project credentials — the
 backend still enforces its own scope, so a mismatch gets a 403.
 
 The server speaks MCP over stdio: nothing may ever be written to stdout, so

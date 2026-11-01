@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "s7_get_catalog",
     "s7_get_schema",
     "s7_get_draft",
+    "s7_delete_draft",
     "s7_list_datatypes",
     "s7_validate_schema",
     "s7_import_draft",
@@ -228,6 +229,89 @@ class GetSchemaTests(unittest.TestCase):
         }
         self.client.get_json.return_value = envelope
         self.assertIs(server.s7_get_schema("survey", "k", "v1"), envelope)
+
+
+@unittest.skipUnless(_DEPS, "requires mcp + httpx")
+class DeleteDraftTests(unittest.TestCase):
+    """``s7_delete_draft`` maps to the draft-delete endpoint via ``delete_json``.
+
+    The project id is read off the client (resolved from ``S7_PROJECT_ID``)
+    and forwarded as a query param — a DELETE carries no body, so the id
+    travels as ``?project_id=`` exactly like the reads. The tool itself
+    takes no such argument.
+    """
+
+    def setUp(self):
+        self.client = MagicMock()
+        self.client.delete_json.return_value = {"deleted": True}
+        self.client.project_id = None
+        patcher = patch.object(
+            server, "_get_client", return_value=self.client
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _call(self):
+        return self.client.delete_json.call_args
+
+    def test_draft_path_with_quoted_segments(self):
+        server.s7_delete_draft("node/type", "key?1", "v%2")
+        self.assertEqual(
+            self._call()[0][0],
+            "schema/draft/node%2Ftype/key%3F1/v%252/",
+        )
+
+    def test_project_id_sent_as_query_param_when_configured(self):
+        project_id = "12345678-1234-5678-1234-567812345678"
+        self.client.project_id = project_id
+        server.s7_delete_draft("survey", "k", "v1")
+        self.assertEqual(
+            self._call()[1]["params"], {"project_id": project_id}
+        )
+
+    def test_project_id_is_none_when_not_configured(self):
+        """With no ``S7_PROJECT_ID`` the param is forwarded as ``None`` and
+        the client drops it from the query string."""
+        server.s7_delete_draft("survey", "k", "v1")
+        self.assertEqual(self._call()[1]["params"], {"project_id": None})
+
+    def test_tool_takes_no_project_id_or_status_argument(self):
+        self.assertEqual(
+            list(inspect.signature(server.s7_delete_draft).parameters),
+            ["node_type", "key", "version"],
+        )
+
+    def test_delete_reaches_delete_json_not_get_or_post(self):
+        """The destructive op must reach ``delete_json`` — a ``get_json``
+        call would silently turn the delete into a read."""
+        server.s7_delete_draft("survey", "k", "v1")
+        self.client.delete_json.assert_called_once()
+        self.client.get_json.assert_not_called()
+        self.client.post_json.assert_not_called()
+
+    def test_deleted_envelope_propagates_verbatim(self):
+        envelope = {
+            "deleted": True,
+            "meta": {
+                "node_type": "survey",
+                "key": "k",
+                "version": "v1",
+            },
+        }
+        self.client.delete_json.return_value = envelope
+        self.assertIs(server.s7_delete_draft("survey", "k", "v1"), envelope)
+
+    def test_not_found_envelope_propagates_verbatim(self):
+        """A missing or non-draft schema answers the same RFC-7807 404 as
+        the draft read — the envelope passes through untouched."""
+        envelope = {
+            "type": "schema_not_found",
+            "title": "Schema not found",
+            "detail": "no draft schema",
+            "status": 404,
+        }
+        self.client.delete_json.return_value = envelope
+        self.assertIs(server.s7_delete_draft("survey", "k", "v1"), envelope)
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
@@ -931,9 +1015,9 @@ class LazyClientTests(unittest.TestCase):
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class McpSurfaceTests(unittest.TestCase):
-    """The exposed MCP surface: exactly the seven read/author tools."""
+    """The exposed MCP surface: exactly the eight tools."""
 
-    def test_the_seven_tools_exist_and_are_callable(self):
+    def test_the_eight_tools_exist_and_are_callable(self):
         for name in EXPECTED_TOOLS:
             with self.subTest(tool=name):
                 self.assertTrue(
@@ -959,7 +1043,7 @@ class McpSurfaceTests(unittest.TestCase):
         self.assertNotIn("schema_status", params)
 
     def test_registered_tool_set_matches_module_functions(self):
-        """The SDK registry (when introspectable) holds exactly the 7 tools."""
+        """The SDK registry (when introspectable) holds exactly the 8 tools."""
         tool_manager = getattr(server.mcp, "_tool_manager", None)
         registered = getattr(tool_manager, "_tools", None)
         if isinstance(registered, dict):

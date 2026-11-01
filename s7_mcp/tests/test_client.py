@@ -222,6 +222,88 @@ class GetJsonParamsTests(_ClientCase):
 
 
 @unittest.skipUnless(_DEPS, "requires httpx")
+class DeleteJsonParamsTests(_ClientCase):
+    """``delete_json`` issues DELETE and encodes params as a query string."""
+
+    def _seen_request(self, params, *, project_id=None):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["params"] = request.url.params
+            seen["body"] = request.content
+            return httpx.Response(200, json={"deleted": True})
+
+        result = self._client(handler, project_id=project_id).delete_json(
+            "schema/draft/nt/k/v/", params=params
+        )
+        self.assertEqual(result, {"deleted": True})
+        return seen
+
+    def test_delete_method_and_api_path(self):
+        seen = self._seen_request({"project_id": "abc-123"})
+        self.assertEqual(seen["method"], "DELETE")
+        self.assertEqual(seen["path"], "/api/schema/draft/nt/k/v/")
+
+    def test_params_become_the_query_string(self):
+        seen = self._seen_request({"project_id": "abc-123", "other": "x"})
+        self.assertEqual(seen["params"]["project_id"], "abc-123")
+        self.assertEqual(seen["params"]["other"], "x")
+
+    def test_param_values_are_urlencoded(self):
+        seen = self._seen_request({"project_id": "a b&c=d"})
+        self.assertEqual(seen["params"]["project_id"], "a b&c=d")
+
+    def test_none_param_values_are_skipped(self):
+        seen = self._seen_request({"project_id": None, "other": "x"})
+        self.assertNotIn("project_id", seen["params"])
+        self.assertEqual(seen["params"]["other"], "x")
+
+    def test_all_none_params_send_no_query_string(self):
+        seen = self._seen_request({"project_id": None})
+        self.assertEqual(len(seen["params"]), 0)
+
+    def test_no_params_sends_no_query_string(self):
+        seen = self._seen_request(None)
+        self.assertEqual(len(seen["params"]), 0)
+
+    def test_no_body_is_sent(self):
+        """A DELETE carries no body — ``project_id`` travels in the query
+        string, never injected into a payload the way ``post_json`` does."""
+        seen = self._seen_request({"project_id": "abc"})
+        self.assertEqual(seen["body"], b"")
+
+    def test_configured_project_id_is_not_injected(self):
+        """Unlike ``post_json`` (which injects ``S7_PROJECT_ID`` into the
+        body), ``delete_json`` adds nothing on its own — the caller forwards
+        the id explicitly through ``params``."""
+        seen = self._seen_request(None, project_id="some-uuid")
+        self.assertEqual(len(seen["params"]), 0)
+
+    def test_error_status_body_returned_verbatim(self):
+        envelope = {"type": "schema_not_found", "status": 404}
+        for status in (400, 403, 404, 500):
+            with self.subTest(status=status):
+                client = self._client(
+                    lambda request: httpx.Response(status, json=envelope)
+                )
+                result = client.delete_json(
+                    "schema/draft/nt/k/v/", params={"project_id": "abc"}
+                )
+                self.assertEqual(result, envelope)
+
+    def test_non_json_body_yields_transport_error_with_status(self):
+        client = self._client(
+            lambda request: httpx.Response(502, text="<html>Bad Gateway</html>")
+        )
+        result = client.delete_json("schema/draft/nt/k/v/")
+        self.assertEqual(result["error"]["code"], "transport_error")
+        self.assertEqual(result["error"]["status"], 502)
+        self.assertIn("non-JSON", result["error"]["message"])
+
+
+@unittest.skipUnless(_DEPS, "requires httpx")
 class PayloadSizeGuardTests(_ClientCase):
     """``post_json`` refuses bodies above the configured byte limit."""
 

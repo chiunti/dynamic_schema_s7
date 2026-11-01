@@ -27,6 +27,7 @@ from .serializers import CatalogImportSerializer, SchemaImportSerializer
 from .services.catalog_import_service import CatalogImportService
 from .services.catalog_service import CatalogService
 from .services.exceptions import ScopeNotFoundError
+from .services.schema_delete_service import SchemaDeleteService
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
 from .services.schema_read_service import SchemaReadService
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_project_scope(request: Request) -> tuple | Response:
-    """Resolve the project scope for schema read endpoints.
+    """Resolve the project scope for schema read and draft-delete endpoints.
 
     Project credentials are bound to their own project: an optional
     ``project_id`` query param is accepted only as an echo-check and must
@@ -132,10 +133,25 @@ class SchemaDraftView(APIView):
     consumers can verify what an import actually stored (round-trip check).
     A schema missing or in any other status resolves to the same RFC-7807
     404 envelope — drafts are not distinguishable from absent schemas.
+
+    DELETE is the destructive counterpart of the draft import: it removes
+    the root node tree plus the ``BuildState``/``SchemaCache`` rows of the
+    ``(key, version, project)`` tuple, releasing the node types the draft
+    implements. The verb is restricted to user MCP tokens holding edit
+    rights on the target project — project credentials fail the
+    permission check — and non-draft schemas resolve to the same 404
+    envelope without being touched.
     """
 
     authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
     permission_classes = [CanReadSchema | UserMCPTokenPermission]
+
+    def get_permissions(self):
+        # DELETE is destructive and user-token only: project credentials
+        # carry no ``mcp_level`` and fail the duck-typed check (403).
+        if self.request.method == "DELETE":
+            return [UserMCPTokenPermission()]
+        return super().get_permissions()
 
     def get(self, request, node_type, key, version):
         resolved = _resolve_project_scope(request)
@@ -174,6 +190,38 @@ class SchemaDraftView(APIView):
                 "version": version,
                 "status": STATUS_DRAFT,
             },
+        })
+
+    def delete(self, request, node_type, key, version):
+        resolved = _resolve_project_scope(request)
+        if isinstance(resolved, Response):
+            return resolved
+        project_id, user = resolved
+        try:
+            deleted = SchemaDeleteService().delete_draft(
+                node_type, key, version, project_id, user=user
+            )
+        except PermissionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception("Draft schema deletion failed")
+            return Response(
+                {"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        if not deleted:
+            return Response({
+                "type": "schema_not_found",
+                "title": "Schema Not Found",
+                "detail": "Schema not found, not in draft status, or node type mismatch",
+                "status": 404,
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "deleted": True,
+            "meta": {"node_type": node_type, "key": key, "version": version},
         })
 
 

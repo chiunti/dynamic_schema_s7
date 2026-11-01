@@ -5,6 +5,7 @@ the callables but return them unchanged, so every handler is invoked directly
 and the API client is injected by patching ``_get_client``.
 """
 
+import copy
 import importlib
 import importlib.util
 import inspect
@@ -751,12 +752,13 @@ class CatalogGrammarDataTests(unittest.TestCase):
         and completeness checked end to end by the shared validator
         ``catalog_grammar.validate_example_import_objects``: real
         labels, no ``id``/``version`` inside ``fields``, every
-        natural-key and required component present, and FK values
-        shaped as ``[natural_key]`` string lists or null only where
-        nullable. The strict semantics live next to the document; the
-        backend suite invokes the same validator with the live
-        ``CATALOG_MODELS`` whitelist, this side passes the static
-        ``EXPECTED_MODELS`` copy."""
+        natural-key and required component present, FK values shaped
+        as non-empty ``[natural_key]`` string lists or null only where
+        nullable, and scalar ``fields`` positions never carrying a list
+        and null only where nullable. The strict semantics live next to
+        the document; the backend suite invokes the same validator with
+        the live ``CATALOG_MODELS`` whitelist, this side passes the
+        static ``EXPECTED_MODELS`` copy."""
         objects = CATALOG_GRAMMAR["resolved_vs_import"]["example"][
             "import"
         ]["objects"]
@@ -766,6 +768,54 @@ class CatalogGrammarDataTests(unittest.TestCase):
             allowed_models=self.EXPECTED_MODELS,
         )
         self.assertEqual(errors, [])
+
+    def test_example_import_objects_reject_residual_laxity(self):
+        """Mutation guard pinning the two residual rejections the
+        validator now shares with the real import: an fk carrying
+        ``[]`` — the empty natural-key reference that never resolves
+        to a target row — and ``None`` on a scalar documented
+        ``nullable: False``. Legitimate nulls stay accepted: the
+        example already carries ``variant_key: None`` (nullable scalar)
+        and ``domain: None`` on an attributedef (nullable fk); the
+        added ``default_json_key: None`` (nullable scalar) and
+        ``props_node_type: None`` (nullable fk) must not error either —
+        each failure would be reported below as a third error. Only an
+        in-memory copy is mutated; ``CATALOG_GRAMMAR`` is never
+        touched."""
+        objects = copy.deepcopy(
+            CATALOG_GRAMMAR["resolved_vs_import"]["example"]["import"][
+                "objects"
+            ]
+        )
+        # Legitimate nulls — nullable scalar, nullable fk.
+        objects[0]["fields"]["default_json_key"] = None
+        objects.append(
+            {
+                "model": "schemas.nodetypevariant",
+                "fields": {
+                    "node_type": ["example_root"],
+                    "variant_key": "input",
+                    "discriminator_attr": "type",
+                    "props_node_type": None,
+                },
+            }
+        )
+        # The two hardened rejections, both on the first domainitem.
+        objects[2]["fields"]["domain"] = []
+        objects[2]["fields"]["label"] = None
+        errors = validate_example_import_objects(
+            objects,
+            CATALOG_GRAMMAR["models"],
+            allowed_models=self.EXPECTED_MODELS,
+        )
+        self.assertEqual(len(errors), 2, msg=f"errors: {errors}")
+        fk_error = next(e for e in errors if "'domain'" in e)
+        scalar_error = next(e for e in errors if "'label'" in e)
+        self.assertIn("object[2] (schemas.domainitem)", fk_error)
+        self.assertIn("object[2] (schemas.domainitem)", scalar_error)
+        joined = "\n".join(errors)
+        for legit in ("default_json_key", "props_node_type", "variant_key"):
+            self.assertNotIn(legit, joined)
 
     def test_resolved_vs_import_example_authors_server_generated_defs(self):
         """``server_generated`` flags value emission, not authoring: the

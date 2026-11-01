@@ -781,14 +781,18 @@ def validate_example_import_objects(
     skips the authorizability check.
 
     Per object the check is the strict union of the axes the two
-    original guards enforced: ``model`` resolves under ``models`` and
-    (when a whitelist is given) is authorizable; ``fields`` carries no
-    ``id``/``version`` key, holds every ``natural_key`` component and
-    every ``required`` field/fk, and names only keys documented under
-    ``fields``/``fks``; an fk value is ``None`` only where the fk entry
-    is ``nullable`` and is otherwise a list of natural-key strings; a
-    scalar ``fields`` position never takes a list. An empty ``objects``
-    is an error — the example must teach.
+    original guards enforced, plus two residual rejections the real
+    import applies that neither guard covered: ``model`` resolves
+    under ``models`` and (when a whitelist is given) is authorizable;
+    ``fields`` carries no ``id``/``version`` key, holds every
+    ``natural_key`` component and every ``required`` field/fk, and
+    names only keys documented under ``fields``/``fks``; an fk value
+    is ``None`` only where the fk entry is ``nullable`` and is
+    otherwise a non-empty list of natural-key strings — ``[]`` is the
+    unresolvable-reference shape the import always rejects; a scalar
+    ``fields`` position never takes a list and takes ``None`` only
+    where the field entry is ``nullable``. An empty ``objects`` is an
+    error — the example must teach.
 
     Returns descriptive error strings — each naming ``object[<index>]``,
     the ``(<model>)`` and the field when relevant — so callers assert
@@ -876,10 +880,21 @@ def validate_example_import_objects(
                         "shape '[natural_key]' — a list of strings — "
                         f"but the example carries {value!r}"
                     )
+                elif not value:
+                    errors.append(
+                        f"fk '{name}' in {where} carries an empty "
+                        "natural-key list — '[]' never resolves to a "
+                        "target row"
+                    )
             elif isinstance(value, list):
                 errors.append(
                     f"field '{name}' in {where} carries a natural-key "
                     "list but is documented as a scalar under 'fields' "
                     "— list values belong only in fks positions"
+                )
+            elif value is None and not model["fields"][name]["nullable"]:
+                errors.append(
+                    f"field '{name}' in {where} is documented "
+                    "non-nullable but the example sets null"
                 )
     return errors

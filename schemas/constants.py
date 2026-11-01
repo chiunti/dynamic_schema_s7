@@ -98,6 +98,8 @@ ERR_NODE_TYPE_MUST_BE_NON_EMPTY_MAX_255 = "node_type must be a non-empty string 
 ERR_NODE_TYPE_MUST_BE_NODETYPE_OR_UUID = "node_type must be a NodeType instance or a valid UUID"
 ERR_UNKNOWN_CATALOG_MODEL_LABEL = "unknown catalog model label: '{label}'"
 ERR_PK_MUST_BE_VALID_UUID = "pk must be a valid UUID, got: '{pk}'"
+ERR_NODE_ATTRIBUTE_VIOLATES_STORAGE_CONSTRAINTS = "node attribute violates storage constraints (node_id={node_id}, attribute_def={attribute_def}): {error}"
+ERR_DATABASE_ERROR_NODE_ATTRIBUTE_UPSERT = "Database error during node attribute upsert (node_id={node_id}, attribute_def={attribute_def}): {error}"
 
 # Status domain validation error messages
 ERR_PUBLISHED_STATUS_NOT_AVAILABLE = "published_status_not_available: 'published' value not defined in status domain"

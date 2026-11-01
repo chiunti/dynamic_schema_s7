@@ -1,6 +1,8 @@
 from django.apps import apps
 from django.contrib.admin.models import CHANGE, DELETION
-from django.db import connection, transaction
+from django.db import (
+    DataError, DatabaseError, IntegrityError, connection, transaction,
+)
 import json
 import uuid
 from ..models import BuildState
@@ -27,6 +29,8 @@ from ..constants import (
     ERR_DOMAIN_NAME_MUST_BE_NON_EMPTY_MAX_255_OR_NONE,
     ERR_NODE_TYPE_MUST_BE_NON_EMPTY_MAX_255,
     ERR_NODE_TYPE_MUST_BE_NODETYPE_OR_UUID,
+    ERR_NODE_ATTRIBUTE_VIOLATES_STORAGE_CONSTRAINTS,
+    ERR_DATABASE_ERROR_NODE_ATTRIBUTE_UPSERT,
     VALID_SCHEMA_STATUSES,
 )
 
@@ -1187,13 +1191,41 @@ class SchemaRepository:
 
         Returns:
             Tuple of (NodeAttribute, created)
+
+        Raises:
+            ValueError: ``DataError``/``IntegrityError`` mapped — contract
+                violation (e.g. a value exceeding its storage column).
+            RuntimeError: ``DatabaseError`` mapped — infrastructure.
         """
         from ..models import NodeAttribute
-        return NodeAttribute.objects.update_or_create(
-            node_id=node_id,
-            attribute_def=attribute_def,
-            defaults=defaults
+        # Local fields only — str(attribute_def) would lazily load node_type,
+        # unsafe inside an except handler on a possibly broken connection.
+        attribute_ref = (
+            getattr(attribute_def, 'json_key', None)
+            or getattr(attribute_def, 'pk', attribute_def)
         )
+        try:
+            return NodeAttribute.objects.update_or_create(
+                node_id=node_id,
+                attribute_def=attribute_def,
+                defaults=defaults
+            )
+        except (DataError, IntegrityError) as e:
+            raise ValueError(
+                ERR_NODE_ATTRIBUTE_VIOLATES_STORAGE_CONSTRAINTS.format(
+                    node_id=node_id,
+                    attribute_def=attribute_ref,
+                    error=e,
+                ),
+            ) from e
+        except DatabaseError as e:
+            raise RuntimeError(
+                ERR_DATABASE_ERROR_NODE_ATTRIBUTE_UPSERT.format(
+                    node_id=node_id,
+                    attribute_def=attribute_ref,
+                    error=e,
+                ),
+            ) from e
 
     def update_node_name(self, node_id: uuid.UUID, name: str):
         """

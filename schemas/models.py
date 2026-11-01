@@ -524,7 +524,7 @@ class NodeAttribute(models.Model):
         default=uuid.uuid4,
         db_default=models.Func(function="gen_random_uuid"),
     )
-    value_string = models.CharField(max_length=255, null=True, blank=True)
+    value_string = models.TextField(null=True, blank=True)
     value_number = models.DecimalField(null=True, blank=True, max_digits=30, decimal_places=10)
     value_bool = models.BooleanField(null=True, blank=True)
     value_json = models.JSONField(null=True, blank=True)

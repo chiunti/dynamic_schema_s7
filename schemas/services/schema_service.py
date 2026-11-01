@@ -2417,12 +2417,19 @@ class SchemaService:
         )
 
     def _invalid_collection_value_error(self, node_type, json_key: str, value, path: str) -> SchemaValidationError:
-        """Build the structured error for a non-collection value on a collection_key."""
+        """Build the structured error for a value of the wrong shape on a child slot.
+
+        The slot may be a ``collection_key`` composition or a structural
+        (non-collection) child slot — a non-empty array of objects is
+        accepted everywhere, and a bare object only where the slot is
+        singleton-capable. The wording stays neutral rather than calling
+        the slot a "collection"; ``code``/``path`` carry the precise slot.
+        """
         return SchemaValidationError(
-            f"Key '{json_key}' is declared as a child collection on node type '{node_type.name}'",
+            f"Key '{json_key}' is declared as a child slot on node type '{node_type.name}'",
             code=ERR_INVALID_COLLECTION_VALUE,
             path=f"{path}.{json_key}",
-            expected="array of objects (or object for a singleton slot)",
+            expected="object or non-empty array of objects",
             received=type(value).__name__,
         )
 

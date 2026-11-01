@@ -657,6 +657,12 @@ class CatalogGrammarDataTests(unittest.TestCase):
         self.assertTrue(CATALOG_GRAMMAR["format"].strip())
         for key in ("objects", "pk", "fields", "semantics"):
             self.assertIn(key, CATALOG_GRAMMAR["payload"])
+        # The update usage gate must be discoverable in the prose the
+        # agent reads — a field-changing update on an implemented row is
+        # rejected, creates and no-op updates are exempt.
+        semantics = CATALOG_GRAMMAR["payload"]["semantics"]
+        self.assertIn("catalog_object_in_use", semantics)
+        self.assertIn("'usage'", semantics)
 
     def test_document_is_json_serializable(self):
         """Served with ``mime_type="application/json"`` — the dict must

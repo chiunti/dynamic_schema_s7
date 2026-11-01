@@ -110,8 +110,10 @@ never both (see the `deletes` section of `s7://catalog-grammar`).
 atomic, natural-key matches update existing rows, non-matches create new \
 ones, and `delete: true` objects remove rows. Each delete needs the \
 `delete_<label>` permission and a row implemented by existing schemas \
-rejects it with `catalog_object_in_use` — deletes have no no-op \
-exemption. Deletes apply after all upserts, children before parents, so \
+in any project rejects it with `catalog_object_in_use` — a \
+field-changing update on such a row is gated the same way; creates and \
+no-op updates are exempt, deletes have no no-op exemption. Deletes \
+apply after all upserts, children before parents, so \
 a rename is a create with the new natural key plus a delete of the old \
 one in the same payload. Updates replace the whole row — include every \
 field you want to keep (omitting a field with a non-default value is \

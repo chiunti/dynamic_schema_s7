@@ -206,7 +206,12 @@ def s7_import_catalog(objects: list[dict]) -> dict:
     ``fields`` exactly like fixture files. Natural-key match updates the
     existing row; no match creates it. An update replaces the whole row:
     omitting a field that holds a non-default value on the live row is
-    rejected, so resubmit the full object on every update.
+    rejected, so resubmit the full object on every update. An update
+    that changes at least one field on a row implemented by existing
+    schemas (``Node``/``NodeAttribute`` rows in any project) is rejected
+    with ``catalog_object_in_use`` plus a ``usage`` detail — creates and
+    no-op updates (every payload field equal to the live row) are
+    exempt, so idempotent re-imports keep working.
 
     A delete object is ``{"model": "schemas.<label>", "delete": true}``
     plus exactly one identifier — ``pk`` (uuid) XOR ``fields`` holding
@@ -223,9 +228,8 @@ def s7_import_catalog(objects: list[dict]) -> dict:
     not ask to delete. A row implemented by existing
     schemas (``Node``/``NodeAttribute`` in any project) rejects the
     delete with ``catalog_object_in_use`` plus a ``usage`` detail —
-    deletes get no no-op exemption (field-changing updates are gated the
-    same way; creates and no-op updates are exempt), and the check is an
-    advisory read under READ COMMITTED. Upserts apply first by
+    deletes get no no-op exemption, and the check is an advisory read
+    under READ COMMITTED. Upserts apply first by
     dependency rank, then deletes in reverse rank (children before
     parents), so a rename is a create with the new natural key plus a
     delete of the old one in the same atomic payload. Deleting a row

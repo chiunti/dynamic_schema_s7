@@ -1657,9 +1657,13 @@ class SchemaService:
              (e.g. 'body' -> screen_section with section_key='body') -> create child node;
              permissive mode deep-scans the dict first and drops the unit
              wholesale on an invalid conditional at any depth (single warning)
-          3. Dict/list value whose key matches a structural child's declared key
+          3. Any value whose key matches a structural child's declared key
              (composition without collection_key; child_type.default_json_key or
-             child_type.name) -> _process_single_child_node
+             child_type.name) -> Case 3 classifies by shape: dict ->
+             _process_single_child_node, non-empty list -> per-item dispatch
+             (non-dict items raise/drop), scalar/None/[] -> strict
+             SchemaValidationError or permissive dropped_attribute — the
+             payload never reaches the generic attribute dispatch
           4. Scalar/dict value with no composition match -> store as NodeAttribute
 
         After the dispatch loop, a cardinality audit checks every composition
@@ -1685,8 +1689,9 @@ class SchemaService:
                 ``{"code", "path", "message"}`` dicts for attribute values
                 rejected in permissive mode (under ``strict_keys`` those
                 failures raise instead): datatype-validator rejections,
-                invalid conditional structures, and server-managed
-                attributes whose payload value is ignored.
+                invalid conditional structures, non-dispatchable payloads
+                under structural slot keys, and server-managed attributes
+                whose payload value is ignored.
         """
         # Get Node model field names (these are not attributes)
         node_field_names = self.repository.get_node_field_names()
@@ -1734,6 +1739,15 @@ class SchemaService:
         # type when it equals the child type's declared NodeType.default_json_key
         # or the child type's own name. No name-mangling or shape heuristics —
         # the key→type mapping must be declared in the catalog.
+        # A declared structural slot absorbs ANY payload found under its key,
+        # whatever the value's shape — the Case 3 dispatch branch below
+        # classifies it (dict -> child node, non-empty list -> per-item
+        # handling, anything else -> strict error / permissive drop).
+        # Registering unconditionally keeps non-dict payloads from falling
+        # through to the generic attribute dispatch, where permissive mode
+        # would persist them as junk NodeAttributes (auto-creating a colliding
+        # AttributeDef) and strict mode would misreport the declared slot key
+        # as undeclared.
         json_key_to_comp = {}
         for comp in compositions:
             if comp.collection_key is not None:
@@ -1742,14 +1756,10 @@ class SchemaService:
             structural_keys = {child_type.name}
             if child_type.default_json_key:
                 structural_keys.add(child_type.default_json_key)
-            for json_key, value in attributes.items():
+            for json_key in attributes:
                 if json_key in node_field_names or json_key in collection_keys or json_key in shorthand_map:
                     continue
-                if json_key not in structural_keys:
-                    continue
-                if isinstance(value, dict):
-                    json_key_to_comp[json_key] = comp
-                elif isinstance(value, list) and any(isinstance(item, dict) for item in value):
+                if json_key in structural_keys:
                     json_key_to_comp[json_key] = comp
         
         # Disable triggers to bypass s7 validation
@@ -1946,7 +1956,7 @@ class SchemaService:
                             self._process_single_child_node(node_id, json_key, value, child_type, project_id, organization_id, index=None, sort_order=child_sort_order, inherited_variant=child_inherited_variant, strict_keys=strict_keys, path=path, dropped_attributes=dropped_attributes)
                             structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
                             child_sort_order += 1
-                        elif isinstance(value, list):
+                        elif isinstance(value, list) and value:
                             # Non-dict items cannot dispatch to a child node:
                             # strict mode rejects them (mirror of
                             # _process_collection), permissive mode records a
@@ -1965,6 +1975,32 @@ class SchemaService:
                                         f"Item must be an object, got {type(item).__name__}",
                                         dropped_attributes,
                                     )
+                                structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
+                                child_sort_order += 1
+                        else:
+                            # Scalars, None and empty lists under a structural
+                            # key carry no dispatchable child (an empty list
+                            # would iterate zero positions and vanish
+                            # silently). Strict mode rejects at '{path}.{key}';
+                            # permissive mode records a dropped_attribute. The
+                            # slot is declared, so the payload must never fall
+                            # through to the generic attribute dispatch — that
+                            # would persist it as a junk NodeAttribute with an
+                            # auto-created colliding AttributeDef (permissive)
+                            # or misreport the key as undeclared (strict).
+                            # Counting stays payload-driven: a scalar/None is a
+                            # malformed child attempt and consumes one payload
+                            # position — like a dropped non-dict list item —
+                            # while an empty list carries no positions and
+                            # consumes none.
+                            if strict_keys:
+                                raise self._invalid_collection_value_error(node_type, json_key, value, path)
+                            self._record_dropped_attribute(
+                                f"{path}.{json_key}",
+                                f"Expected an object or non-empty array of objects for structural slot '{json_key}', got {type(value).__name__}",
+                                dropped_attributes,
+                            )
+                            if not isinstance(value, list):
                                 structural_child_counts[id(comp)] = structural_child_counts.get(id(comp), 0) + 1
                                 child_sort_order += 1
                         continue

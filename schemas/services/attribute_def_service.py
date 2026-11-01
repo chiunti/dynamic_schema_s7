@@ -17,6 +17,7 @@ from ..constants import (
     ERR_JSON_KEY_DUPLICATE,
     ERR_JSON_KEY_AND_NAME_REQUIRED,
     ERR_PROPERTIES_MUST_BE_ARRAY,
+    ERR_VARIANT_VERSION_CARRIER_MSG,
 )
 
 
@@ -286,6 +287,41 @@ class AttributeDefService:
         """
         Sync the set of catalog AttributeDefs assigned to a variant_key.
         Deletes those removed, creates copies of those added.
+
+        Raises ValueError when a selected catalog template carries the
+        'natural_version' datatype: the copy below propagates data_type
+        verbatim, so it would materialize a variant-scoped version
+        carrier — an inert def, since the field map resolves version
+        carriers at variant_key IS NULL scope only. In the structural
+        path the materialized def would never write node.version nor
+        persist a NodeAttribute row, so the sync is rejected whole
+        instead of applying a partial selection silently. Mirrors the
+        catalog-import rejection of the same declaration shape (AI-117).
+
+        Version-carrier surface verdicts (verified, gated only here):
+        - This method is the only admin vector that propagates a
+          template's data_type into a variant-scoped def — gated.
+        - create_attribute_def is a non-vector: its datatype is
+          hardwired to 'string' via get_default_data_type(), so it can
+          never produce 'natural_version'. It can still declare a
+          variant-scoped def named 'version' with an unrelated datatype
+          — a known name-based residual, intentionally out of scope
+          (the gate is datatype-based only, mirroring the import rule).
+        - make_attribute_specific is a non-vector: it only flips
+          is_common and keeps variant_key=None (a common def becomes a
+          catalog template, never a variant def). A 'natural_version'
+          template produced that way is rejected here if ever selected.
+        - SchemaService materializations (_create_attribute_def,
+          _set_node_attribute) can inherit a column-mapped datatype from
+          a variant_key=None declaration, but the field-map interceptor
+          skips variant-scoped 'natural_version' defs and the
+          column-mapped guard never persists a NodeAttribute — the def
+          stays inert and the path is near-unreachable. Documented, not
+          gated.
+        - NodeService.update_node_properties is a separate real vector:
+          an active variant-scoped 'natural_version' def does write
+          node.version in the editor. Out of scope here — editor
+          semantics, not catalog declaration (known pending finding).
         """
         target_names = None
         if scope:
@@ -305,6 +341,22 @@ class AttributeDefService:
         for attr_id in to_create_ids:
             catalog_attr = self.repository.get_catalog_attribute_def_by_id(node_type_ids, attr_id)
             if catalog_attr:
+                # Reject 'natural_version' templates: the copy would be a
+                # variant-scoped version carrier, which is inert (see
+                # docstring). The natural key reported is the template's
+                # own (node_type, json_key, variant_key=None); the
+                # variant_key in the message is the assignment target.
+                if catalog_attr.data_type.name == 'natural_version':
+                    raise ValueError(
+                        ERR_VARIANT_VERSION_CARRIER_MSG.format(
+                            natural_key=[
+                                catalog_attr.node_type.name,
+                                catalog_attr.json_key,
+                                None,
+                            ],
+                            variant_key=variant_key,
+                        )
+                    )
                 self.repository.create_attribute_def(
                     node_type=catalog_attr.node_type,
                     name=catalog_attr.name,

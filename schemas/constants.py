@@ -150,7 +150,9 @@ ERR_INVALID_REQUEST = "invalid_request"
 # deleted, results, errors, warnings} of POST /api/catalog/import/
 # (views.CatalogImportView). The message templates are also used by the
 # admin fixture upload (FixtureService.save_fixture_file), which shares
-# validate_objects.
+# validate_objects, and by the admin variant-assignment surface
+# (AttributeDefService.save_attributes_by_variant), which mirrors the
+# catalog-declaration rules it enforces on import.
 ERR_INVALID_CATALOG_OBJECT = "invalid_catalog_object"
 ERR_MISSING_NATURAL_KEY_FIELDS = "missing natural key fields: {fields}"
 ERR_INVALID_NATURAL_KEY_COMPONENTS = "invalid natural key components: {fields}"

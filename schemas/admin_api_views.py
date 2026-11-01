@@ -164,10 +164,13 @@ def api_attributes_by_variant(request: HttpRequest, variant_key: str) -> JsonRes
             payload = json.loads(request.body.decode("utf-8")) if request.body else {}
         except json.JSONDecodeError:
             return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
-        result = AttributeDefService().save_attributes_by_variant(
-            variant_key, payload.get("selected_ids", []), scope
-        )
-        return JsonResponse(result)
+        try:
+            result = AttributeDefService().save_attributes_by_variant(
+                variant_key, payload.get("selected_ids", []), scope
+            )
+            return JsonResponse(result)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
     return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 

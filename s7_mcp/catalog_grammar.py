@@ -781,17 +781,20 @@ def validate_example_import_objects(
     skips the authorizability check.
 
     Per object the check is the strict union of the axes the two
-    original guards enforced, plus two residual rejections the real
+    original guards enforced, plus the residual rejections the real
     import applies that neither guard covered: ``model`` resolves
     under ``models`` and (when a whitelist is given) is authorizable;
     ``fields`` carries no ``id``/``version`` key, holds every
     ``natural_key`` component and every ``required`` field/fk, and
     names only keys documented under ``fields``/``fks``; an fk value
     is ``None`` only where the fk entry is ``nullable`` and is
-    otherwise a non-empty list of natural-key strings — ``[]`` is the
-    unresolvable-reference shape the import always rejects; a scalar
-    ``fields`` position never takes a list and takes ``None`` only
-    where the field entry is ``nullable``. An empty ``objects`` is an
+    otherwise a non-empty list of non-empty natural-key components
+    whose length equals the target's documented ``natural_key`` —
+    ``[]``, whitespace-only/empty components (whitespace is never
+    deliberate identity) and arity mismatches are unresolvable
+    reference shapes the import always rejects; a scalar ``fields``
+    position never takes a list and takes ``None`` only where the
+    field entry is ``nullable``. An empty ``objects`` is an
     error — the example must teach.
 
     Returns descriptive error strings — each naming ``object[<index>]``,
@@ -886,6 +889,34 @@ def validate_example_import_objects(
                         "natural-key list — '[]' never resolves to a "
                         "target row"
                     )
+                else:
+                    # A non-empty string list still fails two shapes
+                    # the import rejects: whitespace-only components
+                    # (whitespace is never deliberate identity) and an
+                    # arity that can never match the target's
+                    # documented natural key. Components padded with
+                    # non-whitespace text are kept — the import would
+                    # resolve them if a row carried that literal key.
+                    fk_spec = model["fks"][name]
+                    for item in value:
+                        if item.strip() == "":
+                            errors.append(
+                                f"fk '{name}' in {where} carries a "
+                                "whitespace-only natural-key "
+                                f"component {item!r} — whitespace is "
+                                "never deliberate identity and "
+                                "resolves to no target row"
+                            )
+                    expected = len(fk_spec["natural_key"])
+                    if len(value) != expected:
+                        errors.append(
+                            f"fk '{name}' in {where} carries a "
+                            "natural-key reference of arity "
+                            f"{len(value)} but '{fk_spec['model']}' "
+                            f"documents arity {expected} — the "
+                            "reference can never resolve to a "
+                            "target row"
+                        )
             elif isinstance(value, list):
                 errors.append(
                     f"field '{name}' in {where} carries a natural-key "

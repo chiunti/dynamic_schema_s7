@@ -817,6 +817,87 @@ class CatalogGrammarDataTests(unittest.TestCase):
         for legit in ("default_json_key", "props_node_type", "variant_key"):
             self.assertNotIn(legit, joined)
 
+    def test_example_import_objects_reject_fk_ref_shape(self):
+        """Mutation guard pinning the two fk-reference rejections the
+        validator now shares with the real import over an already
+        non-empty list of strings: a whitespace-only/empty component
+        (``["  "]`` — whitespace is never deliberate identity, the
+        same rule the import applies to natural-key components) and
+        an arity mismatch against the target's documented
+        ``natural_key`` (``["a", "b"]`` for an fk whose target
+        declares a one-component key — it can never match a real
+        natural-key tuple). The checks are independent: ``["", "x"]``
+        on an arity-1 fk reports both. Legitimate references stay
+        accepted: ``["yes_no"]`` already rides the example, the
+        appended ``schemas.nodetypevariant`` carries
+        ``props_node_type: ["example_root"]`` (a nullable fk with a
+        valid one-component reference) and ``[" yes_no "]`` on the
+        second domainitem is kept — non-whitespace padding would
+        resolve if a row were keyed by that literal, so the guard
+        must not over-reject. Only in-memory copies are mutated;
+        ``CATALOG_GRAMMAR`` is never touched."""
+        objects = copy.deepcopy(
+            CATALOG_GRAMMAR["resolved_vs_import"]["example"]["import"][
+                "objects"
+            ]
+        )
+        # Legitimate refs — a nullable fk carrying a valid reference,
+        # and a padded-but-non-whitespace component the guard keeps.
+        objects.append(
+            {
+                "model": "schemas.nodetypevariant",
+                "fields": {
+                    "node_type": ["example_root"],
+                    "variant_key": "input",
+                    "discriminator_attr": "type",
+                    "props_node_type": ["example_root"],
+                },
+            }
+        )
+        objects[3]["fields"]["domain"] = [" yes_no "]
+
+        whitespace = copy.deepcopy(objects)
+        whitespace[2]["fields"]["domain"] = ["  "]
+        errors = validate_example_import_objects(
+            whitespace,
+            CATALOG_GRAMMAR["models"],
+            allowed_models=self.EXPECTED_MODELS,
+        )
+        self.assertEqual(len(errors), 1, msg=f"errors: {errors}")
+        self.assertIn("'domain'", errors[0])
+        self.assertIn("object[2] (schemas.domainitem)", errors[0])
+        self.assertIn("'  '", errors[0])
+
+        arity = copy.deepcopy(objects)
+        arity[2]["fields"]["domain"] = ["a", "b"]
+        errors = validate_example_import_objects(
+            arity,
+            CATALOG_GRAMMAR["models"],
+            allowed_models=self.EXPECTED_MODELS,
+        )
+        self.assertEqual(len(errors), 1, msg=f"errors: {errors}")
+        self.assertIn("'domain'", errors[0])
+        self.assertIn("object[2] (schemas.domainitem)", errors[0])
+        self.assertIn("arity 2", errors[0])
+        self.assertIn("arity 1", errors[0])
+
+        # The checks are independent — one value can fail both.
+        both = copy.deepcopy(objects)
+        both[2]["fields"]["domain"] = ["", "x"]
+        errors = validate_example_import_objects(
+            both,
+            CATALOG_GRAMMAR["models"],
+            allowed_models=self.EXPECTED_MODELS,
+        )
+        self.assertEqual(len(errors), 2, msg=f"errors: {errors}")
+        joined = "\n".join(errors)
+        self.assertIn("'domain'", joined)
+        self.assertIn("object[2] (schemas.domainitem)", joined)
+        self.assertIn("''", joined)
+        self.assertIn("arity", joined)
+        for legit in ("props_node_type", "object[3]", "object[6]"):
+            self.assertNotIn(legit, joined)
+
     def test_resolved_vs_import_example_authors_server_generated_defs(self):
         """``server_generated`` flags value emission, not authoring: the
         resolved example carries one and every resolved attribute —

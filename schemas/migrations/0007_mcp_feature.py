@@ -21,7 +21,9 @@ from django.db.models import Q
 #    project_id.
 # 4. Build-path hardening — display_order exclusion in
 #    s7_build_node_json's v_attrs, dead-variable removal from the same
-#    routine, structural list key backfill, and build-state invalidation.
+#    routine, effective-variant resolution so variant-scoped
+#    column-mapped defs emit in v_natural_attrs, structural list key
+#    backfill, and build-state invalidation.
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -1430,8 +1432,16 @@ def check_null_key_root_versions(apps, schema_editor):
 # dt.name = 'display_order' as well, sealing the output channel for rows
 # already persisted in existing databases.
 #
-# The derived v_natural_attrs block is unchanged, including its
-# ad.variant_key IS NULL predicate.
+# The derived v_natural_attrs block additionally resolves the node's
+# effective variant so that column-mapped AttributeDefs scoped to a
+# variant (variant_key non-NULL) emit their derived value on nodes whose
+# effective variant matches: the node type's NodeTypeVariant declares
+# discriminator_attr (the variant is the node's stored discriminator
+# value), or carries it NULL for props node types (the variant is
+# inherited one hop from the parent node). Nodes without a variant
+# declaration keep the previous behavior — only NULL-scoped defs emit —
+# and a json_key declared both base- and variant-scoped dedups through
+# the aggregate's own ORDER BY with the exact-variant row winning.
 #
 # The same redefinition drops two dead declarations inherited from 0002:
 # v_key (populated by a per-node SELECT whose result was never
@@ -1495,20 +1505,24 @@ SET search_path TO s7, public;
 CREATE OR REPLACE FUNCTION s7_build_node_json(p_node_id UUID)
 RETURNS JSONB AS $$
 DECLARE
-  v_node_key        TEXT;
-  v_node_id_text    TEXT;
-  v_json_scope      TEXT;
-  v_attrs           JSONB;
-  v_natural_attrs   JSONB;
-  v_children_json   JSONB;
-  v_keyed_children  JSONB;
-  v_map_children    JSONB;
-  v_result          JSONB;
-  v_node_type_name  TEXT;
-  v_node_sort_order INT;
+  v_node_key          TEXT;
+  v_node_id_text      TEXT;
+  v_json_scope        TEXT;
+  v_attrs             JSONB;
+  v_natural_attrs     JSONB;
+  v_children_json     JSONB;
+  v_keyed_children    JSONB;
+  v_map_children      JSONB;
+  v_result            JSONB;
+  v_node_type_name    TEXT;
+  v_node_sort_order   INT;
+  v_effective_variant TEXT;
+  v_disc              TEXT;
+  v_node_type_id      UUID;
+  v_parent_id         UUID;
 BEGIN
-  SELECT nt.json_scope, nt.name, n.key, n.id::text, n.sort_order
-  INTO v_json_scope, v_node_type_name, v_node_key, v_node_id_text, v_node_sort_order
+  SELECT nt.json_scope, nt.name, n.key, n.id::text, n.sort_order, n.node_type_id, n.parent_id
+  INTO v_json_scope, v_node_type_name, v_node_key, v_node_id_text, v_node_sort_order, v_node_type_id, v_parent_id
   FROM s7.schema_nodes n
   JOIN s7.schema_node_types nt ON nt.id = n.node_type_id
   WHERE n.id = p_node_id;
@@ -1545,25 +1559,86 @@ BEGIN
     );
   END IF;
 
+  -- Resolve the node's effective variant, mirroring the Python-side
+  -- resolution in SchemaService._process_node_attributes:
+  --   * the node type's NodeTypeVariant declares discriminator_attr ->
+  --     the variant is the stored value of that attribute on this node;
+  --   * the node type's NodeTypeVariant rows carry discriminator_attr
+  --     NULL (a props node type) -> the variant is inherited from the
+  --     parent node, one hop over schema_nodes.parent_id;
+  --   * no NodeTypeVariant rows -> no variant (NULL).
+  v_effective_variant := NULL;
+  SELECT ntv.discriminator_attr INTO v_disc
+  FROM s7.schema_node_type_variants ntv
+  WHERE ntv.node_type_id = v_node_type_id
+    AND ntv.discriminator_attr IS NOT NULL
+  LIMIT 1;
+
+  IF v_disc IS NOT NULL THEN
+    SELECT na.value_string INTO v_effective_variant
+    FROM s7.schema_node_attributes na
+    JOIN s7.schema_attribute_defs ad2 ON ad2.id = na.attribute_def_id
+    WHERE na.node_id = p_node_id
+      AND ad2.node_type_id = v_node_type_id
+      AND ad2.json_key = v_disc
+      AND ad2.variant_key IS NULL
+    LIMIT 1;
+  ELSIF EXISTS (
+    SELECT 1 FROM s7.schema_node_type_variants ntv
+    WHERE ntv.node_type_id = v_node_type_id
+      AND ntv.discriminator_attr IS NULL
+  ) AND v_parent_id IS NOT NULL THEN
+    -- Props node: the effective variant is inherited from the parent
+    -- (one hop — the parent of a props node is a normal node with its
+    -- own NTV). The LEFT JOIN keeps v_effective_variant NULL when the
+    -- parent stores no discriminator value row.
+    SELECT pna.value_string INTO v_effective_variant
+    FROM s7.schema_nodes parent
+    JOIN s7.schema_node_type_variants pntv
+      ON pntv.node_type_id = parent.node_type_id
+     AND pntv.discriminator_attr IS NOT NULL
+    JOIN s7.schema_attribute_defs pad2
+      ON pad2.node_type_id = parent.node_type_id
+     AND pad2.json_key = pntv.discriminator_attr
+     AND pad2.variant_key IS NULL
+    LEFT JOIN s7.schema_node_attributes pna
+      ON pna.node_id = parent.id
+     AND pna.attribute_def_id = pad2.id
+    WHERE parent.id = v_parent_id
+    LIMIT 1;
+  END IF;
+
   -- Build natural field overrides from schema_nodes columns, driven by AttributeDef definitions.
   -- Only include natural fields that are explicitly defined as AttributeDefs for this node's type.
-  SELECT jsonb_object_agg(
-    ad.json_key,
-    CASE dt.name
-      WHEN 'natural_uuid'    THEN to_jsonb(p_node_id::text)
-      WHEN 'natural_key'     THEN to_jsonb(v_node_key)
-      WHEN 'natural_version' THEN to_jsonb(n.version)
-      WHEN 'natural_order'   THEN to_jsonb(v_node_sort_order)
-      WHEN 'display_order'   THEN to_jsonb(v_node_sort_order + 1)
-    END
-  )
+  -- The variant filter mirrors SchemaService._process_node_attributes: a def applies when its
+  -- variant_key IS NULL or matches the node's effective variant resolved above.
+  -- Deterministic dedup: a json_key declared both as a base def
+  -- (variant_key NULL) and as a def scoped to the effective variant
+  -- enters the aggregate twice. The aggregate's own ORDER BY (the
+  -- documented-guaranteed ordering) makes the exact-variant row win —
+  -- jsonb_object_agg keeps the last value per key; ad.id keeps the order
+  -- total among duplicate same-scope defs.
+  SELECT jsonb_object_agg(json_key, derived_value ORDER BY is_base_variant DESC, ad_id)
   INTO v_natural_attrs
-  FROM s7.schema_attribute_defs ad
-  JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
-  JOIN s7.schema_nodes n ON n.id = p_node_id
-  WHERE ad.node_type_id = n.node_type_id
-    AND (dt.name LIKE 'natural_%' OR dt.name = 'display_order')
-    AND ad.variant_key IS NULL;
+  FROM (
+    SELECT
+      ad.json_key,
+      (ad.variant_key IS NULL) AS is_base_variant,
+      ad.id AS ad_id,
+      CASE dt.name
+        WHEN 'natural_uuid'    THEN to_jsonb(p_node_id::text)
+        WHEN 'natural_key'     THEN to_jsonb(v_node_key)
+        WHEN 'natural_version' THEN to_jsonb(n.version)
+        WHEN 'natural_order'   THEN to_jsonb(v_node_sort_order)
+        WHEN 'display_order'   THEN to_jsonb(v_node_sort_order + 1)
+      END AS derived_value
+    FROM s7.schema_attribute_defs ad
+    JOIN s7.schema_data_types dt ON dt.id = ad.data_type_id
+    JOIN s7.schema_nodes n ON n.id = p_node_id
+    WHERE ad.node_type_id = n.node_type_id
+      AND (dt.name LIKE 'natural_%' OR dt.name = 'display_order')
+      AND (ad.variant_key IS NULL OR ad.variant_key = v_effective_variant)
+  ) AS natural_defs;
 
   -- Extract all children grouped by collection_key
   -- If max_children=1, extract as object (not array)

@@ -20,6 +20,17 @@ whose live value is non-default would silently reset it. Such objects
 are rejected pre-write with the field names they would reset — omitted
 fields whose live value already IS the default stay harmless.
 
+Updates are also gated on **implementation**: a catalog row already
+instantiated by schema data (``Node``/``NodeAttribute`` rows, in any
+project — the grammar is global and status-agnostic) rejects an
+update that changes at least one field, reported as
+``catalog_object_in_use`` with a usage breakdown. Creates are never
+gated, and neither are no-op updates — re-sending the live values
+verbatim keeps a re-import idempotent. The check is an advisory read
+inside the transaction, so under READ COMMITTED a schema committed
+between the gate and this import's commit escapes verification — a
+residual TOCTOU window accepted for v1.
+
 On success the envelope carries ``results`` — one entry per payload
 object, in payload order, with ``index``, ``model``, ``natural_key``,
 ``action`` (``created``/``updated``) and ``changed_fields`` — so the
@@ -40,11 +51,14 @@ from django.core.serializers.base import DeserializationError
 from django.db import DatabaseError, IntegrityError, transaction
 
 from ..constants import (
+    ERR_CATALOG_OBJECT_IN_USE,
+    ERR_CATALOG_OBJECT_IN_USE_MSG,
     ERR_INVALID_CATALOG_OBJECT,
     ERR_MISSING_MODEL_PERMISSION,
     ERR_UPDATE_RESET_FIELDS,
     WARN_IS_REQUIRED_DEMOTED,
 )
+from ..repositories.catalog_usage_repository import CatalogUsageRepository
 from ..repositories.fixture_repository import FixtureRepository
 from .datatype_plugins import is_server_managed_attribute
 from .fixture_service import FixtureService
@@ -92,6 +106,7 @@ class CatalogImportService:
     def __init__(self) -> None:
         self.fixture_service = FixtureService()
         self.fixture_repository = FixtureRepository()
+        self.usage_repository = CatalogUsageRepository()
 
     @transaction.atomic
     def import_objects(self, objects: list, user: 'User') -> dict:
@@ -136,6 +151,20 @@ class CatalogImportService:
             replace: omitting a field that holds a non-default live
             value is a per-object validation error (the would-be reset
             fields are named), not a silent reset.
+
+            An update is further gated on implementation: when schema
+            data already instantiates the matched catalog row
+            (``Node``/``NodeAttribute`` rows in any project — the
+            grammar is global), an update changing at least one field
+            is rejected with ``catalog_object_in_use``, and its error
+            entry carries an extra ``usage`` key (``{<metric>: int,
+            "projects": [slugs]}``) detailing what implements it.
+            Creates and no-op updates — every payload field equal to
+            the live value — are never gated, so re-importing the
+            catalog verbatim stays possible once schemas exist. The
+            usage check is an advisory read under READ COMMITTED: a
+            schema committed between the gate and this import's commit
+            escapes it, a residual TOCTOU window accepted for v1.
 
             Classification and apply run in one transaction under READ
             COMMITTED, so a row matched as an update may still be
@@ -281,6 +310,62 @@ class CatalogImportService:
                 })
         if reset_errors:
             return self._error_envelope(reset_errors)
+
+        # Usage gate — still before any write: a catalog row already
+        # instantiated by schema data (Node/NodeAttribute rows in ANY
+        # project — the grammar is global and status-agnostic) rejects
+        # an update that changes at least one field, since it would
+        # rewrite the meaning of existing schema rows. Creates are
+        # never gated, and neither are no-op updates — re-sending the
+        # live values verbatim keeps an idempotent re-import working
+        # once the first schema exists. The no-op test mirrors the
+        # ``changed_fields`` comparison the results pass runs below,
+        # over the snapshots the reset guard just built. The check is
+        # an advisory read inside this transaction: under READ
+        # COMMITTED a schema committed between this pass and the outer
+        # commit escapes verification — a residual TOCTOU window
+        # accepted for v1.
+        usage_errors = []
+        for i, obj, label, existing_pk in classified:
+            if existing_pk is None:
+                # Creates are never gated (D105): adding to the catalog
+                # is always allowed, even under implemented parents.
+                continue
+            live = snapshots.get(i)
+            if live is None:
+                # The row vanished between classification and the
+                # snapshot pass — the apply pass reclassifies the
+                # object as an insert, and inserts are never gated.
+                continue
+            if not any(
+                live.get(name) != value
+                for name, value in obj['fields'].items()
+            ):
+                # No-op update (D102): every payload field equals the
+                # live value, so the row is exempt even when
+                # implemented — a re-import of the catalog cannot be
+                # permanently broken by existing schemas.
+                continue
+            usage = self.usage_repository.usage_for(label, existing_pk)
+            if usage['implemented']:
+                nk = self.fixture_service.natural_key_for(
+                    label, obj['fields'],
+                )
+                usage_errors.append({
+                    'code': ERR_CATALOG_OBJECT_IN_USE,
+                    'message': ERR_CATALOG_OBJECT_IN_USE_MSG.format(
+                        label=label,
+                        natural_key=list(nk) if nk else [],
+                        usage=self._usage_summary(usage['usage']),
+                    ),
+                    'path': f'$.objects[{i}]',
+                    # Extra key beyond code/message/path: the counts
+                    # and owning project slugs the caller needs to
+                    # understand what blocks the update (D106).
+                    'usage': usage['usage'],
+                })
+        if usage_errors:
+            return self._error_envelope(usage_errors)
 
         # Apply one object at a time in dependency order (the sort is
         # stable, so same-rank objects keep payload order): a failure is
@@ -551,6 +636,30 @@ class CatalogImportService:
         if updated:
             parts.append(f'updated: {dict(sorted(updated.items()))}')
         return '; '.join(parts) or 'no changes'
+
+    @staticmethod
+    def _usage_summary(usage: dict) -> str:
+        """Render a ``usage`` dict as short prose for the in-use message.
+
+        ``usage`` carries a single count metric (``nodes`` or
+        ``node_attributes``) plus the sorted slugs of the projects
+        owning the implementing rows, e.g. ``"2 nodes"`` or
+        ``"3 node_attributes across projects 'a', 'b'"`` — enough for
+        the caller to see what blocks the update without extra
+        queries.
+        """
+        parts = [
+            f"{count} {name.removesuffix('s') if count == 1 else name}"
+            for name, count in usage.items()
+            if name != 'projects'
+        ]
+        projects = usage.get('projects') or []
+        if projects:
+            parts.append(
+                'across projects '
+                + ', '.join(repr(slug) for slug in projects)
+            )
+        return ' '.join(parts)
 
     @staticmethod
     def _error_envelope(errors: list) -> dict:

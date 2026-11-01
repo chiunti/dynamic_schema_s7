@@ -8,6 +8,7 @@ New repository classes must be added here.
 """
 
 from .attribute_def_repository import AttributeDefRepository
+from .catalog_usage_repository import CatalogUsageRepository
 from .composition_repository import CompositionRepository
 from .data_type_repository import DataTypeRepository
 from .editor_extension_repository import EditorExtensionRepository
@@ -21,6 +22,7 @@ from .user_repository import UserMCPTokenRepository, UserRepository
 
 __all__ = [
     "AttributeDefRepository",
+    "CatalogUsageRepository",
     "CompositionRepository",
     "DataTypeRepository",
     "EditorExtensionRepository",

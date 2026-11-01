@@ -517,24 +517,42 @@ class AttributeDefRepository:
         """
         return AttributeDef.objects.create(**kwargs)
 
-    def get_discriminator_attribute_def(self, node_type):
+    def get_discriminator_attribute_defs(self, node_type: NodeType) -> list[AttributeDef]:
         """
-        Get the discriminator AttributeDef for a node type.
+        Return every candidate discriminator AttributeDef for a node type.
+
+        Multi-def semantics: ``uq_sattr_defs_key`` scopes uniqueness to
+        ``(node_type, json_key, variant_key)``, so the same
+        ``(node_type, json_key)`` can legitimately be declared by
+        sibling defs — the ``variant_key=None`` template plus
+        materialized variant-scoped copies. NodeAttribute rows may live
+        under ANY of those siblings, and each sibling may carry its own
+        domain: resolving a single def via an unordered ``.first()``
+        could inspect the wrong sibling's domain and silently fail to
+        match. Callers must therefore iterate the returned candidates
+        and check each def's domain/json_key.
 
         Prefers the declarative NodeTypeVariant.discriminator_attr
-        declared for ``node_type``. Only when the node type has no variant
-        rows at all does it fall back to the legacy heuristic (first
-        required + domain-bound + non-natural attribute), so catalogs
-        without variant declarations still resolve. The configured
-        discriminator may legitimately be 'type', so the fallback does
-        not exclude any literal key; deterministic ordering keeps the
-        heuristic stable when several attributes qualify.
+        declared for ``node_type``: the NTV branch returns ALL sibling
+        defs sharing the declared ``discriminator_attr`` json_key,
+        ordered by ``variant_key`` for determinism. Only when the node
+        type has no variant rows at all does it fall back to the legacy
+        heuristic (first required + domain-bound + non-natural
+        attribute), so catalogs without variant declarations still
+        resolve. The configured discriminator may legitimately be
+        'type', so the fallback does not exclude any literal key;
+        deterministic ordering keeps the heuristic stable when several
+        attributes qualify. The fallback intentionally preserves its
+        legacy single-candidate semantics — it returns a list of at
+        most one def — while the NTV branch covers every sibling.
 
         Args:
             node_type: NodeType instance
 
         Returns:
-            AttributeDef instance or None
+            List of candidate AttributeDef instances with domain
+            select_related (empty when the node type is a
+            props/inherited-variant node or no discriminator applies)
         """
         variants = NodeTypeVariant.objects.filter(node_type=node_type)
         if variants.exists():
@@ -547,20 +565,30 @@ class AttributeDefRepository:
                 # Variant rows exist but declare discriminator_attr=None:
                 # this is a props node type whose variant is inherited
                 # from the parent — it has no own discriminator.
-                return None
-            return AttributeDef.objects.filter(
-                node_type=node_type,
-                json_key=discriminator_attr,
-            ).first()
+                return []
+            return list(
+                AttributeDef.objects.filter(
+                    node_type=node_type,
+                    json_key=discriminator_attr,
+                )
+                .select_related("domain")
+                .order_by("variant_key")
+            )
 
         # Legacy fallback for catalogs without any NodeTypeVariant rows:
         # first required, domain-bound, non-natural attribute.
-        return AttributeDef.objects.filter(
-            node_type=node_type,
-            variant_key__isnull=True,
-            is_required=True,
-            domain__isnull=False,
-        ).exclude(data_type__name__startswith='natural_').order_by('json_key').first()
+        fallback = (
+            AttributeDef.objects.filter(
+                node_type=node_type,
+                variant_key__isnull=True,
+                is_required=True,
+                domain__isnull=False,
+            )
+            .exclude(data_type__name__startswith='natural_')
+            .order_by('json_key')
+            .first()
+        )
+        return [fallback] if fallback is not None else []
 
     def get_domain_items_by_domain(self, domain):
         """

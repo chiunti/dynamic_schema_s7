@@ -937,9 +937,12 @@ class SchemaService:
         the item's discriminator attribute is used to discriminate:
           - The discriminator json_key comes from each candidate's NodeTypeVariant
             declaration via NodeTypeRepository.get_discriminator_attr.
-          - Only when a candidate child type has NO NodeTypeVariant row at all do
-            we fall back to the repository-level discriminator-attribute
-            heuristic (get_discriminator_attribute_def).
+          - Only when a candidate child type has NO NodeTypeVariant row at all does
+            the repository-level discriminator-attribute heuristic apply
+            (get_discriminator_attribute_defs resolves both cases).
+          - Sibling AttributeDefs may declare the same (node_type, json_key)
+            under different variant_keys — every candidate def is checked,
+            since the item's discriminator value can live under any sibling.
           - If a child_type has a domain-constrained discriminator AttributeDef
             whose domain contains the item's discriminator value, that
             child_type wins.
@@ -953,27 +956,25 @@ class SchemaService:
             ntv = self.node_type_repository.get_node_type_variant_by_node_type(
                 comp.child_type
             )
-            if ntv is not None:
+            if ntv is not None and not ntv.discriminator_attr:
                 # discriminator_attr=None marks a props/inherited-variant node —
                 # it cannot be discriminated from a sibling item.
-                if not ntv.discriminator_attr:
-                    continue
-                discriminator_attr = self.attribute_def_repository.get_attribute_def_with_domain(
-                    comp.child_type, ntv.discriminator_attr
-                )
-            else:
-                # No variant configuration — legacy heuristic fallback.
-                discriminator_attr = self.attribute_def_repository.get_discriminator_attribute_def(
-                    comp.child_type
-                )
-            if not discriminator_attr or not discriminator_attr.domain_id:
                 continue
-            item_type_value = item.get(discriminator_attr.json_key)
-            if item_type_value and self.attribute_def_repository.domain_item_exists(
-                discriminator_attr.domain,
-                item_type_value
-            ):
-                return comp.child_type
+            # NTV-declared or heuristic, every sibling def sharing the
+            # discriminator json_key is a legitimate declaration — the
+            # item's discriminator value may live under any of them.
+            candidates = self.attribute_def_repository.get_discriminator_attribute_defs(
+                comp.child_type
+            )
+            for discriminator_def in candidates:
+                if not discriminator_def.domain_id:
+                    continue
+                item_type_value = item.get(discriminator_def.json_key)
+                if item_type_value and self.attribute_def_repository.domain_item_exists(
+                    discriminator_def.domain,
+                    item_type_value
+                ):
+                    return comp.child_type
 
         return compositions[0].child_type
 
@@ -1720,18 +1721,20 @@ class SchemaService:
         #   For compositions with collection_key whose child type has a required domain-constrained
         #   AttributeDef, map each domain value -> (composition, discriminator_json_key). The
         #   composition is kept (not just its child_type) so shorthand-created children can be
-        #   counted against their slot in the cardinality audit.
+        #   counted against their slot in the cardinality audit. Sibling discriminator defs
+        #   (same json_key under different variant_keys) each contribute their domain items —
+        #   NodeAttribute values can live under any sibling.
         #   Example: screen -> screen_section (sections), section_key in ScreenSectionKey
         #   -> {'body': (screen->sections comp, 'section_key'), 'appbar': (..., 'section_key'), ...}
         shorthand_map = {}  # domain_value -> (composition, discriminator_json_key)
         for comp in compositions:
             if not comp.collection_key:
                 continue
-            discriminator = self.attribute_def_repository.get_discriminator_attribute_def(comp.child_type)
-            if not discriminator:
-                continue
-            for di in self.attribute_def_repository.get_domain_items_by_domain(discriminator.domain):
-                shorthand_map[di.value] = (comp, discriminator.json_key)
+            for discriminator in self.attribute_def_repository.get_discriminator_attribute_defs(comp.child_type):
+                if not discriminator.domain_id:
+                    continue
+                for di in self.attribute_def_repository.get_domain_items_by_domain(discriminator.domain):
+                    shorthand_map[di.value] = (comp, discriminator.json_key)
         
         # Case 3 — structural children: compositions without collection_key
         #   (e.g. 'props' -> props node type, 'layout' -> layout node type).

@@ -52,8 +52,13 @@ class CatalogImportSerializer(serializers.Serializer):
         allow_empty=False,
         help_text=(
             "Fixture-format catalog objects: each entry is a dict shaped "
-            "{model, pk?, fields} where 'model' is a catalog model label "
-            "(e.g. nodetype, attributedef, domain), 'pk' an optional UUID, "
-            "and 'fields' the object field values."
+            "{model, pk?, fields} for an upsert or {model, pk|fields, "
+            "delete: true} for a delete, where 'model' is a catalog "
+            "model label (e.g. nodetype, attributedef, domain), 'pk' an "
+            "optional UUID and 'fields' the object field values. A "
+            "delete identifies the row by 'pk' XOR by 'fields' holding "
+            "the complete natural key, applies only when no schema "
+            "implements the row (catalog_object_in_use gate) and "
+            "requires the schemas.delete_<label> permission."
         ),
     )

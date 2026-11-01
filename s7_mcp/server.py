@@ -178,18 +178,42 @@ def s7_import_catalog(objects: list[dict]) -> dict:
     labels: domain, domainitem, nodetype, nodetypecomposition,
     nodetypevariant, attributedef. Natural-key FKs are used inside
     ``fields`` exactly like fixture files. Natural-key match updates the
-    existing row; no match creates it; deletes are not supported and
-    object keys outside ``model``/``pk``/``fields`` are rejected. An
-    update replaces the whole row: omitting a field that holds a
-    non-default value on the live row is rejected, so resubmit the full
-    object on every update.
+    existing row; no match creates it. An update replaces the whole row:
+    omitting a field that holds a non-default value on the live row is
+    rejected, so resubmit the full object on every update.
+
+    A delete object is ``{"model": "schemas.<label>", "delete": true}``
+    plus exactly one identifier — ``pk`` (uuid) XOR ``fields`` holding
+    the complete natural key, never both. ``delete`` must be literal
+    ``true`` (any other value is a validation error) and object keys
+    outside ``model``/``pk``/``fields``/``delete`` are rejected. Every
+    delete requires the ``schemas.delete_<label>`` permission; deleting
+    a ``nodetype`` first removes its own dependents — the attributedef,
+    variant and composition rows touching it, each gated and each
+    requiring its own ``delete_<label>`` — while a variant of another
+    node type bound to it through ``props_node_type`` is detached
+    (``SET_NULL``), not deleted: still usage-gated, so it can block the
+    delete with ``catalog_object_in_use`` naming a row the caller did
+    not ask to delete. A row implemented by existing
+    schemas (``Node``/``NodeAttribute`` in any project) rejects the
+    delete with ``catalog_object_in_use`` plus a ``usage`` detail —
+    deletes get no no-op exemption (field-changing updates are gated the
+    same way; creates and no-op updates are exempt), and the check is an
+    advisory read under READ COMMITTED. Upserts apply first by
+    dependency rank, then deletes in reverse rank (children before
+    parents), so a rename is a create with the new natural key plus a
+    delete of the old one in the same atomic payload. Deleting a row
+    that does not exist is a per-object ``invalid_catalog_object``
+    error at ``$.objects[i]``.
 
     Returns ``{"applied": true, "created": {...}, "updated": {...},
-    "results": [{index, model, natural_key, action, changed_fields}],
-    "warnings": [...]}`` on success; ``{"applied": false, "errors": [...]}``
-    on validation/apply failure. Requires a user MCP token with
-    ``mcp_level >= 2`` plus per-model Django permissions — anything else
-    gets a 401/403 envelope verbatim.
+    "deleted": {...}, "results": [{index, model, natural_key, action,
+    changed_fields}], "warnings": [...]}`` on success — ``deleted``
+    counts rows per label (dependents included) and ``results[]``
+    reports ``action`` ``created``/``updated``/``deleted``;
+    ``{"applied": false, "errors": [...]}`` on validation/apply failure.
+    Requires a user MCP token with ``mcp_level >= 2`` plus per-model
+    Django permissions — anything else gets a 401/403 envelope verbatim.
     """
     return _get_client().post_json("catalog/import/", {"objects": objects})
 

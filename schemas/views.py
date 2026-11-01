@@ -375,11 +375,20 @@ class CatalogDatatypesView(APIView):
 class CatalogImportView(APIView):
     """MCP level-2 endpoint for catalog grammar authoring.
 
-    Accepts a non-empty list of fixture-format objects
-    (``{"model": ..., "pk"?: ..., "fields": ...}``) and applies them
-    atomically: rows matched by natural key are updated, the rest are
-    created. The grammar is global and live immediately — there is no
-    draft staging — and deletes are not supported by the payload.
+    Accepts a non-empty list of fixture-format objects and applies them
+    atomically: upsert objects (``{"model": ..., "pk"?: ..., "fields":
+    ...}``) are matched by natural key — a match updates the row by
+    full-row replace, no match creates it — while delete objects
+    (``{"model": ..., "delete": true}`` with ``pk`` XOR natural-key
+    ``fields``) remove the row they identify. Deletes reuse the update
+    implementation gate: a row already instantiated by schema data is
+    rejected as ``catalog_object_in_use``. Every delete also requires
+    the ``schemas.delete_<label>`` permission — a ``nodetype`` delete
+    demands it for each own dependent (attribute defs, variants,
+    compositions) removed alongside. The grammar is global and live
+    immediately — there is no draft staging. Success relays the service
+    envelope verbatim: ``{applied, created, updated, deleted, results,
+    warnings}``.
 
     Authentication is restricted to user MCP tokens: a project credential
     Bearer token is not resolved by this authenticator, so the request

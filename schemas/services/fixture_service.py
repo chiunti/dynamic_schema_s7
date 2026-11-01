@@ -18,6 +18,10 @@ from typing import Optional
 from django.core.management import call_command
 
 from ..constants import (
+    ERR_DELETE_FLAG_NOT_TRUE,
+    ERR_DELETE_IDENTIFIER_CONFLICT,
+    ERR_DELETE_MISSING_IDENTIFIER,
+    ERR_DELETE_NO_NATURAL_KEY,
     ERR_DUPLICATE_PK_IN_PAYLOAD,
     ERR_INVALID_FK_SHAPE,
     ERR_INVALID_NATURAL_KEY_COMPONENTS,
@@ -209,7 +213,9 @@ class FixtureService:
         )
         return {'name': stem, 'total': len(objects)}
 
-    def validate_objects(self, objects, allowed_models=None) -> list[str]:
+    def validate_objects(
+        self, objects, allowed_models=None, allow_delete=False,
+    ) -> list[str]:
         """Structural validation of a fixture payload.
 
         Checks: top-level list, a strict ``{model, pk, fields}``
@@ -262,6 +268,25 @@ class FixtureService:
         accepts only a subset (e.g. catalog-only payloads); the default
         is the module-level ``ALLOWED_MODELS``.
 
+        ``allow_delete=True`` admits ``"delete"`` in the wrapper
+        allowlist and changes the contract of the object carrying it:
+        the flag must be exactly the boolean ``True`` (``False``,
+        ``None``, a string — any other value is an error, never an
+        upsert spelling), and a delete object identifies its target row
+        by exactly one arm — a UUID ``pk`` with ``fields`` absent, or a
+        ``fields`` dict carrying a complete natural key with ``pk``
+        absent; both or neither is a per-object error. Delete objects
+        skip the field-content checks (``id``-in-fields, unknown field
+        names, required non-NK fields — their ``fields`` exist only to
+        resolve identity) but DO participate in pk and natural-key
+        dedup — so a delete+delete or update+delete of the same row
+        collides like any duplicate — and, for the NK arm, join the
+        ``checked`` list so the natural key's FK positions resolve in
+        the fixture or the database like an upsert's. Callers that do
+        not pass the flag (``load_fixture``, ``save_fixture_file`` —
+        the admin/loaddata path) keep rejecting ``delete`` as an
+        unknown object key.
+
         Never raises on arbitrary input: objects that fail the shape
         checks accumulate in ``errors[]`` and are skipped by the
         reference-resolution pass.
@@ -282,9 +307,13 @@ class FixtureService:
                 errors.append(f'{where}: not an object')
                 continue
             # The wrapper is an allowlist: anything outside {model, pk,
-            # fields} (a "delete": true hint, an op verb, a typo) is an
-            # explicit per-object error — never silently ignored.
-            extra = set(obj) - {'model', 'pk', 'fields'}
+            # fields} (an op verb, a typo — or a "delete": true hint
+            # when the caller did not enable deletes) is an explicit
+            # per-object error — never silently ignored.
+            allowed_keys = {'model', 'pk', 'fields'}
+            if allow_delete:
+                allowed_keys = allowed_keys | {'delete'}
+            extra = set(obj) - allowed_keys
             if extra:
                 errors.append(
                     f'{where}: '
@@ -305,62 +334,117 @@ class FixtureService:
             if label not in allowed_models:
                 errors.append(f'{where}: model {model!r} not allowed')
                 continue
-            try:
-                pk_norm = str(uuid.UUID(str(pk)))
-            except (ValueError, AttributeError, TypeError):
-                # An unparseable pk is already rejected — it must not
-                # enter the dedup set and add 'duplicate pk' noise.
-                errors.append(f'{where}: pk is not a UUID')
-            else:
-                # Two objects of the same model naming the same pk
-                # would both match-update the same row at import: the
-                # last write wins and rewrites the row's natural key —
-                # an implicit identity rename. Dedup is per label
-                # (different models may legitimately share a pk value)
-                # and compares the normalized UUID, so spellings like
-                # 'ABC..' vs 'abc..' or braced forms collide the same
-                # way pk_exists matches them in Postgres. No continue:
-                # the object keeps accumulating other errors.
-                label_pks = seen_pks.setdefault(label, set())
-                if pk_norm in label_pks:
+            is_delete = obj.get('delete') is True
+            if 'delete' in obj and not is_delete:
+                # The key passed the allowlist, but only the boolean
+                # true marks a delete — 'false', null or a string is a
+                # malformed marker, never an upsert spelling.
+                errors.append(f'{where}: ' + ERR_DELETE_FLAG_NOT_TRUE)
+                continue
+            if is_delete:
+                # A delete identifies its row by exactly one arm —
+                # 'pk', or a 'fields' dict carrying a complete natural
+                # key. Carrying both would blur into upsert shape;
+                # carrying neither names nothing.
+                if pk is not None and fields is not None:
                     errors.append(
-                        f'{where}: ' + ERR_DUPLICATE_PK_IN_PAYLOAD,
+                        f'{where}: ' + ERR_DELETE_IDENTIFIER_CONFLICT,
                     )
+                    continue
+                if pk is None and fields is None:
+                    errors.append(
+                        f'{where}: ' + ERR_DELETE_MISSING_IDENTIFIER,
+                    )
+                    continue
+            if pk is not None or not is_delete:
+                # The pk check fires for every upsert (a UUID pk is
+                # mandatory) and for pk-arm deletes; the NK-arm delete
+                # legitimately carries no pk at all.
+                try:
+                    pk_norm = str(uuid.UUID(str(pk)))
+                except (ValueError, AttributeError, TypeError):
+                    # An unparseable pk is already rejected — it must not
+                    # enter the dedup set and add 'duplicate pk' noise.
+                    errors.append(f'{where}: pk is not a UUID')
                 else:
-                    label_pks.add(pk_norm)
+                    # Two objects of the same model naming the same pk
+                    # would both match-update the same row at import:
+                    # the last write wins and rewrites the row's natural
+                    # key — an implicit identity rename. Dedup is per
+                    # label (different models may legitimately share a
+                    # pk value) and compares the normalized UUID, so
+                    # spellings like 'ABC..' vs 'abc..' or braced forms
+                    # collide the same way pk_exists matches them in
+                    # Postgres. Deletes join the set too, so a delete+
+                    # delete or update+delete of the same row collides
+                    # like any duplicate. No continue: the object keeps
+                    # accumulating other errors.
+                    label_pks = seen_pks.setdefault(label, set())
+                    if pk_norm in label_pks:
+                        errors.append(
+                            f'{where}: ' + ERR_DUPLICATE_PK_IN_PAYLOAD,
+                        )
+                    else:
+                        label_pks.add(pk_norm)
             if not isinstance(fields, dict):
+                # A pk-arm delete needs no 'fields' — its pk already
+                # identifies the row; every other object (upsert or
+                # NK-arm delete) must carry the dict.
+                if fields is None and is_delete:
+                    continue
                 errors.append(f'{where}: missing fields object')
                 continue
-            # A serialized 'id' inside fields would override the top-level
-            # pk at deserialization time — the pk position is the only
-            # sanctioned way to name a row.
-            if 'id' in fields:
-                errors.append(
-                    f"{where}: field 'id' belongs at the top-level 'pk', "
-                    'not inside fields',
+            if not is_delete:
+                # Field-content checks judge what would be persisted —
+                # a delete's 'fields' exist solely to resolve identity.
+                # A serialized 'id' inside fields would override the
+                # top-level pk at deserialization time — the pk
+                # position is the only sanctioned way to name a row.
+                if 'id' in fields:
+                    errors.append(
+                        f"{where}: field 'id' belongs at the top-level "
+                        "'pk', not inside fields",
+                    )
+                field_names = (
+                    self.fixture_repository.get_model_field_names(label)
                 )
-            field_names = self.fixture_repository.get_model_field_names(label)
-            if field_names is not None:
-                for name in fields:
-                    if name not in field_names:
-                        errors.append(
-                            f'{where}: unknown field {name!r} '
-                            f"for model '{label}'",
-                        )
+                if field_names is not None:
+                    for name in fields:
+                        if name not in field_names:
+                            errors.append(
+                                f'{where}: unknown field {name!r} '
+                                f"for model '{label}'",
+                            )
+            # NK-arm deletes join ``checked``: the FK positions of their
+            # natural key must resolve in the fixture or the database
+            # like an upsert's — a delete naming a dangling reference
+            # identifies nothing.
             checked.append((i, label, fields))
-            missing_required = self._missing_required_fields(label, fields)
-            if missing_required:
-                # Non-NK required fields (a CharField that would
-                # silently deserialize to '', a non-nullable FK). No
-                # continue: the object may also carry an NK error and
-                # both entries must accumulate.
+            if not is_delete:
+                missing_required = self._missing_required_fields(
+                    label, fields,
+                )
+                if missing_required:
+                    # Non-NK required fields (a CharField that would
+                    # silently deserialize to '', a non-nullable FK). No
+                    # continue: the object may also carry an NK error and
+                    # both entries must accumulate.
+                    errors.append(
+                        f'{where}: '
+                        + ERR_MISSING_REQUIRED_FIELDS.format(
+                            fields=', '.join(sorted(missing_required)),
+                        )
+                    )
+            nk = self.natural_key_for(label, fields)
+            if nk is None and is_delete:
+                # The NK arm requires a natural key — models without
+                # one (node, nodeattribute) can only be identified
+                # by 'pk'.
                 errors.append(
                     f'{where}: '
-                    + ERR_MISSING_REQUIRED_FIELDS.format(
-                        fields=', '.join(sorted(missing_required)),
-                    )
+                    + ERR_DELETE_NO_NATURAL_KEY.format(model=model),
                 )
-            nk = self.natural_key_for(label, fields)
+                continue
             if nk is not None:
                 missing = self._missing_natural_key_fields(
                     label, fields, nk,

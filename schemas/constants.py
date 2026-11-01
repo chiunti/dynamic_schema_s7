@@ -147,7 +147,7 @@ ERR_IMPORT_FAILED = "import_failed"
 # POST /api/schema/validate/ (views.SchemaValidateView)
 ERR_INVALID_REQUEST = "invalid_request"
 # Catalog import endpoint codes — envelope {applied, created, updated,
-# results, errors, warnings} of POST /api/catalog/import/
+# deleted, results, errors, warnings} of POST /api/catalog/import/
 # (views.CatalogImportView). The message templates are also used by the
 # admin fixture upload (FixtureService.save_fixture_file), which shares
 # validate_objects.
@@ -162,7 +162,14 @@ ERR_DUPLICATE_PK_IN_PAYLOAD = "duplicate pk in payload"
 ERR_UPDATE_RESET_FIELDS = "update omits fields that hold non-default values: {fields} (update is a full-row replace)"
 ERR_MISSING_MODEL_PERMISSION = "missing permission 'schemas.{codename}' for model '{label}'"
 ERR_CATALOG_OBJECT_IN_USE = "catalog_object_in_use"
-ERR_CATALOG_OBJECT_IN_USE_MSG = "{label} {natural_key} is implemented by existing schemas ({usage}) — updates to implemented catalog objects are rejected"
+ERR_CATALOG_OBJECT_IN_USE_MSG = "{label} {natural_key} is implemented by existing schemas ({usage}) — {action} on implemented catalog objects are rejected"
+ERR_CATALOG_DEPENDENT_IN_USE_MSG = "{dep_label} {dep_ref} is implemented by existing schemas ({usage}) — it blocks deleting {label} {natural_key}"
+ERR_DELETE_FLAG_NOT_TRUE = "delete must be exactly the boolean true"
+ERR_DELETE_IDENTIFIER_CONFLICT = "delete object must not carry both 'pk' and 'fields' — exactly one identifies the row"
+ERR_DELETE_MISSING_IDENTIFIER = "delete object requires 'pk' or 'fields' (a complete natural key) to identify the row"
+ERR_DELETE_TARGET_NOT_FOUND = "delete target does not resolve to a live row"
+ERR_DUPLICATE_DELETE_TARGET = "duplicate delete target in payload"
+ERR_DELETE_NO_NATURAL_KEY = "model {model} has no natural key — identify the delete target by 'pk'"
 ERR_UNDECLARED_JSON_KEY = "undeclared_json_key"
 ERR_INVALID_COLLECTION_VALUE = "invalid_collection_value"
 ERR_INVALID_DOMAIN_VALUE = "invalid_domain_value"

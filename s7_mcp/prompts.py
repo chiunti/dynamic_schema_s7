@@ -101,15 +101,24 @@ exact field set of each model: `fields` carries writable fields only \
 (`id` belongs at top-level `pk`, never inside `fields`). Foreign keys \
 inside `fields` use the same natural-key form as fixture files; omit \
 `pk` to let the backend derive it. A new root node type needs `is_root` \
-and a unique `json_scope`.
+and a unique `json_scope`. To remove a row, the object is \
+`{"model": "schemas.<label>", "delete": true}` plus exactly one \
+identifier — `pk` (uuid) or `fields` carrying the complete natural key, \
+never both (see the `deletes` section of `s7://catalog-grammar`).
 
 3. APPLY — call `s7_import_catalog` once with the full list: the apply is \
 atomic, natural-key matches update existing rows, non-matches create new \
-ones, and deletes are never performed. Updates replace the whole row — \
-include every field you want to keep (omitting a field with a non-default \
-value is rejected) and use only `model`/`pk`/`fields` keys per object. The \
-success envelope lists `results[]` per object — check each `action` \
-(`created` vs `updated`) to confirm intent. On `{"applied": false, \
+ones, and `delete: true` objects remove rows. Each delete needs the \
+`delete_<label>` permission and a row implemented by existing schemas \
+rejects it with `catalog_object_in_use` — deletes have no no-op \
+exemption. Deletes apply after all upserts, children before parents, so \
+a rename is a create with the new natural key plus a delete of the old \
+one in the same payload. Updates replace the whole row — include every \
+field you want to keep (omitting a field with a non-default value is \
+rejected) and use only `model`/`pk`/`fields`/`delete` keys per object. \
+The success envelope lists `results[]` per object — check each `action` \
+(`created`, `updated` or `deleted`) to confirm intent — and counts rows \
+per label under `created`/`updated`/`deleted`. On `{"applied": false, \
 "errors": [...]}` each error points at its `$.objects[i]` entry — fix and \
 retry.
 

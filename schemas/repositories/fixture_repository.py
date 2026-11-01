@@ -191,6 +191,96 @@ class FixtureRepository:
                 f'Database error while applying catalog objects: {e}',
             ) from e
 
+    def delete_fixture_object(
+        self, model_label: str, pk: str,
+    ) -> dict[str, int]:
+        """Delete one catalog row addressed by model label + pk.
+
+        Returns the per-model deleted-count dict the ORM cascade collector
+        produces (``QuerySet.delete()[1]`` — includes cascade removals), e.g.
+        ``{'schemas.attributedef': 2}``; an empty dict when ``pk`` matched no
+        row (the caller tolerates that as a READ COMMITTED vanish).
+
+        Raises:
+            ValueError: ``IntegrityError`` mapped — contract violation.
+            RuntimeError: ``DatabaseError`` mapped — infrastructure.
+        """
+        model = apps.get_model('schemas', model_label)
+        try:
+            _, deleted = model.objects.filter(pk=pk).delete()
+            return deleted
+        except IntegrityError as e:
+            raise ValueError(
+                f'Catalog object {model_label}:{pk} violates integrity '
+                f'constraints: {e}',
+            ) from e
+        except DatabaseError as e:
+            raise RuntimeError(
+                f'Database error while deleting catalog object '
+                f'{model_label}:{pk}: {e}',
+            ) from e
+
+    def node_type_dependents(self, node_type_pk: str) -> dict:
+        """Catalog rows a NodeType delete touches, in two buckets.
+
+        Returns::
+
+            {
+                'delete': {
+                    'attributedef': [pk, ...],          # node_type_id = pk
+                    'nodetypevariant': [pk, ...],       # node_type_id = pk
+                    'nodetypecomposition': [pk, ...],   # parent_type_id OR child_type_id = pk
+                },
+                'detach': {
+                    'nodetypevariant': [pk, ...],       # props_node_type_id = pk (SET_NULL, not deleted)
+                },
+            }
+
+        All keys are always present (empty lists when nothing matches); pks
+        are ``str``. These rows are ENUMERATED so the service can
+        permission-gate and usage-gate each one individually before the type
+        is deleted — 'delete' rows are removed explicitly first, 'detach'
+        rows are left for the FK SET_NULL but still gate the operation.
+        """
+        attribute_def = apps.get_model('schemas', 'attributedef')
+        variant = apps.get_model('schemas', 'nodetypevariant')
+        composition = apps.get_model('schemas', 'nodetypecomposition')
+        try:
+            return {
+                'delete': {
+                    'attributedef': [
+                        str(pk) for pk in attribute_def.objects
+                        .filter(node_type_id=node_type_pk)
+                        .values_list('pk', flat=True)
+                    ],
+                    'nodetypevariant': [
+                        str(pk) for pk in variant.objects
+                        .filter(node_type_id=node_type_pk)
+                        .values_list('pk', flat=True)
+                    ],
+                    'nodetypecomposition': [
+                        str(pk) for pk in composition.objects
+                        .filter(
+                            models.Q(parent_type_id=node_type_pk)
+                            | models.Q(child_type_id=node_type_pk),
+                        )
+                        .values_list('pk', flat=True)
+                    ],
+                },
+                'detach': {
+                    'nodetypevariant': [
+                        str(pk) for pk in variant.objects
+                        .filter(props_node_type_id=node_type_pk)
+                        .values_list('pk', flat=True)
+                    ],
+                },
+            }
+        except DatabaseError as e:
+            raise RuntimeError(
+                f'Database error while enumerating dependents of node type '
+                f'{node_type_pk}: {e}',
+            ) from e
+
     def record_catalog_import(self, user, change_message: str) -> None:
         """Attribute a catalog import to ``user`` via an admin LogEntry.
 

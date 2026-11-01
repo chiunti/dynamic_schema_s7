@@ -8,8 +8,8 @@ backend side that keeps it honest against the real model fields.
 resource. Shape:
 
 - ``format`` — one-line description of the payload format.
-- ``payload`` — envelope semantics (``objects``/``pk``/``fields`` and the
-  update rules).
+- ``payload`` — envelope semantics (``objects``/``pk``/``fields``, the
+  update rules and the ``deletes`` delete-object reference).
 - ``models`` — one entry per authorizable ``schemas.<label>`` model:
 
   - ``natural_key`` — the field names that identify a row.
@@ -49,7 +49,9 @@ CATALOG_GRAMMAR: dict = {
     "payload": {
         "objects": (
             "list of {'model': 'schemas.<label>', 'pk': <uuid, optional>, "
-            "'fields': {...}}"
+            "'fields': {...}, 'delete': <true, optional>} — an object "
+            "with 'delete': true removes a row instead of upserting it "
+            "(see 'deletes')"
         ),
         "pk": (
             "optional — deterministic uuid5 by natural key is derived "
@@ -57,18 +59,47 @@ CATALOG_GRAMMAR: dict = {
         ),
         "fields": (
             "writable model fields only; 'id' is forbidden here (it "
-            "belongs at top-level 'pk')"
+            "belongs at top-level 'pk'); on a delete object 'fields' "
+            "only carries the complete natural key identifying the row"
+        ),
+        "deletes": (
+            "an object {'model': 'schemas.<label>', 'delete': true} "
+            "plus exactly one identifier — 'pk' (uuid) XOR 'fields' "
+            "holding the complete natural key, never both — removes the "
+            "row. 'delete' must be literal true; any other value is a "
+            "validation error. Each delete requires the "
+            "schemas.delete_<label> permission; deleting a nodetype "
+            "first removes its own dependents (the attributedef, "
+            "variant and composition rows touching it — each gated and "
+            "each requiring its own delete_<label>), while a variant of "
+            "ANOTHER node type bound to it through props_node_type is "
+            "detached (SET_NULL), not deleted — still usage-gated, so it "
+            "can block the delete with catalog_object_in_use naming a "
+            "row the caller did not ask to delete. A row implemented "
+            "by existing schemas (Node/NodeAttribute rows in any "
+            "project) rejects the delete with catalog_object_in_use "
+            "plus a 'usage' detail — deletes have no no-op exemption, "
+            "and the check is an advisory read under READ COMMITTED. "
+            "Deletes apply after all upserts in reverse dependency "
+            "order (children before parents), so a rename is a create "
+            "with the new natural key plus a delete of the old one in "
+            "the same atomic payload. Deleting a row that does not "
+            "exist is a per-object invalid_catalog_object error at "
+            "$.objects[i]"
         ),
         "semantics": (
             "a row whose pk or natural key matches is updated, no match "
             "creates it (pk and natural key pointing at different rows "
-            "is an error); deletes are not supported and object keys "
-            "outside model/pk/fields are rejected. An update replaces "
+            "is an error); an object carrying 'delete': true removes "
+            "the row instead (see 'deletes'), and object keys outside "
+            "model/pk/fields/delete are rejected. An update replaces "
             "the whole row — omitting a field that holds a non-default "
             "value on the live row is rejected, so resubmit the full "
             "object on every update. The success envelope lists "
             "results[] per object (index, model, natural_key, action "
-            "created|updated, changed_fields). Matching reads the "
+            "created|updated|deleted, changed_fields) and counts rows "
+            "per label under created/updated/deleted — deleted includes "
+            "the dependents removed with a nodetype. Matching reads the "
             "serialized natural key, so write every natural-key "
             "component explicitly — omitting a component that carries "
             "a model default (e.g. discriminator_attr) matches no row "

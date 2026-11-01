@@ -1,41 +1,70 @@
 """Atomic catalog-grammar import for machine consumers (MCP level 2).
 
 ``CatalogImportService`` accepts a fixture-format payload
-(``{"objects": [{model, pk?, fields}]}`` — the ``objects`` list reaches
-the service), validates it against the catalog model whitelist, resolves
-each object to a create or an update, and applies everything inside one
-transaction.
+(``{"objects": [{model, pk?, fields, delete?}]}`` — the ``objects``
+list reaches the service), validates it against the catalog model
+whitelist, resolves each object to a create, an update or a delete,
+and applies everything inside one transaction.
 
-Semantics are loaddata-like: an object whose ``pk`` or natural key
-matches a live row **updates** that row's fields; no match **creates** a
-row. The object's wrapper keys are an allowlist — anything outside
-``{model, pk, fields}`` is a per-object validation error, so a
-``"delete": true`` hint can never pass silently (deletes are NOT
-supported — a payload never removes catalog rows; pruning stays a
-manual admin operation).
+Upsert semantics are loaddata-like: an object whose ``pk`` or natural
+key matches a live row **updates** that row's fields; no match
+**creates** a row. An object carrying ``"delete": true`` instead
+**removes** one catalog row, identified by exactly one arm — a UUID
+``pk``, or a ``fields`` dict holding a complete natural key; the XOR
+is enforced at structural validation, so carrying both or neither is
+a per-object error and a delete can never blur into upsert shape.
+
+Deletes share the update implementation gate: a catalog row already
+instantiated by schema data (``Node``/``NodeAttribute`` rows, in any
+project — the grammar is global and status-agnostic) rejects its own
+delete, reported as ``catalog_object_in_use`` with a usage breakdown.
+There is no no-op exemption — deletes are always gated. A
+``nodetype`` delete is widened by its contract rows (D109): the
+type's own AttributeDefs, NodeTypeVariants and every
+NodeTypeComposition touching it are deleted with it — each dependent
+requires its own ``delete_<label>`` permission and passes the usage
+gate individually — while foreign variants bound only through
+``props_node_type`` are detached by the ORM's SET_NULL: gated, never
+deleted, and requiring no extra permission. Dependents are enumerated
+before any write: a would-be dependent row created by an upsert of the
+same payload is not enumerated, so the type's delete detaches it via
+SET_NULL instead of removing it — it keeps its own gate/permission
+record rather than dying ungated.
+
+A ``domain`` delete instead carries its ``DomainItem`` rows down by
+plain FK cascade — items are the domain's owned content, not a peer
+contract: no per-item permission is required, and item implementation
+is covered transitively (a stored item value counts as usage of the
+domain itself, so the domain gate blocks the whole delete).
 
 An update is a **full-row replace**: deserialization fills every field
 absent from ``fields`` with the model default, so omitting a field
 whose live value is non-default would silently reset it. Such objects
 are rejected pre-write with the field names they would reset — omitted
-fields whose live value already IS the default stay harmless.
+fields whose live value already IS the default stay harmless. Creates
+are never gated, and neither are no-op updates — re-sending the live
+values verbatim keeps a re-import idempotent. The usage check is an
+advisory read inside the transaction, so under READ COMMITTED a schema
+committed between the gate and this import's commit escapes
+verification — a residual TOCTOU window accepted for v1.
 
-Updates are also gated on **implementation**: a catalog row already
-instantiated by schema data (``Node``/``NodeAttribute`` rows, in any
-project — the grammar is global and status-agnostic) rejects an
-update that changes at least one field, reported as
-``catalog_object_in_use`` with a usage breakdown. Creates are never
-gated, and neither are no-op updates — re-sending the live values
-verbatim keeps a re-import idempotent. The check is an advisory read
-inside the transaction, so under READ COMMITTED a schema committed
-between the gate and this import's commit escapes verification — a
-residual TOCTOU window accepted for v1.
+Apply order is upserts first in ascending ``_APPLY_RANK`` — so
+natural-key FKs resolve against rows written earlier in the same
+payload — then deletes in descending rank, children before parents
+(attributedef before variant/composition before nodetype/domain), so
+a rename written as create-new-NK + delete-old-NK applies atomically.
+An upsert and a delete naming the same live row through different
+identification arms (pk vs natural key) is not a payload conflict:
+the upsert applies first and the delete deterministically removes
+the row — delete wins.
 
 On success the envelope carries ``results`` — one entry per payload
 object, in payload order, with ``index``, ``model``, ``natural_key``,
-``action`` (``created``/``updated``) and ``changed_fields`` — so the
-caller can audit exactly which row each object touched. ``warnings``
-reports the non-fatal payload normalizations applied pre-write: an
+``action`` (``created``/``updated``/``deleted``) and
+``changed_fields`` — so the caller can audit exactly which row each
+object touched; ``nodetype`` delete entries also report the
+``dependents`` counts removed with the type. ``warnings`` reports the
+non-fatal payload normalizations applied pre-write: an
 ``attributedef`` declaring ``is_required`` on a server-managed attribute
 is demoted to ``False``, never rejected. Catalog grammar is global and
 takes effect immediately (no draft lifecycle); every import is
@@ -51,8 +80,11 @@ from django.core.serializers.base import DeserializationError
 from django.db import DatabaseError, IntegrityError, transaction
 
 from ..constants import (
+    ERR_CATALOG_DEPENDENT_IN_USE_MSG,
     ERR_CATALOG_OBJECT_IN_USE,
     ERR_CATALOG_OBJECT_IN_USE_MSG,
+    ERR_DELETE_TARGET_NOT_FOUND,
+    ERR_DUPLICATE_DELETE_TARGET,
     ERR_INVALID_CATALOG_OBJECT,
     ERR_MISSING_MODEL_PERMISSION,
     ERR_UPDATE_RESET_FIELDS,
@@ -114,27 +146,40 @@ class CatalogImportService:
 
         Args:
             objects: the ``objects`` list of the request payload; each
-                entry is ``{model: "schemas.<label>", pk?: str, fields:
-                {...}}``. ``pk`` is optional — a deterministic uuid5 by
-                natural key is generated when absent.
+                entry is either an upsert ``{model: "schemas.<label>",
+                pk?: str, fields: {...}}`` — ``pk`` optional, a
+                deterministic uuid5 by natural key is generated when
+                absent — or a delete ``{model, pk | fields,
+                "delete": true}``, which identifies its target row by
+                exactly one arm: a UUID ``pk`` (``fields`` absent) or a
+                ``fields`` dict carrying a complete natural key
+                (``pk`` absent). Both or neither is a validation error
+                — the XOR keeps a delete from blurring into upsert
+                shape.
             user: the authenticated user; per-model admin permissions
-                (``schemas.add_<label>`` / ``schemas.change_<label>``)
-                gate each planned write.
+                (``schemas.add_<label>`` / ``schemas.change_<label>``
+                for upserts, ``schemas.delete_<label>`` for deletes —
+                plus ``delete_<dep_label>`` for every dependent row a
+                ``nodetype`` delete removes) gate each planned write.
 
         Returns:
             On success ``{"applied": True, "created": {label: n},
-            "updated": {label: n}, "warnings": [{"code", "message",
-            "path"}], "results":
+            "updated": {label: n}, "deleted": {label: n}, "warnings":
+            [{"code", "message", "path"}], "results":
             [{"index", "model", "natural_key", "action",
             "changed_fields"}]}`` — one ``results`` entry per payload
-            object, in payload order; on any validation or apply
-            failure ``{"applied": False, "errors": [{"code",
-            "message", "path"}], "warnings": []}`` with no partial
-            writes (the whole transaction rolls back). Errors carry
-            ``path: $.objects[i]`` locating the offending entry, and
-            apply-time failures attribute the ORM error to the object —
-            and, when determinable, the field — that broke, so a raw
-            conversion message never reaches the client bare.
+            object, in payload order, with ``action`` one of
+            ``created``/``updated``/``deleted``; a ``nodetype`` delete
+            entry additionally carries ``dependents: {label: n}`` — the
+            real counts of contract rows removed with the type. On any
+            validation or apply failure ``{"applied": False,
+            "errors": [{"code", "message", "path"}], "warnings": []}``
+            with no partial writes (the whole transaction rolls back).
+            Errors carry ``path: $.objects[i]`` locating the offending
+            entry, and apply-time failures attribute the ORM error to
+            the object — and, when determinable, the field — that
+            broke, so a raw conversion message never reaches the client
+            bare.
 
             ``warnings`` reports the non-fatal normalizations applied to
             the payload pre-write: an ``attributedef`` declaring
@@ -161,10 +206,34 @@ class CatalogImportService:
             "projects": [slugs]}``) detailing what implements it.
             Creates and no-op updates — every payload field equal to
             the live value — are never gated, so re-importing the
-            catalog verbatim stays possible once schemas exist. The
-            usage check is an advisory read under READ COMMITTED: a
-            schema committed between the gate and this import's commit
-            escapes it, a residual TOCTOU window accepted for v1.
+            catalog verbatim stays possible once schemas exist.
+
+            Deletes are gated the same way, with no no-op exemption:
+            every delete targets a live row resolved at classification
+            (a delete resolving to nothing is a validation error, and
+            two deletes resolving to the same row conflict), and an
+            implemented row refuses to die. A ``nodetype`` delete
+            additionally gates every enumerated dependent — its own
+            AttributeDefs, variants and compositions (deleted with it,
+            D109) and the foreign variants bound through
+            ``props_node_type`` (detached via SET_NULL) — individually;
+            a blocking dependent is reported under the parent object's
+            path with the dependent row named. The usage check is an
+            advisory read under READ COMMITTED: a schema committed
+            between the gate and this import's commit escapes it, a
+            residual TOCTOU window accepted for v1.
+
+            Apply order (D108): upserts first in ascending
+            ``_APPLY_RANK`` — natural-key FKs resolve against rows
+            written earlier in the same payload — then deletes in
+            descending rank, children before parents, so a rename
+            written as create-new-NK + delete-old-NK applies
+            atomically. A ``nodetype`` delete removes its own contract
+            rows (defs, variants, compositions in either position) in
+            reverse-rank order before the type itself. A delete whose
+            target — or a dependent — vanished between the gate and
+            its write counts nothing: the payload's intent, the row
+            gone, is already satisfied.
 
             Classification and apply run in one transaction under READ
             COMMITTED, so a row matched as an update may still be
@@ -176,11 +245,12 @@ class CatalogImportService:
             reports the action actually taken.
 
             The payload is mutated in place: generated uuid5 pks are
-            written into objects that omit ``pk``, objects whose
+            written into upsert objects that omit ``pk``, objects whose
             natural key already exists get ``pk`` rewritten to the live
-            row's pk so deserialization updates it, and unsatisfiable
-            ``is_required`` flags (see ``warnings``) are demoted to
-            ``False``.
+            row's pk so deserialization updates it, delete objects get
+            ``pk`` set to their resolved target for reporting, and
+            unsatisfiable ``is_required`` flags (see ``warnings``) are
+            demoted to ``False``.
 
         Raises:
             PermissionError: the user lacks a required per-model
@@ -196,7 +266,7 @@ class CatalogImportService:
         self._assign_missing_pks(objects)
 
         errors = self.fixture_service.validate_objects(
-            objects, allowed_models=CATALOG_MODELS,
+            objects, allowed_models=CATALOG_MODELS, allow_delete=True,
         )
         if errors:
             return self._error_envelope(
@@ -213,15 +283,72 @@ class CatalogImportService:
         # Existence + pk-resolution pass. A pk pointing at one row while
         # the natural key resolves to another is a payload conflict —
         # reported per object instead of surfacing as a raw constraint
-        # error during apply.
+        # error during apply. The conflict is an upsert-only concern: a
+        # delete object carries exactly one identifier arm (the
+        # validation XOR guarantees it), so it can never disagree with
+        # itself — it either resolves to a live row or it does not, and
+        # an unresolved delete is its own per-object error.
         conflicts = []
         classified = []
+        snapshots = {}
+        delete_targets = set()
         for i, obj in enumerate(objects):
             label = obj['model'].split('.')[1]
-            fields = obj['fields']
-            nk = self.fixture_service.natural_key_for(label, fields)
+            fields = obj.get('fields')
             pk = obj.get('pk')
 
+            if obj.get('delete') is True:
+                if pk is not None:
+                    # pk arm — the row must exist. Canonicalize like the
+                    # upsert path: non-canonical UUID spellings match
+                    # case-insensitively in Postgres.
+                    resolved = (
+                        str(uuid.UUID(str(pk)))
+                        if self.fixture_repository.pk_exists(label, pk)
+                        else None
+                    )
+                else:
+                    # NK arm — validation already guaranteed a complete
+                    # natural key in ``fields``.
+                    nk = self.fixture_service.natural_key_for(
+                        label, fields,
+                    )
+                    resolved = (
+                        self.fixture_repository.get_pk_by_natural_key(
+                            label, list(nk),
+                        )
+                        if nk is not None else None
+                    )
+                if resolved is None:
+                    conflicts.append({
+                        'code': ERR_INVALID_CATALOG_OBJECT,
+                        'message': ERR_DELETE_TARGET_NOT_FOUND,
+                        'path': f'$.objects[{i}]',
+                    })
+                    continue
+                # A pk-arm and an NK-arm delete — or two NK arms
+                # carrying NULL components — can escape the
+                # payload-level dedup and still resolve to the same
+                # row; the second one conflicts.
+                if (label, resolved) in delete_targets:
+                    conflicts.append({
+                        'code': ERR_INVALID_CATALOG_OBJECT,
+                        'message': ERR_DUPLICATE_DELETE_TARGET,
+                        'path': f'$.objects[{i}]',
+                    })
+                    continue
+                delete_targets.add((label, resolved))
+                # Snapshot the live row now — it is the only source of
+                # natural_key (pk arm) and changed_fields (both arms)
+                # in the results entry, since the row is gone by
+                # report time.
+                snapshots[i] = self.fixture_repository.get_fixture_state(
+                    label, resolved,
+                )
+                classified.append((i, obj, label, resolved))
+                continue
+
+            nk = self.fixture_service.natural_key_for(label, fields)
             pk_match = (
                 pk is not None
                 and self.fixture_repository.pk_exists(label, pk)
@@ -254,7 +381,31 @@ class CatalogImportService:
         # permission aborts the import with an empty transaction.
         created: Counter = Counter()
         updated: Counter = Counter()
-        for _, obj, label, existing_pk in classified:
+        dependents = {}
+        for i, obj, label, existing_pk in classified:
+            if obj.get('delete') is True:
+                self._require_perm(user, 'delete', label)
+                # Point the object at the resolved row — a delete never
+                # reaches deserialization, so the rewrite is reporting
+                # metadata only (results path, apply-error context).
+                obj['pk'] = existing_pk
+                if label == 'nodetype':
+                    # D109: the type's own contract rows (its defs, its
+                    # variants, every composition touching it) are
+                    # deleted with it — each demands its own
+                    # delete_<dep_label> permission. 'detach' rows are
+                    # SET_NULL side-effects of the delete itself and
+                    # require no extra permission.
+                    deps = self.fixture_repository.node_type_dependents(
+                        existing_pk,
+                    )
+                    dependents[i] = deps
+                    for dep_label, dep_pks in deps['delete'].items():
+                        if dep_pks:
+                            self._require_perm(
+                                user, 'delete', dep_label,
+                            )
+                continue
             if existing_pk is not None:
                 self._require_perm(user, 'change', label)
                 # Point the object at the live row so deserialization
@@ -271,12 +422,16 @@ class CatalogImportService:
         # fields with defaults). Reject such objects naming the fields
         # they would reset; omitted fields whose live value already IS
         # the default are harmless and pass. The live snapshots double
-        # as the ``changed_fields`` baseline of the success results.
-        snapshots = {}
+        # as the ``changed_fields`` baseline of the success results —
+        # the dict already carries the delete snapshots taken at
+        # classification.
         defaults_by_label = {}
         reset_errors = []
         for i, obj, label, existing_pk in classified:
-            if existing_pk is None:
+            if existing_pk is None or obj.get('delete') is True:
+                # Creates have no baseline to reset against; deletes
+                # replace nothing — the silent-reset hazard is an
+                # update-only concern.
                 continue
             live = self.fixture_repository.get_fixture_state(
                 label, existing_pk,
@@ -320,13 +475,56 @@ class CatalogImportService:
         # live values verbatim keeps an idempotent re-import working
         # once the first schema exists. The no-op test mirrors the
         # ``changed_fields`` comparison the results pass runs below,
-        # over the snapshots the reset guard just built. The check is
-        # an advisory read inside this transaction: under READ
-        # COMMITTED a schema committed between this pass and the outer
-        # commit escapes verification — a residual TOCTOU window
-        # accepted for v1.
+        # over the snapshots the reset guard just built. Deletes are
+        # always gated — there is no no-op delete — and a nodetype
+        # delete additionally gates every enumerated dependent row,
+        # both the ones deleted with it and the ones SET_NULL-detached,
+        # individually. The check is an advisory read inside this
+        # transaction: under READ COMMITTED a schema committed between
+        # this pass and the outer commit escapes verification — a
+        # residual TOCTOU window accepted for v1.
         usage_errors = []
         for i, obj, label, existing_pk in classified:
+            if obj.get('delete') is True:
+                usage = self.usage_repository.usage_for(
+                    label, existing_pk,
+                )
+                if usage['implemented']:
+                    nk = self._delete_result_nk(
+                        label, obj, snapshots.get(i),
+                    )
+                    usage_errors.append({
+                        'code': ERR_CATALOG_OBJECT_IN_USE,
+                        'message': ERR_CATALOG_OBJECT_IN_USE_MSG.format(
+                            label=label,
+                            natural_key=list(nk) if nk else [],
+                            usage=self._usage_summary(usage['usage']),
+                            action='deletes',
+                        ),
+                        'path': f'$.objects[{i}]',
+                        'usage': usage['usage'],
+                    })
+                    continue
+                if label == 'nodetype':
+                    # Every dependent row gates individually (D109): a
+                    # def referenced by another type's NodeAttribute or
+                    # a composition edge instantiated elsewhere blocks
+                    # the whole delete. The error names the dependent
+                    # row and points at the parent object's path.
+                    parent_nk = self._delete_result_nk(
+                        label, obj, snapshots.get(i),
+                    )
+                    for bucket in ('delete', 'detach'):
+                        for dep_label, dep_pks in (
+                            dependents[i].get(bucket, {}).items()
+                        ):
+                            for dep_pk in dep_pks:
+                                self._gate_dependent(
+                                    usage_errors, i,
+                                    dep_label, dep_pk,
+                                    label, parent_nk,
+                                )
+                continue
             if existing_pk is None:
                 # Creates are never gated (D105): adding to the catalog
                 # is always allowed, even under implemented parents.
@@ -357,6 +555,7 @@ class CatalogImportService:
                         label=label,
                         natural_key=list(nk) if nk else [],
                         usage=self._usage_summary(usage['usage']),
+                        action='updates',
                     ),
                     'path': f'$.objects[{i}]',
                     # Extra key beyond code/message/path: the counts
@@ -367,13 +566,31 @@ class CatalogImportService:
         if usage_errors:
             return self._error_envelope(usage_errors)
 
-        # Apply one object at a time in dependency order (the sort is
-        # stable, so same-rank objects keep payload order): a failure is
-        # mapped back to the payload index of the object that broke —
-        # one batch deserialize call would lose that attribution.
+        # Apply one object at a time: upserts first in ascending
+        # dependency rank (the sort is stable, so same-rank objects keep
+        # payload order), then deletes in DESCENDING rank — children
+        # (attributedef) before the parents (nodetype, domain) that own
+        # them, so no delete relies on cascade ordering and a rename
+        # written as create-new-NK + delete-old-NK applies atomically
+        # in one payload (D108). A failure is mapped back to the
+        # payload index of the object that broke — one batch call would
+        # lose that attribution.
+        upsert_entries = [
+            entry for entry in classified
+            if entry[1].get('delete') is not True
+        ]
+        delete_entries = [
+            entry for entry in classified
+            if entry[1].get('delete') is True
+        ]
         ordered = sorted(
-            classified,
+            upsert_entries,
             key=lambda entry: _APPLY_RANK[entry[2]],
+        )
+        ordered_deletes = sorted(
+            delete_entries,
+            key=lambda entry: _APPLY_RANK[entry[2]],
+            reverse=True,
         )
         # Rows classified as updates may have been deleted after
         # classification — under READ COMMITTED a concurrent DELETE can
@@ -420,15 +637,94 @@ class CatalogImportService:
                     },
                 ])
 
+        # Deletes last, in descending rank (D108). ``deleted`` counts
+        # the rows the ORM cascade collector actually reports — a
+        # target already gone (vanished under READ COMMITTED, or a
+        # dependent shared with another delete of this payload)
+        # returns {} and counts nothing.
+        deleted: Counter = Counter()
+        dep_deleted: dict[int, Counter] = {}
+        for orig_i, obj, label, resolved_pk in ordered_deletes:
+            try:
+                ctx_obj, ctx_label = obj, label
+                if label == 'nodetype':
+                    # D109: the type's contract rows die before it —
+                    # its defs, its variants and every composition
+                    # touching it, in reverse-rank order. Each was
+                    # permission-checked and usage-gated individually
+                    # in the earlier passes.
+                    dep_rows = [
+                        (dep_label, dep_pk)
+                        for dep_label, dep_pks in
+                        dependents.get(orig_i, {}).get(
+                            'delete', {},
+                        ).items()
+                        for dep_pk in dep_pks
+                    ]
+                    dep_rows.sort(
+                        key=lambda entry: _APPLY_RANK[entry[0]],
+                        reverse=True,
+                    )
+                    for dep_label, dep_pk in dep_rows:
+                        ctx_obj, ctx_label = {'pk': dep_pk}, dep_label
+                        counts = (
+                            self.fixture_repository
+                            .delete_fixture_object(dep_label, dep_pk)
+                        )
+                        self._count_deleted(deleted, counts)
+                        dep_counts = dep_deleted.setdefault(
+                            orig_i, Counter(),
+                        )
+                        self._count_deleted(dep_counts, counts)
+                    ctx_obj, ctx_label = obj, label
+                counts = self.fixture_repository.delete_fixture_object(
+                    label, resolved_pk,
+                )
+                self._count_deleted(deleted, counts)
+            except (DeserializationError, ValueError, RuntimeError,
+                    IntegrityError, DatabaseError) as exc:
+                # Same rollback contract as upserts: a mid-delete
+                # failure reverts the whole apply.
+                transaction.set_rollback(True)
+                return self._error_envelope([
+                    {
+                        'code': ERR_INVALID_CATALOG_OBJECT,
+                        'message': self._apply_error_message(
+                            exc, ctx_obj, ctx_label,
+                        ),
+                        'path': f'$.objects[{orig_i}]',
+                    },
+                ])
+
         self.fixture_repository.record_catalog_import(
-            user, self._change_message(created, updated),
+            user, self._change_message(created, updated, deleted),
         )
 
         # Per-object audit trail in payload order — ``classified`` kept
         # the original indices and the pre-apply snapshots pinpoint
-        # which incoming fields actually differ from the live row.
+        # which incoming fields actually differ from the live row (or,
+        # for deletes, which fields the removed row held).
         results = []
         for i, obj, label, existing_pk in classified:
+            if obj.get('delete') is True:
+                live = snapshots.get(i)
+                entry = {
+                    'index': i,
+                    'model': label,
+                    'natural_key': list(
+                        self._delete_result_nk(label, obj, live) or ()
+                    ),
+                    'action': 'deleted',
+                    # Every live field was removed — the snapshot keys
+                    # are the complete change set.
+                    'changed_fields': sorted(live) if live else [],
+                }
+                if label == 'nodetype':
+                    entry['dependents'] = dict(
+                        sorted(dep_deleted.get(i, {}).items())
+                    )
+                results.append(entry)
+                continue
             nk = self.fixture_service.natural_key_for(
                 label, obj['fields'],
             )
@@ -457,6 +753,7 @@ class CatalogImportService:
             'applied': True,
             'created': dict(sorted(created.items())),
             'updated': dict(sorted(updated.items())),
+            'deleted': dict(sorted(deleted.items())),
             'warnings': warnings,
             'results': results,
         }
@@ -475,6 +772,11 @@ class CatalogImportService:
             return
         for obj in objects:
             if not isinstance(obj, dict) or obj.get('pk') is not None:
+                continue
+            if 'delete' in obj:
+                # A delete identifies its target by 'pk' or by the
+                # natural key in 'fields' — an injected uuid5 would
+                # break the XOR arm check validation performs.
                 continue
             model = obj.get('model')
             fields = obj.get('fields')
@@ -525,19 +827,25 @@ class CatalogImportService:
 
         Runs after structural validation — ``fields`` shape, the
         ``data_type`` natural-key reference and ``name`` presence are
-        already guaranteed — and before the classification pass, so
-        every later stage (permission checks, the reset guard, the
-        apply pass, the reported ``changed_fields``) sees the demoted
-        value. The ``isinstance`` guards keep the pass total on
-        unexpected input: a non-string ``dt_name`` would break the
-        predicate's ``startswith`` and an unhashable ``attr_name`` its
-        membership test.
+        already guaranteed on upserts — and before the classification
+        pass, so every later stage (permission checks, the reset guard,
+        the apply pass, the reported ``changed_fields``) sees the
+        demoted value. Delete objects are skipped entirely: their
+        ``fields`` exist only to resolve identity and nothing is
+        persisted, so demotion does not apply. The ``isinstance``
+        guards keep the pass total on unexpected input: a non-string
+        ``dt_name`` would break the predicate's ``startswith`` and an
+        unhashable ``attr_name`` its membership test.
         """
         warnings = []
         for i, obj in enumerate(objects):
             if obj['model'].split('.')[1] != 'attributedef':
                 continue
-            fields = obj['fields']
+            if obj.get('delete') is True:
+                continue
+            fields = obj.get('fields')
+            if not isinstance(fields, dict):
+                continue
             if not fields.get('is_required'):
                 continue
             # ``data_type`` serializes as a natural-key list of strings;
@@ -628,14 +936,84 @@ class CatalogImportService:
             )
 
     @staticmethod
-    def _change_message(created: Counter, updated: Counter) -> str:
+    def _change_message(
+        created: Counter, updated: Counter, deleted: Counter,
+    ) -> str:
         """Summarize the applied counts for the audit LogEntry."""
         parts = []
         if created:
             parts.append(f'created: {dict(sorted(created.items()))}')
         if updated:
             parts.append(f'updated: {dict(sorted(updated.items()))}')
+        if deleted:
+            parts.append(f'deleted: {dict(sorted(deleted.items()))}')
         return '; '.join(parts) or 'no changes'
+
+    def _gate_dependent(
+        self, usage_errors: list, i: int,
+        dep_label: str, dep_pk: str,
+        label: str, parent_nk,
+    ) -> None:
+        """Usage-gate one dependent row of a ``nodetype`` delete.
+
+        A dependent already instantiated by schema data blocks the
+        whole delete — the error carries ``catalog_object_in_use``,
+        names the dependent row (its natural key when it still
+        resolves, else its pk) plus the parent delete's identity, and
+        points at the parent object's payload path.
+        """
+        dep_usage = self.usage_repository.usage_for(dep_label, dep_pk)
+        if not dep_usage['implemented']:
+            return
+        dep_live = self.fixture_repository.get_fixture_state(
+            dep_label, dep_pk,
+        )
+        dep_nk = (
+            self.fixture_service.natural_key_for(dep_label, dep_live)
+            if dep_live else None
+        )
+        usage_errors.append({
+            'code': ERR_CATALOG_OBJECT_IN_USE,
+            'message': ERR_CATALOG_DEPENDENT_IN_USE_MSG.format(
+                dep_label=dep_label,
+                dep_ref=list(dep_nk) if dep_nk else dep_pk,
+                label=label,
+                natural_key=list(parent_nk) if parent_nk else [],
+                usage=self._usage_summary(dep_usage['usage']),
+            ),
+            'path': f'$.objects[{i}]',
+            # Extra key beyond code/message/path: the counts and
+            # owning project slugs blocking the dependent row (D106).
+            'usage': dep_usage['usage'],
+        })
+
+    def _delete_result_nk(
+        self, label: str, obj: dict, live: 'dict | None',
+    ) -> 'tuple | None':
+        """Natural key reported for a delete object.
+
+        NK-arm deletes derive it from their own identifying ``fields``;
+        pk-arm deletes from the live snapshot captured at
+        classification — the row is gone by report time.
+        """
+        fields = obj.get('fields')
+        if isinstance(fields, dict):
+            return self.fixture_service.natural_key_for(label, fields)
+        if live:
+            return self.fixture_service.natural_key_for(label, live)
+        return None
+
+    @staticmethod
+    def _count_deleted(counter: Counter, counts: dict) -> None:
+        """Accumulate ORM delete counts into a deleted counter.
+
+        Keys are normalized to bare catalog labels so the envelope and
+        results report ``attributedef`` regardless of the repository
+        returning bare labels or ``schemas.AttributeDef`` model labels;
+        a falsy ``counts`` (a vanished row) adds nothing.
+        """
+        for key, n in (counts or {}).items():
+            counter[key.split('.')[-1].lower()] += n
 
     @staticmethod
     def _usage_summary(usage: dict) -> str:

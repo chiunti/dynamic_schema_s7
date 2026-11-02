@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 
 from ..constants import (
@@ -103,57 +104,93 @@ class FixtureService:
         """Inventory fixture files with per-row load status.
 
         Status is derived by matching fixture PKs against the DB:
-        ``not_loaded`` / ``partial`` / ``loaded``.
+        ``not_loaded`` / ``partial`` / ``loaded``. A file that cannot be
+        parsed as a fixture payload degrades per file to ``invalid`` —
+        the entry carries the failure detail in ``error`` and the
+        listing survives instead of failing the whole view.
         """
         fixtures = []
         records = self.fixture_repository.get_load_records()
         for path in sorted(FIXTURES_DIR.glob('*.json')):
-            raw = path.read_bytes()
-            objects = json.loads(raw.decode('utf-8'))
-            pks_by_model = {}
-            for obj in objects:
-                label = obj['model'].split('.')[1]
-                pks_by_model.setdefault(label, []).append(obj['pk'])
+            try:
+                raw = path.read_bytes()
+                objects = json.loads(raw.decode('utf-8'))
+                if not isinstance(objects, list):
+                    raise TypeError(
+                        'top-level JSON must be a list of objects',
+                    )
+                pks_by_model = {}
+                for obj in objects:
+                    label = obj['model'].split('.')[1]
+                    pks_by_model.setdefault(label, []).append(obj['pk'])
 
-            existing = sum(
-                self.fixture_repository.count_existing(label, pks)
-                for label, pks in pks_by_model.items()
-            )
-            total = len(objects)
-            if existing == total:
-                status = 'loaded'
-            elif existing:
-                status = 'partial'
-            else:
-                status = 'not_loaded'
-
-            # Whether the file on disk differs from what was last loaded.
-            # A fully-loaded fixture with no record was loaded outside this
-            # tool (migration or CLI loaddata) — adopt the current file as
-            # the baseline so it reads up-to-date instead of offering a
-            # meaningless reload.
-            file_hash = hashlib.sha256(raw).hexdigest()
-            recorded = records.get(path.stem)
-            if status == 'loaded' and recorded is None:
-                self.fixture_repository.record_load(
-                    path.stem, file_hash, total,
+                existing = sum(
+                    self.fixture_repository.count_existing(label, pks)
+                    for label, pks in pks_by_model.items()
                 )
-                recorded = file_hash
-            changed = recorded is not None and recorded != file_hash
+                total = len(objects)
+                if existing == total:
+                    status = 'loaded'
+                elif existing:
+                    status = 'partial'
+                else:
+                    status = 'not_loaded'
 
-            fixtures.append({
-                'name': path.stem,
-                'total': total,
-                'existing': existing,
-                'status': status,
-                'file_changed': changed,
-                'provenance_known': recorded is not None,
-                'by_model': dict(
-                    sorted(Counter(
-                        o['model'].split('.')[1] for o in objects
-                    ).items())
-                ),
-            })
+                # Whether the file on disk differs from what was last
+                # loaded. A fully-loaded fixture with no record was
+                # loaded outside this tool (migration or CLI loaddata)
+                # — adopt the current file as the baseline so it reads
+                # up-to-date instead of offering a meaningless reload.
+                file_hash = hashlib.sha256(raw).hexdigest()
+                recorded = records.get(path.stem)
+                if status == 'loaded' and recorded is None:
+                    self.fixture_repository.record_load(
+                        path.stem, file_hash, total,
+                    )
+                    recorded = file_hash
+                changed = recorded is not None and recorded != file_hash
+
+                fixtures.append({
+                    'name': path.stem,
+                    'total': total,
+                    'existing': existing,
+                    'status': status,
+                    'file_changed': changed,
+                    'provenance_known': recorded is not None,
+                    'by_model': dict(
+                        sorted(Counter(
+                            o['model'].split('.')[1] for o in objects
+                        ).items())
+                    ),
+                })
+            except (
+                UnicodeDecodeError, json.JSONDecodeError, RecursionError,
+                KeyError, IndexError, TypeError, AttributeError,
+                LookupError, ValidationError, OSError,
+            ) as e:
+                # Malformed input only — no bare ``except Exception``:
+                # decode/parse failures (bad utf-8, JSON syntax, runaway
+                # nesting), wrongly-shaped objects ('model' absent,
+                # non-str or without '.', 'pk' absent, non-dict
+                # objects), a non-list top level, and filesystem errors
+                # on the file itself. LookupError/ValidationError extend
+                # the set for file-content-driven repository failures —
+                # apps.get_model misses on unknown model labels
+                # (LookupError also subsumes KeyError/IndexError, kept
+                # explicit above) and non-uuid 'pk' values reaching the
+                # id__in filter. The file is reported 'invalid' with the
+                # error detail instead of failing the whole listing;
+                # no provenance is recorded for it.
+                fixtures.append({
+                    'name': path.stem,
+                    'total': 0,
+                    'existing': 0,
+                    'status': 'invalid',
+                    'file_changed': False,
+                    'provenance_known': path.stem in records,
+                    'by_model': {},
+                    'error': f'{type(e).__name__}: {e}',
+                })
         return fixtures
 
     def load_fixture(self, name: str) -> dict:

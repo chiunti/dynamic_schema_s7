@@ -55,7 +55,7 @@
                         {{ model }}: {{ count }}{% if not forloop.last %}, {% endif %}
                     {% endfor %}
                 </td>
-                <td>{{ fixture.existing }}/{{ fixture.total }}</td>
+                <td>{% if fixture.status == 'invalid' %}<span style="color: #999;">—</span>{% else %}{{ fixture.existing }}/{{ fixture.total }}{% endif %}</td>
                 <td>
                     {% if fixture.status == 'loaded' %}
                         {% if fixture.file_changed %}
@@ -65,12 +65,17 @@
                         {% endif %}
                     {% elif fixture.status == 'partial' %}
                         <span style="color: #9a6700; font-weight: bold;">partial</span>
+                    {% elif fixture.status == 'invalid' %}
+                        <span style="color: #ba2121; font-weight: bold;">invalid</span>
+                        <div style="color: #ba2121; font-size: 12px; max-width: 360px;">{{ fixture.error }}</div>
                     {% else %}
                         <span style="color: #666;">not loaded</span>
                     {% endif %}
                 </td>
                 <td>
-                    {% if fixture.status == 'loaded' and not fixture.file_changed %}
+                    {% if fixture.status == 'invalid' %}
+                        <span style="color: #999;">—</span>
+                    {% elif fixture.status == 'loaded' and not fixture.file_changed %}
                         <span style="color: #999;">—</span>
                     {% else %}
                     <form method="post" action="{% url 'admin:schemas_fixture_load' %}">

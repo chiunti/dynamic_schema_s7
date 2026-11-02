@@ -145,6 +145,9 @@ ERR_SCHEMA_TYPE_REQUIRED = "schema_type_required"
 ERR_INVALID_SCHEMA_TYPE = "invalid_schema_type"
 ERR_INVALID_SCHEMA = "invalid_schema"
 ERR_IMPORT_FAILED = "import_failed"
+# Human-readable messages surfaced via messages.error in SchemaAdmin hooks
+ERR_INVALID_SCHEMA_SCOPE = "Invalid schema scope '{scope}': no matching root node type"
+ERR_NO_ROOT_NODE_TYPE_FOR_SCHEMA = "Cannot create schema: no root node type registered for the empty scope"
 
 # Schema validate endpoint codes — envelope {valid, errors, warnings} of
 # POST /api/schema/validate/ (views.SchemaValidateView)

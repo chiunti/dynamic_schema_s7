@@ -33,7 +33,9 @@ from ..constants import (
     ERR_SCHEMA_TYPE_REQUIRED,
     ERR_PROJECT_ID_REQUIRED,
     ERR_INVALID_SCHEMA,
+    ERR_INVALID_SCHEMA_SCOPE,
     ERR_IMPORT_FAILED,
+    ERR_NO_ROOT_NODE_TYPE_FOR_SCHEMA,
     STATUS_DRAFT,
 )
 from .base import RootNodeAdminMixin
@@ -196,7 +198,22 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
                 or request.POST.get("scope")
                 or form.cleaned_data.get("schema_type")
             )
-            obj.node_type = SchemaService().resolve_root_node_type(scope)
+            # An explicit scope must resolve on its own: falling back to
+            # the scope-less root would silently mistype the schema, and a
+            # node_type of None would surface as an IntegrityError at save.
+            node_type_repository = NodeTypeRepository()
+            if scope:
+                obj.node_type = node_type_repository.get_root_node_type_by_scope(scope)
+            else:
+                obj.node_type = node_type_repository.get_scopeless_root_node_type()
+            if obj.node_type is None:
+                if scope:
+                    messages.error(
+                        request, ERR_INVALID_SCHEMA_SCOPE.format(scope=scope)
+                    )
+                else:
+                    messages.error(request, ERR_NO_ROOT_NODE_TYPE_FOR_SCHEMA)
+                return
             obj.parent = None
         else:
             obj.parent = None

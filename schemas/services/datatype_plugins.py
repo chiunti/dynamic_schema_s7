@@ -24,6 +24,7 @@ two recognized exception types, which the import pipeline handles
 according to mode (strict vs. permissive).
 """
 
+from decimal import Decimal
 from typing import Any, Optional
 
 from django.utils.module_loading import import_string
@@ -238,6 +239,11 @@ def get_storage_defaults(data_type, value):
     if storage == 'string':
         return {"value_string": str(value), "value_number": None, "value_bool": None, "value_json": None}
     elif storage == 'number':
+        # DecimalField coercion is storage-specific: Decimal(str(...)) keeps
+        # floats clean. Numbers routed to 'json' storage must NOT be converted —
+        # Decimal is not JSON-serializable and crashes the INSERT.
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = Decimal(str(value))
         return {"value_string": None, "value_number": value, "value_bool": None, "value_json": None}
     elif storage == 'bool':
         return {"value_string": None, "value_number": None, "value_bool": bool(value), "value_json": None}

@@ -2179,9 +2179,9 @@ class SchemaService:
                         # primary_storage_type. Storage/persistence failures are
                         # real bugs: they propagate to the per-key ValueError
                         # wrapper (or unwrapped for RuntimeError/DatabaseError).
-                        if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            from decimal import Decimal
-                            value = Decimal(str(value))
+                        # Numeric normalization lives inside get_storage_defaults
+                        # (number storage only) — json storage keeps the raw
+                        # value so it stays JSON-serializable.
                         defaults = get_storage_defaults(attr_def.data_type, value)
                         self.repository.update_or_create_node_attribute(
                             node_id,

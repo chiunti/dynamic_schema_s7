@@ -277,10 +277,10 @@ def is_column_mapped_datatype(data_type_name: str) -> bool:
 _AUTHOR_SETTABLE_NODE_FIELDS = frozenset({"sort_order", "name", "key", "version"})
 """Node columns an author can write through a ``natural_*`` attribute.
 
-Mirrors the ``node_fields`` set in
-``SchemaService._build_json_key_to_field_map`` so the server-managed check
-stays a pure string predicate — no model imports needed by either consumer
-(CatalogService emission, SchemaService import).
+Single source for the name-match set consumed by
+``SchemaService._build_json_key_to_field_map``, the server-managed check
+below and the variant-scoped declaration gates — no model imports needed
+by any consumer.
 """
 
 

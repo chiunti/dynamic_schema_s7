@@ -17,8 +17,10 @@ from ..constants import (
     ERR_JSON_KEY_DUPLICATE,
     ERR_JSON_KEY_AND_NAME_REQUIRED,
     ERR_PROPERTIES_MUST_BE_ARRAY,
+    ERR_VARIANT_NODE_FIELD_CARRIER_MSG,
     ERR_VARIANT_VERSION_CARRIER_MSG,
 )
+from .datatype_plugins import _AUTHOR_SETTABLE_NODE_FIELDS
 
 
 class AttributeDefService:
@@ -154,6 +156,14 @@ class AttributeDefService:
         Raises LookupError if the variant_key has no associated NodeType.
         Raises LookupError if the default DataType is missing.
         Raises ValueError if json_key+node_type+variant_key combination already exists.
+        Raises ValueError if name matches a Node column
+        (key/name/sort_order/version) while the def stays
+        variant-scoped: the field-map resolves Node-column carriers at
+        variant_key IS NULL scope only, so the declaration would be
+        inert. Common (is_common) and catalog (add_to_catalog) defs
+        keep variant_key=None and remain legitimate carriers. Mirrors
+        the catalog-import rejection of the same declaration shape
+        (AI-141).
         """
         if not json_key or not name:
             raise ValueError(ERR_JSON_KEY_AND_NAME_REQUIRED)
@@ -166,6 +176,22 @@ class AttributeDefService:
         effective_variant_key = variant_key
         if is_common or add_to_catalog:
             effective_variant_key = None
+
+        # Reject a Node-column name under a variant: the field-map
+        # resolves column carriers at variant_key IS NULL scope only,
+        # so a variant-scoped def named after a column could never
+        # write it — the declaration is invalid, not persisted inert.
+        if (effective_variant_key is not None
+                and name in _AUTHOR_SETTABLE_NODE_FIELDS):
+            raise ValueError(
+                ERR_VARIANT_NODE_FIELD_CARRIER_MSG.format(
+                    natural_key=[
+                        node_type.name, json_key, effective_variant_key,
+                    ],
+                    name=name,
+                    variant_key=effective_variant_key,
+                )
+            )
 
         if self.repository.attribute_def_exists(node_type, json_key, effective_variant_key):
             raise ValueError(ERR_JSON_KEY_DUPLICATE)
@@ -305,42 +331,61 @@ class AttributeDefService:
         Sync the set of catalog AttributeDefs assigned to a variant_key.
         Deletes those removed, creates copies of those added.
 
-        Raises ValueError when a selected catalog template carries the
-        'natural_version' datatype: the copy below propagates data_type
-        verbatim, so it would materialize a variant-scoped version
-        carrier — an inert def, since the field map resolves version
-        carriers at variant_key IS NULL scope only. In the structural
-        path the materialized def would never write node.version nor
-        persist a NodeAttribute row, so the sync is rejected whole
-        instead of applying a partial selection silently. Mirrors the
-        catalog-import rejection of the same declaration shape (AI-117).
+        Raises ValueError when a selected catalog template would
+        materialize an inert variant-scoped Node-column carrier:
 
-        Version-carrier surface verdicts (verified; this is the only
-        rejecting gate — the other carriers' channels skip instead):
+        - a template carrying the 'natural_version' datatype: the copy
+          below propagates data_type verbatim, so it would become a
+          variant-scoped version carrier — inert, since the field map
+          resolves version carriers at variant_key IS NULL scope only.
+          Mirrors the catalog-import rejection (AI-117).
+        - a template whose name matches a Node column
+          (key/name/sort_order/version): the copy propagates name
+          verbatim, so it would name-match a Node column under a
+          variant — equally inert, since the field map resolves every
+          column carrier at IS NULL scope only (post-AI-141). Mirrors
+          the catalog-import rejection of the same declaration shape.
+
+        In the structural path the materialized def would never write
+        the column nor persist a NodeAttribute row, so the sync is
+        rejected whole instead of applying a partial selection
+        silently.
+
+        Column-carrier surface verdicts (verified; this and
+        create_attribute_def are the rejecting gates — the other
+        carriers' channels skip instead):
         - This method is the only admin vector that propagates a
-          template's data_type into a variant-scoped def — gated.
-        - create_attribute_def is a non-vector: its datatype is
-          hardwired to 'string' via get_default_data_type(), so it can
-          never produce 'natural_version'. It can still declare a
-          variant-scoped def named 'version' with an unrelated datatype
-          — a known name-based residual, intentionally out of scope
-          (the gate is datatype-based only, mirroring the import rule).
+          template's data_type into a variant-scoped def — gated on
+          both axes (datatype and name).
+        - create_attribute_def can declare a variant-scoped def named
+          after a Node column with datatype 'string' (its datatype is
+          hardwired via get_default_data_type(), so it can never
+          produce 'natural_version') — gated there (AI-141).
         - make_attribute_specific is a non-vector: it only flips
           is_common and keeps variant_key=None (a common def becomes a
-          catalog template, never a variant def). A 'natural_version'
-          template produced that way is rejected here if ever selected.
+          catalog template, never a variant def). A carrier template
+          produced that way is rejected here if ever selected.
         - SchemaService materializations (_create_attribute_def,
           _set_node_attribute) can inherit a column-mapped datatype from
           a variant_key=None declaration, but the field-map interceptor
-          skips variant-scoped 'natural_version' defs and the
-          column-mapped guard never persists a NodeAttribute — the def
-          stays inert and the path is near-unreachable. Documented, not
-          gated.
+          skips variant-scoped defs and the column-mapped guard never
+          persists a NodeAttribute — the def stays inert and the path
+          is near-unreachable. Documented, not gated.
+        - save_component_properties can still mint a variant-scoped def
+          named after a Node column directly through the repository
+          when a component property value collides (e.g. a 'version'
+          property): pathological but declarable — the field-map keeps
+          it inert. Documented, not gated.
         - NodeService.update_node_properties was a separate real
           vector: an active variant-scoped 'natural_version' def did
           write node.version in the editor. Now gated there (AI-132):
           the write branch skips defs with a variant_key set, the same
-          variant_key IS NULL rule as the import field map.
+          variant_key IS NULL rule as the import field map. Its
+          natural_key / natural_order / display_order branches still
+          lack that guard, so a variant-scoped natural_* def named
+          after a column keeps writing it in the editor while the
+          import field-map now skips it — a known divergence deferred
+          to a follow-up ticket.
         """
         target_names = None
         if scope:
@@ -373,6 +418,22 @@ class AttributeDefService:
                                 catalog_attr.json_key,
                                 None,
                             ],
+                            variant_key=variant_key,
+                        )
+                    )
+                # Same rule on the name axis: a template named after a
+                # Node column would copy into a variant-scoped def that
+                # still name-matches the column — inert in the field
+                # map (see docstring), so the assignment is rejected.
+                if catalog_attr.name in _AUTHOR_SETTABLE_NODE_FIELDS:
+                    raise ValueError(
+                        ERR_VARIANT_NODE_FIELD_CARRIER_MSG.format(
+                            natural_key=[
+                                catalog_attr.node_type.name,
+                                catalog_attr.json_key,
+                                None,
+                            ],
+                            name=catalog_attr.name,
                             variant_key=variant_key,
                         )
                     )

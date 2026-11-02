@@ -14,13 +14,18 @@ key matches a live row **updates** that row's fields; no match
 is enforced at structural validation, so carrying both or neither is
 a per-object error and a delete can never blur into upsert shape.
 
-One semantic rule sits between structural validation and
+Two semantic rules sit between structural validation and
 normalization: an ``attributedef`` upsert declaring datatype
 ``natural_version`` under a non-null ``variant_key`` is rejected per
 object — a version carrier is honored only at ``variant_key IS
 NULL`` scope, so a variant-scoped declaration could never write
 ``Node.version`` (post-AI-106 the structural field-map and the root
-version sync read IS NULL declarations only).
+version sync read IS NULL declarations only) — and so is an upsert
+whose ``name`` matches a ``Node`` column
+(``key``/``name``/``sort_order``/``version``): post-AI-141 the
+field-map resolves every Node-column carrier at ``variant_key IS
+NULL`` scope only, so a variant-scoped name-match is equally inert
+whatever the def's datatype.
 
 Deletes share the update implementation gate: a catalog row already
 instantiated by schema data (``Node``/``NodeAttribute`` rows, in any
@@ -96,12 +101,16 @@ from ..constants import (
     ERR_INVALID_CATALOG_OBJECT,
     ERR_MISSING_MODEL_PERMISSION,
     ERR_UPDATE_RESET_FIELDS,
+    ERR_VARIANT_NODE_FIELD_CARRIER_MSG,
     ERR_VARIANT_VERSION_CARRIER_MSG,
     WARN_IS_REQUIRED_DEMOTED,
 )
 from ..repositories.catalog_usage_repository import CatalogUsageRepository
 from ..repositories.fixture_repository import FixtureRepository
-from .datatype_plugins import is_server_managed_attribute
+from .datatype_plugins import (
+    _AUTHOR_SETTABLE_NODE_FIELDS,
+    is_server_managed_attribute,
+)
 from .fixture_service import FixtureService
 
 if TYPE_CHECKING:
@@ -294,7 +303,7 @@ class CatalogImportService:
                 [self._to_error_entry(e) for e in errors],
             )
 
-        # Variant-scoped version-carrier gate — fail-fast before the
+        # Variant-scoped column-carrier gate — fail-fast before the
         # demote pass mutates anything: a rejected payload must be
         # reported as declared, not normalized first. Post-AI-106 a
         # ``natural_version`` attributedef only acts as the version
@@ -302,14 +311,17 @@ class CatalogImportService:
         # field-map skips variant-scoped defs and the root version
         # sync resolves the carrier from IS NULL declarations only —
         # so a def scoped to a variant can never write
-        # ``Node.version``. Rejecting the declaration here seals the
-        # catalog instead of persisting a carrier that silently never
-        # fires.
-        variant_carrier_errors = (
-            self._reject_variant_scoped_version_carriers(objects)
+        # ``Node.version``. Post-AI-141 the field-map applies the same
+        # IS NULL rule to every def whose ``name`` matches a Node
+        # column (``key``/``name``/``sort_order``/``version``)
+        # regardless of datatype. Rejecting both declaration shapes
+        # here seals the catalog instead of persisting a carrier that
+        # silently never fires.
+        column_carrier_errors = (
+            self._reject_variant_scoped_node_column_carriers(objects)
         )
-        if variant_carrier_errors:
-            return self._error_envelope(variant_carrier_errors)
+        if column_carrier_errors:
+            return self._error_envelope(column_carrier_errors)
 
         # Server-managed required demotion — before classification so
         # the permission pass, the reset guard, the apply pass and the
@@ -914,25 +926,36 @@ class CatalogImportService:
             })
         return warnings
 
-    def _reject_variant_scoped_version_carriers(
+    def _reject_variant_scoped_node_column_carriers(
         self, objects: list,
     ) -> list[dict]:
-        """Reject ``natural_version`` defs declared under a variant.
+        """Reject attributedef upserts carrying a Node column under a variant.
 
-        A ``natural_version`` attributedef only acts as the version
-        carrier at ``variant_key IS NULL`` scope: post-AI-106 the
-        structural field-map
-        (``SchemaService._build_json_key_to_field_map``) skips
-        variant-scoped defs and the root version sync resolves the
-        carrier from IS NULL declarations only, so a
-        ``natural_version`` def carrying a ``variant_key`` can never
-        write ``Node.version``. Admitting it would persist an inert
-        declaration and let the catalog diverge silently, so the
-        import declares the pattern invalid instead — a version
-        carrier must be a non-variant declaration. Only the
-        ``natural_version`` datatype is gated: a def named
-        ``'version'`` under another datatype still maps the column
-        by name and is intentionally out of scope.
+        A Node-column carrier is honored only at ``variant_key IS
+        NULL`` scope, so two declaration shapes are inert under a
+        variant and rejected per object:
+
+        - a ``natural_version`` def: post-AI-106 the structural
+          field-map
+          (``SchemaService._build_json_key_to_field_map``) skips
+          variant-scoped defs and the root version sync resolves the
+          carrier from IS NULL declarations only, so a
+          ``natural_version`` def carrying a ``variant_key`` can never
+          write ``Node.version``.
+        - any def whose ``name`` matches a Node column
+          (``key``/``name``/``sort_order``/``version``): post-AI-141
+          the same field-map resolves name-matched carriers at IS
+          NULL scope only, so a variant-scoped name-match can never
+          write the column whatever the def's datatype — a ``string``
+          def named ``'version'`` diverges exactly like the sealed
+          ``natural_version`` carrier.
+
+        Admitting either shape would persist an inert declaration and
+        let the catalog diverge silently, so the import declares the
+        pattern invalid instead — a column carrier must be a
+        non-variant declaration. An upsert matching both shapes
+        reports the ``natural_version`` diagnosis: it is the more
+        specific of the two rules it violates.
 
         Runs after structural validation — the ``data_type`` FK
         shape and ``variant_key``'s presence as a ``str``-or-``None``
@@ -957,6 +980,9 @@ class CatalogImportService:
             fields = obj.get('fields')
             if not isinstance(fields, dict):
                 continue
+            variant_key = fields.get('variant_key')
+            if variant_key is None:
+                continue
             # ``data_type`` serializes as a natural-key list of
             # strings; a stray scalar is tolerated and judged as-is.
             dt_ref = fields.get('data_type')
@@ -964,20 +990,33 @@ class CatalogImportService:
                 dt_ref[0]
                 if isinstance(dt_ref, list) and dt_ref else dt_ref
             )
-            if not isinstance(dt_name, str) or not dt_name:
-                continue
-            variant_key = fields.get('variant_key')
-            if dt_name != 'natural_version' or variant_key is None:
+            attr_name = fields.get('name')
+            is_version_carrier = (
+                isinstance(dt_name, str) and dt_name == 'natural_version'
+            )
+            is_node_field_carrier = (
+                isinstance(attr_name, str)
+                and attr_name in _AUTHOR_SETTABLE_NODE_FIELDS
+            )
+            if not is_version_carrier and not is_node_field_carrier:
                 continue
             nk = self.fixture_service.natural_key_for(
                 'attributedef', fields,
             )
-            errors.append({
-                'code': ERR_INVALID_CATALOG_OBJECT,
-                'message': ERR_VARIANT_VERSION_CARRIER_MSG.format(
+            if is_version_carrier:
+                message = ERR_VARIANT_VERSION_CARRIER_MSG.format(
                     natural_key=list(nk),
                     variant_key=variant_key,
-                ),
+                )
+            else:
+                message = ERR_VARIANT_NODE_FIELD_CARRIER_MSG.format(
+                    natural_key=list(nk),
+                    name=attr_name,
+                    variant_key=variant_key,
+                )
+            errors.append({
+                'code': ERR_INVALID_CATALOG_OBJECT,
+                'message': message,
                 'path': f'$.objects[{i}]',
             })
         return errors

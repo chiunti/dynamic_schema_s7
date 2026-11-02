@@ -17,6 +17,7 @@ from ..repositories.project_repository import ProjectRepository
 from .conditional_validator import validate_conditional_structure
 from .expression_validator import is_expression_string, validate_expression_value
 from .datatype_plugins import (
+    _AUTHOR_SETTABLE_NODE_FIELDS,
     datatype_validates_expressions,
     get_datatype_doc,
     get_storage_defaults,
@@ -1139,10 +1140,10 @@ class SchemaService:
     
     def _build_json_key_to_field_map(self, attr_defs):
         """Build a mapping from json_key to Node field names based on AttributeDefs"""
-        # Node model fields that can be mapped from JSON
-        node_fields = {'sort_order', 'name', 'key', 'version'}
-        
-        # Build map from AttributeDefs - map based on AttributeDef.name to Node field
+        # Build map from AttributeDefs - map based on AttributeDef.name to
+        # Node field. The author-settable Node column set is shared with the
+        # server-managed predicate and the declaration gates so every
+        # surface resolves the same four columns.
         json_key_map = {}
         for attr_def in attr_defs:
             # natural_version AttributeDefs must write to node.version column,
@@ -1157,7 +1158,22 @@ class SchemaService:
             # do NOT map the JSON value to node.sort_order (it would add 1 extra on output).
             if attr_def.data_type.name == 'display_order':
                 continue
-            if attr_def.name in node_fields:
+            # A variant-scoped def never writes Node columns: variant defs
+            # exist to carry a variant's extra attributes, so a name-match
+            # under variant_key IS NOT NULL is an inert declaration —
+            # column carriers resolve at IS NULL scope only, the same rule
+            # the natural_version branch enforces on its own lane. The
+            # declaration gates (catalog import, admin attribute services)
+            # reject this shape; the skip here is defense-in-depth for
+            # catalogs declared before them. It also seals variant-scoped
+            # natural_* defs named after a column (e.g. natural_key named
+            # 'key'), which this map previously honored — the editor
+            # write-path (NodeService.update_node_properties) still writes
+            # those columns for variant-scoped natural_* defs, a known
+            # divergence deferred to a follow-up ticket.
+            if attr_def.variant_key is not None:
+                continue
+            if attr_def.name in _AUTHOR_SETTABLE_NODE_FIELDS:
                 # If AttributeDef.name matches a Node field, map the json_key to that field
                 json_key_map[attr_def.json_key] = attr_def.name
         

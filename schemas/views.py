@@ -26,7 +26,7 @@ from .constants import (
 from .serializers import CatalogImportSerializer, SchemaImportSerializer
 from .services.catalog_import_service import CatalogImportService
 from .services.catalog_service import CatalogService
-from .services.exceptions import ScopeNotFoundError
+from .services.exceptions import CatalogObjectNotFoundError, ScopeNotFoundError
 from .services.schema_delete_service import SchemaDeleteService
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
@@ -506,3 +506,62 @@ class CatalogImportView(APIView):
                 else status.HTTP_400_BAD_REQUEST
             ),
         )
+
+
+class CatalogUsageView(APIView):
+    """Usage pre-check for one catalog object (AI-143).
+
+    Exposes the ``catalog_object_in_use`` gate's calculation as a read so
+    an L2 agent can check before proposing updates/deletes instead of
+    discovering implementation by rejection. Identification mirrors the
+    delete objects of ``CatalogImportView``:
+    ``?model=schemas.<label>&pk=<uuid>`` XOR
+    ``?model=schemas.<label>&<natural-key components>`` (each NK position
+    travels as its own query param; omit it to address a NULL position).
+    Success relays the service result verbatim — ``{"implemented": bool,
+    "usage": {<metric>: int, "projects": [...]}}``, the same evidence a
+    rejected import would report.
+
+    Authentication is dual: user MCP tokens require ``mcp_level >= 2``
+    (``CanAuthorCatalog`` — the usage check is catalog-authoring
+    metadata) and project credentials require ``can_read``. The
+    calculation is global and advisory — no project scoping, same
+    TOCTOU caveat as the import gate.
+    """
+
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanReadSchema | CanAuthorCatalog]
+
+    def get(self, request: Request) -> Response:
+        params = request.query_params
+        try:
+            result = CatalogImportService().get_object_usage(
+                params.get('model'),
+                pk=params.get('pk'),
+                nk_params={
+                    name: params[name]
+                    for name in params
+                    if name not in ('model', 'pk')
+                },
+            )
+        except CatalogObjectNotFoundError as exc:
+            return Response(
+                {
+                    "error": str(exc),
+                    "model": exc.model,
+                    "identifier": exc.identifier,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": ERR_INVALID_REQUEST, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Catalog usage check failed")
+            return Response(
+                {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(result, status=status.HTTP_200_OK)

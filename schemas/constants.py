@@ -189,6 +189,15 @@ WARN_IMPORT = "import_warning"
 WARN_IS_REQUIRED_DEMOTED = "is_required_demoted"
 WARN_MISSING_REQUIRED_ATTRIBUTES = "missing_required_attributes"
 
+# Catalog usage endpoint codes — envelope of GET /api/catalog/usage/
+# (views.CatalogUsageView). The 400 family reuses the shared
+# ERR_INVALID_REQUEST code.
+ERR_CATALOG_OBJECT_NOT_FOUND = "catalog_object_not_found"
+ERR_USAGE_MODEL_REQUIRED = "model query parameter is required (expected 'schemas.<label>')"
+ERR_USAGE_IDENTIFIER_CONFLICT = "identify the object by 'pk' or natural-key parameters, not both"
+ERR_USAGE_IDENTIFIER_REQUIRED = "identify the object by 'pk' or natural-key parameters"
+ERR_USAGE_UNKNOWN_NK_PARAMS = "unknown identifier parameters: {params} — natural key of {label}: {fields}"
+
 # Logging error messages
 ERR_INVALID_JSON_MSG = "Invalid JSON: {error}"
 ERR_ERROR_IN_SCHEMA_VIEW = "Error in schema_view: {error}"

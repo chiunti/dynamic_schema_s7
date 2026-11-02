@@ -40,6 +40,12 @@ resource. Shape:
   datatype documentation — this section summarizes usage, it is not a
   second grammar.
 
+- ``usage_check`` — the advisory pre-check for the
+  ``catalog_object_in_use`` gate: ``GET catalog/usage/`` (tool
+  ``s7_catalog_usage``) reports the same ``{implemented, usage}``
+  evidence the import gate would reject with, so updates/deletes can
+  be checked before they are proposed.
+
 ``validate_example_import_objects`` lives next to the document: the
 single check both drift suites run against
 ``resolved_vs_import.example.import.objects[]``, so the shipped grammar
@@ -758,6 +764,32 @@ CATALOG_GRAMMAR: dict = {
             "summarizes usage and does not redefine it."
         ),
     },
+    "usage_check": (
+        "GET catalog/usage/ (tool s7_catalog_usage) is the advisory "
+        "pre-check of the catalog_object_in_use gate — call it on "
+        "each target row before proposing field-changing updates or "
+        "delete objects in s7_import_catalog so implemented rows are "
+        "caught without spending the transaction. The query carries "
+        "'model' (a schemas.<label> of this document) plus exactly "
+        "one identifier — 'pk' (uuid) XOR the natural-key "
+        "components as loose params: name=<node type name> for a "
+        "nodetype, domain=<domain_name>&value=<value> for a "
+        "domainitem, node_type=<name>&json_key=<key>&variant_key="
+        "<key> for an attributedef (the same components the delete "
+        "objects take under 'fields', sent flat). An omitted "
+        "nullable component resolves as NULL; omitting a required "
+        "component is an incomplete natural key. A 200 answers "
+        "{implemented: bool, usage: {nodes|node_attributes: int, "
+        "projects: [slugs]}} — the same evidence the rejection's "
+        "'usage' detail reports. An unknown row answers 404 "
+        "catalog_object_not_found, and a missing 'model', a "
+        "non-authorizable label, both or neither identifier, an "
+        "unknown param or an incomplete natural key answers 400 "
+        "invalid_request. It is a read, not a lock — usage can "
+        "change between this check and the apply, which the gate "
+        "still re-checks (same READ COMMITTED advisory semantics, "
+        "same TOCTOU window)."
+    ),
 }
 
 

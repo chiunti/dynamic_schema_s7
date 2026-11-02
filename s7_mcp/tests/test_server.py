@@ -42,6 +42,7 @@ EXPECTED_TOOLS = {
     "s7_validate_schema",
     "s7_import_draft",
     "s7_import_catalog",
+    "s7_catalog_usage",
 }
 
 
@@ -448,6 +449,135 @@ class CatalogImportTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
+class CatalogUsageTests(unittest.TestCase):
+    """``s7_catalog_usage`` forwards the dual identifier to ``catalog/usage/``.
+
+    ``model``/``pk`` travel as base params and ``fields`` is flattened
+    into the same dict — each natural-key component becomes its own
+    query param, and a ``pk=None`` stays inside the params dict (the
+    client drops None-valued params when building the query string).
+    """
+
+    def setUp(self):
+        self.client = MagicMock()
+        self.client.get_json.return_value = {"ok": True}
+        patcher = patch.object(
+            server, "_get_client", return_value=self.client
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _call(self):
+        return self.client.get_json.call_args
+
+    def test_natural_key_fields_flattened_into_params(self):
+        result = server.s7_catalog_usage(
+            "schemas.nodetype", fields={"name": "field"}
+        )
+        self.assertIs(result, self.client.get_json.return_value)
+        self.assertEqual(self._call()[0][0], "catalog/usage/")
+        self.assertEqual(
+            self._call()[1]["params"],
+            {"model": "schemas.nodetype", "pk": None, "name": "field"},
+        )
+
+    def test_pk_arm_sends_pk_and_no_nk_components(self):
+        pk = "12345678-1234-5678-1234-567812345678"
+        server.s7_catalog_usage("schemas.domain", pk=pk)
+        self.assertEqual(
+            self._call()[1]["params"],
+            {"model": "schemas.domain", "pk": pk},
+        )
+
+    def test_no_fields_sends_only_model_and_pk(self):
+        """``fields=None`` adds nothing — the params dict carries just
+        the base identifier entries."""
+        server.s7_catalog_usage("schemas.nodetype")
+        self.assertEqual(
+            self._call()[1]["params"],
+            {"model": "schemas.nodetype", "pk": None},
+        )
+
+    def test_none_pk_stays_in_params_for_client_to_drop(self):
+        """``pk=None`` is forwarded inside the params dict — the
+        client, not the tool, filters None-valued params."""
+        server.s7_catalog_usage("schemas.nodetype", fields={"name": "x"})
+        self.assertIn("pk", self._call()[1]["params"])
+        self.assertIsNone(self._call()[1]["params"]["pk"])
+
+    def test_multi_component_natural_key_flattens(self):
+        """A multi-position natural key (``domainitem``:
+        ``domain``+``value``) lands flat in the params dict — every
+        component is its own query param, same vocabulary as the
+        delete objects."""
+        server.s7_catalog_usage(
+            "schemas.domainitem",
+            fields={"domain": "dom_x", "value": "v1"},
+        )
+        self.assertEqual(
+            self._call()[1]["params"],
+            {
+                "model": "schemas.domainitem",
+                "pk": None,
+                "domain": "dom_x",
+                "value": "v1",
+            },
+        )
+
+    def test_fields_cannot_override_base_params(self):
+        """A ``fields`` key named ``model`` or ``pk`` is dropped — it
+        would silently redirect the query to a different model or flip
+        the identifier arm. ``fields`` carries natural-key components
+        only."""
+        server.s7_catalog_usage(
+            "schemas.nodetype", pk="abc",
+            fields={"model": "schemas.domain", "pk": "xyz", "name": "f"},
+        )
+        self.assertEqual(
+            self._call()[1]["params"],
+            {"model": "schemas.nodetype", "pk": "abc", "name": "f"},
+        )
+
+    def test_success_envelope_propagates_verbatim(self):
+        envelope = {
+            "implemented": True,
+            "usage": {"nodes": 1, "projects": ["app-oaxaca"]},
+        }
+        self.client.get_json.return_value = envelope
+        self.assertIs(
+            server.s7_catalog_usage("schemas.nodetype", fields={"name": "f"}),
+            envelope,
+        )
+
+    def test_not_found_envelope_propagates_verbatim(self):
+        envelope = {
+            "error": "catalog_object_not_found",
+            "model": "schemas.nodetype",
+            "identifier": {"natural_key": {"name": "field"}},
+        }
+        self.client.get_json.return_value = envelope
+        self.assertIs(server.s7_catalog_usage("schemas.nodetype"), envelope)
+
+    def test_invalid_request_envelope_propagates_verbatim(self):
+        envelope = {
+            "error": "invalid_request",
+            "message": (
+                "identify the object by 'pk' or natural-key parameters"
+            ),
+        }
+        self.client.get_json.return_value = envelope
+        self.assertIs(server.s7_catalog_usage("schemas.nodetype"), envelope)
+
+    def test_tool_signature_is_model_pk_fields(self):
+        """Thin-wrapper contract: exactly ``(model, pk, fields)`` — no
+        extra knobs, same arity as the delete-object identifier."""
+        self.assertEqual(
+            list(inspect.signature(server.s7_catalog_usage).parameters),
+            ["model", "pk", "fields"],
+        )
+
+
+@unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class ResourceTests(unittest.TestCase):
     """Resources mirror tool paths and propagate envelopes per contract."""
 
@@ -664,6 +794,19 @@ class CatalogGrammarDataTests(unittest.TestCase):
         semantics = CATALOG_GRAMMAR["payload"]["semantics"]
         self.assertIn("catalog_object_in_use", semantics)
         self.assertIn("'usage'", semantics)
+
+    def test_usage_check_section_shape(self):
+        """The ``usage_check`` section is a top-level sibling carrying
+        the pre-check prose — endpoint, tool, dual identifier and the
+        gate it mirrors must all be discoverable in it."""
+        section = CATALOG_GRAMMAR["usage_check"]
+        self.assertIsInstance(section, str)
+        for needle in (
+            "s7_catalog_usage", "catalog/usage/",
+            "catalog_object_in_use", "implemented",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, section)
 
     def test_document_is_json_serializable(self):
         """Served with ``mime_type="application/json"`` — the dict must
@@ -1132,9 +1275,9 @@ class LazyClientTests(unittest.TestCase):
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class McpSurfaceTests(unittest.TestCase):
-    """The exposed MCP surface: exactly the eight tools."""
+    """The exposed MCP surface: exactly the EXPECTED_TOOLS set."""
 
-    def test_the_eight_tools_exist_and_are_callable(self):
+    def test_every_expected_tool_exists_and_is_callable(self):
         for name in EXPECTED_TOOLS:
             with self.subTest(tool=name):
                 self.assertTrue(
@@ -1160,7 +1303,7 @@ class McpSurfaceTests(unittest.TestCase):
         self.assertNotIn("schema_status", params)
 
     def test_registered_tool_set_matches_module_functions(self):
-        """The SDK registry (when introspectable) holds exactly the 8 tools."""
+        """The SDK registry (when introspectable) holds exactly the expected tools."""
         tool_manager = getattr(server.mcp, "_tool_manager", None)
         registered = getattr(tool_manager, "_tools", None)
         if isinstance(registered, dict):

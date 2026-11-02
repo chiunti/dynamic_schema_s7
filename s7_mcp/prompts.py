@@ -112,7 +112,12 @@ ones, and `delete: true` objects remove rows. Each delete needs the \
 `delete_<label>` permission and a row implemented by existing schemas \
 in any project rejects it with `catalog_object_in_use` — a \
 field-changing update on such a row is gated the same way; creates and \
-no-op updates are exempt, deletes have no no-op exemption. Deletes \
+no-op updates are exempt, deletes have no no-op exemption. Before \
+applying, call `s7_catalog_usage` on the update/delete targets — a \
+row already implemented answers `implemented: true` with the same \
+`usage` detail the rejection would carry, caught without spending \
+the transaction (advisory read — the gate still re-checks at apply). \
+Deletes \
 apply after all upserts, children before parents, so \
 a rename is a create with the new natural key plus a delete of the old \
 one in the same payload. Updates replace the whole row — include every \

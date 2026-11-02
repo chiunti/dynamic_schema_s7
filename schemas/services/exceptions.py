@@ -2,7 +2,11 @@
 
 from typing import Any, Optional
 
-from ..constants import ERR_INVALID_SCHEMA, ERR_SCOPE_NOT_FOUND
+from ..constants import (
+    ERR_CATALOG_OBJECT_NOT_FOUND,
+    ERR_INVALID_SCHEMA,
+    ERR_SCOPE_NOT_FOUND,
+)
 
 
 class SchemaValidationError(ValueError):
@@ -55,3 +59,20 @@ class ScopeNotFoundError(LookupError):
     def __init__(self, available_scopes: list[str]) -> None:
         super().__init__(ERR_SCOPE_NOT_FOUND)
         self.available_scopes = available_scopes
+
+
+class CatalogObjectNotFoundError(LookupError):
+    """Catalog-object lookup failure for the usage pre-check endpoint.
+
+    ``str(exc)`` yields ``ERR_CATALOG_OBJECT_NOT_FOUND``; ``model`` and
+    ``identifier`` echo the addressing for the 404 envelope —
+    ``identifier`` is ``{"pk": <raw value>}`` or ``{"natural_key":
+    {<param>: <value>, ...}}`` depending on the arm the caller used.
+    Subclasses ``LookupError`` so callers that already catch
+    ``LookupError`` keep working.
+    """
+
+    def __init__(self, model: str, identifier: dict) -> None:
+        super().__init__(ERR_CATALOG_OBJECT_NOT_FOUND)
+        self.model = model
+        self.identifier = identifier

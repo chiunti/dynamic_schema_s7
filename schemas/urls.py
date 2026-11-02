@@ -3,6 +3,7 @@ from .views import (
     CatalogDatatypesView,
     CatalogImportView,
     CatalogScopeView,
+    CatalogUsageView,
     SchemaDraftView,
     SchemaImportView,
     SchemaPublishView,
@@ -34,10 +35,11 @@ urlpatterns = [
         name='schema-draft',
     ),
     path('schema/<str:node_type>/<str:key>/<str:version>/', SchemaView.as_view(), name='schema'),
-    # Catalog — the literal 'import' and 'datatypes' routes must precede
-    # '<str:scope>' so they are not captured as a scope
+    # Catalog — the literal 'import', 'datatypes' and 'usage' routes must
+    # precede '<str:scope>' so they are not captured as a scope
     path('catalog/import/', CatalogImportView.as_view(), name='catalog-import'),
     path('catalog/datatypes/', CatalogDatatypesView.as_view(), name='catalog-datatypes'),
+    path('catalog/usage/', CatalogUsageView.as_view(), name='catalog-usage'),
     path('catalog/<str:scope>/', CatalogScopeView.as_view(), name='catalog-scope'),
     # Organizations
     path('organizations/', OrganizationListCreateView.as_view(), name='organization-list'),

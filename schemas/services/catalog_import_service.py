@@ -82,12 +82,20 @@ non-fatal payload normalizations applied pre-write: an
 is demoted to ``False``, never rejected. Catalog grammar is global and
 takes effect immediately (no draft lifecycle); every import is
 attributed to the calling user through an admin ``LogEntry``.
+
+The same implementation check is exposed as a pure read:
+``get_object_usage`` backs ``GET /api/catalog/usage/`` — the pre-check
+an L2 agent runs before proposing updates/deletes instead of
+discovering implementation by rejection. It resolves the addressed row
+(pk XOR natural-key params) and relays the same ``{implemented,
+usage}`` evidence the gate would report, so both surfaces share one
+calculation: ``catalog_object_usage``.
 """
 
 import re
 import uuid
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from django.core.serializers.base import DeserializationError
 from django.db import DatabaseError, IntegrityError, transaction
@@ -100,7 +108,14 @@ from ..constants import (
     ERR_DUPLICATE_DELETE_TARGET,
     ERR_INVALID_CATALOG_OBJECT,
     ERR_MISSING_MODEL_PERMISSION,
+    ERR_MISSING_NATURAL_KEY_FIELDS,
+    ERR_PK_MUST_BE_VALID_UUID,
+    ERR_UNKNOWN_CATALOG_MODEL_LABEL,
     ERR_UPDATE_RESET_FIELDS,
+    ERR_USAGE_IDENTIFIER_CONFLICT,
+    ERR_USAGE_IDENTIFIER_REQUIRED,
+    ERR_USAGE_MODEL_REQUIRED,
+    ERR_USAGE_UNKNOWN_NK_PARAMS,
     ERR_VARIANT_NODE_FIELD_CARRIER_MSG,
     ERR_VARIANT_VERSION_CARRIER_MSG,
     WARN_IS_REQUIRED_DEMOTED,
@@ -111,7 +126,8 @@ from .datatype_plugins import (
     _AUTHOR_SETTABLE_NODE_FIELDS,
     is_server_managed_attribute,
 )
-from .fixture_service import FixtureService
+from .exceptions import CatalogObjectNotFoundError
+from .fixture_service import NATURAL_KEY_FIELDS, FixtureService
 
 if TYPE_CHECKING:
     from ..repositories.user_repository import User
@@ -536,7 +552,7 @@ class CatalogImportService:
         usage_errors = []
         for i, obj, label, existing_pk in classified:
             if obj.get('delete') is True:
-                usage = self.usage_repository.usage_for(
+                usage = self.catalog_object_usage(
                     label, existing_pk,
                 )
                 if usage['implemented']:
@@ -594,7 +610,7 @@ class CatalogImportService:
                 # implemented — a re-import of the catalog cannot be
                 # permanently broken by existing schemas.
                 continue
-            usage = self.usage_repository.usage_for(label, existing_pk)
+            usage = self.catalog_object_usage(label, existing_pk)
             if usage['implemented']:
                 nk = self.fixture_service.natural_key_for(
                     label, obj['fields'],
@@ -807,6 +823,124 @@ class CatalogImportService:
             'warnings': warnings,
             'results': results,
         }
+
+    def catalog_object_usage(self, label: str, pk: 'str | uuid.UUID') -> dict:
+        """Shared 'implemented by existing schemas' calculation.
+
+        Thin delegation to ``usage_repository.usage_for`` — same
+        contract: a well-formed pk of a vanished row returns zeroed
+        usage (the gate's reclassify-as-insert path relies on it).
+        Called by the update/delete gates and by the usage pre-check
+        endpoint.
+        """
+        return self.usage_repository.usage_for(label, pk)
+
+    def get_object_usage(
+        self,
+        model: Optional[str],
+        pk: Optional[str],
+        nk_params: dict,
+    ) -> dict:
+        """Usage pre-check for one catalog row (GET /api/catalog/usage/).
+
+        ``model`` is ``schemas.<label>`` — the label must be in
+        ``CATALOG_MODELS``. The object is identified by exactly one
+        arm: ``pk`` (uuid) or ``nk_params`` (the natural-key
+        components as flat scalar query params — omit a component,
+        or send an empty string, to address a NULL position like
+        ``variant_key``/``collection_key``/``discriminator_attr``/
+        unbound ``node_type``). Raises ``ValueError`` for the 400
+        family and ``CatalogObjectNotFoundError`` when the
+        identifier resolves to no live row. Returns the
+        ``{implemented, usage}`` dict of ``catalog_object_usage``.
+        """
+        if not model or not isinstance(model, str):
+            raise ValueError(ERR_USAGE_MODEL_REQUIRED)
+        # Exactly one dot, like validate_objects — 'schemas.x.y' or
+        # 'schemas' can never smuggle a label in position [1].
+        if (not model.startswith('schemas.') or model.count('.') != 1
+                or model.split('.')[1] not in CATALOG_MODELS):
+            raise ValueError(
+                ERR_UNKNOWN_CATALOG_MODEL_LABEL.format(label=model),
+            )
+        label = model.split('.')[1]
+
+        has_pk = pk is not None
+        has_nk = bool(nk_params)
+        if has_pk and has_nk:
+            raise ValueError(ERR_USAGE_IDENTIFIER_CONFLICT)
+        if not has_pk and not has_nk:
+            raise ValueError(ERR_USAGE_IDENTIFIER_REQUIRED)
+
+        if has_pk:
+            # Canonicalize like the classification pass: non-canonical
+            # UUID spellings match case-insensitively in Postgres.
+            try:
+                canonical_pk = str(uuid.UUID(str(pk)))
+            except (ValueError, AttributeError, TypeError) as e:
+                raise ValueError(
+                    ERR_PK_MUST_BE_VALID_UUID.format(pk=pk),
+                ) from e
+            if not self.fixture_repository.pk_exists(
+                label, canonical_pk,
+            ):
+                raise CatalogObjectNotFoundError(model, {'pk': pk})
+            return self.catalog_object_usage(label, canonical_pk)
+
+        # NK arm — params beyond the model's natural-key fields are
+        # rejected rather than ignored: a stray key usually means a
+        # misspelled component, and silently dropping it would query
+        # a different (incomplete) identity than the caller meant.
+        expected = NATURAL_KEY_FIELDS[label]
+        unknown = set(nk_params) - set(expected)
+        if unknown:
+            raise ValueError(
+                ERR_USAGE_UNKNOWN_NK_PARAMS.format(
+                    params=', '.join(sorted(unknown)),
+                    label=label,
+                    fields=', '.join(expected),
+                )
+            )
+        # NULL positions are addressed by omitting the param or by
+        # sending it empty — both map to None. natural_key_for reads
+        # the same fixture-format dict its import-pass calls build:
+        # FK positions accept the scalar the query param carries
+        # (``nk1`` unwraps lists but passes scalars through).
+        fields = {
+            name: (nk_params[name] or None)
+            for name in expected
+            if name in nk_params
+        }
+        # A non-nullable position must carry a real value; a nullable
+        # one legitimately resolves to NULL (base attributedefs carry
+        # ``variant_key`` NULL, global defs ``node_type`` NULL). An
+        # unresolvable nullability map reads as "nothing nullable".
+        nullable = (
+            self.fixture_repository.get_nullable_field_names(label)
+            or frozenset()
+        )
+        missing = [
+            name
+            for name in expected
+            if name not in nullable and fields.get(name) is None
+        ]
+        if missing:
+            raise ValueError(
+                ERR_MISSING_NATURAL_KEY_FIELDS.format(
+                    fields=', '.join(missing),
+                )
+            )
+        # ``nk`` is never None: every CATALOG_MODELS label declares a
+        # natural key in NATURAL_KEY_FIELDS.
+        nk = self.fixture_service.natural_key_for(label, fields)
+        resolved = self.fixture_repository.get_pk_by_natural_key(
+            label, list(nk),
+        )
+        if resolved is None:
+            raise CatalogObjectNotFoundError(
+                model, {'natural_key': nk_params},
+            )
+        return self.catalog_object_usage(label, resolved)
 
     # ------------------------------------------------------------------ #
     # Internals                                                           #
@@ -1107,7 +1241,7 @@ class CatalogImportService:
         resolves, else its pk) plus the parent delete's identity, and
         points at the parent object's payload path.
         """
-        dep_usage = self.usage_repository.usage_for(dep_label, dep_pk)
+        dep_usage = self.catalog_object_usage(dep_label, dep_pk)
         if not dep_usage['implemented']:
             return
         dep_live = self.fixture_repository.get_fixture_state(

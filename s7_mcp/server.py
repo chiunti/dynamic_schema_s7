@@ -248,6 +248,53 @@ def s7_import_catalog(objects: list[dict]) -> dict:
     return _get_client().post_json("catalog/import/", {"objects": objects})
 
 
+@mcp.tool()
+def s7_catalog_usage(model: str, pk: str | None = None,
+                     fields: dict | None = None) -> dict:
+    """Pre-check the ``catalog_object_in_use`` gate for one catalog row.
+
+    Call it on each target row BEFORE proposing field-changing updates
+    or delete objects in ``s7_import_catalog``: a row implemented by
+    existing schemas (``Node``/``NodeAttribute`` rows in any project)
+    is rejected there with ``catalog_object_in_use`` — this read
+    returns the same evidence without spending the transaction. The
+    200 body is ``{"implemented": bool, "usage": {...}}`` mirroring
+    the rejection's ``usage`` detail — counts of the implementing
+    rows (``nodes``/``node_attributes``) plus the slugs of the
+    projects that own them.
+
+    ``model`` is one authorizable ``schemas.<label>`` — domain,
+    domainitem, nodetype, nodetypecomposition, nodetypevariant,
+    attributedef. The row takes exactly one identifier — ``pk``
+    (uuid) XOR ``fields`` carrying the natural-key components as
+    flat entries, the same vocabulary as the delete objects:
+    ``{"name": "field"}`` for a nodetype, ``{"domain":
+    "<domain_name>", "value": "<value>"}`` for a domainitem,
+    ``{"node_type": ..., "json_key": ..., "variant_key": ...}`` for
+    an attributedef. An omitted nullable component resolves as NULL;
+    omitting a required component is an incomplete natural key. A
+    ``pk=None`` never travels — the client drops None-valued params.
+
+    A missing row answers 404 ``{"error":
+    "catalog_object_not_found", "model": ..., "identifier": {...}}``;
+    a missing ``model``, a non-authorizable label, both or neither
+    identifier, an unknown param or an incomplete natural key
+    answers 400 ``{"error": "invalid_request", "message": ...}``.
+
+    Dual auth: a user MCP token with ``mcp_level >= 2`` or a project
+    credential with ``can_read``. Advisory read under READ COMMITTED
+    — the same TOCTOU window as the gate applies, so the answer can
+    go stale before the import runs.
+    """
+    params = {"model": model, "pk": pk}
+    # ``fields`` carries natural-key components only — a stray
+    # ``model``/``pk`` key must not silently override the base args.
+    params.update(
+        {k: v for k, v in (fields or {}).items() if k not in params}
+    )
+    return _get_client().get_json("catalog/usage/", params=params)
+
+
 # ---------------------------------------------------------------------------
 # Resources — read-only context for the agent.
 # ---------------------------------------------------------------------------

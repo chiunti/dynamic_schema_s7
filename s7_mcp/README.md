@@ -107,6 +107,7 @@ of `mcpServers`.
 | `s7_import_draft(node_type, schema, schema_key?, schema_version?, overwrite?)` | `POST schema/import/` | Persist the schema — always as `draft`. |
 | `s7_delete_draft(node_type, key, version)` | `DELETE schema/draft/<node_type>/<key>/<version>/` | Delete a draft schema — destructive and irreversible; frees the node types the draft implemented. Draft-only: a missing or non-draft schema answers the same RFC-7807 404 as the read. **User token only (any level) with edit rights on the project** — project credentials get 403; `S7_PROJECT_ID` is sent as `?project_id=`. |
 | `s7_import_catalog(objects)` | `POST catalog/import/` | Apply a fixture-format catalog payload (`{"objects": [{model, pk?, fields, delete?}]}`) → `{applied, created?, updated?, deleted?, results?, errors?, warnings?}`. Updates replace the whole row — resubmit every field you want to keep, and object keys outside `model`/`pk`/`fields`/`delete` are rejected. A `{"delete": true}` object identified by `pk` XOR natural-key `fields` removes a row: it needs the `delete_<label>` permission and is usage-gated — a row implemented by existing schemas in any project answers `catalog_object_in_use`, and a field-changing update on such a row is rejected the same way (creates and no-op updates are exempt). Upserts apply first, then deletes children-before-parents, so a rename is a create + delete in one atomic payload. **User token level ≥ 2 + per-model catalog permissions** — anything else gets the 401/403 envelope verbatim. |
+| `s7_catalog_usage(model, pk?, fields?)` | `GET catalog/usage/` | Pre-check of the `catalog_object_in_use` gate → `{implemented, usage}` — call it on update/delete targets before `s7_import_catalog` to get the same `usage` evidence a rejection would carry. The row is identified by `pk` XOR natural-key `fields` sent as flat params (an omitted nullable component resolves as NULL). Global read — no `project_id` scoping. **User token level ≥ 2 or project credential `can_read`**; advisory read — the gate still re-checks at apply time. |
 
 `schema` accepts a JSON object or a JSON string. `schema_key` and
 `schema_version` are explicit overrides for the values carried inside the
@@ -124,7 +125,7 @@ the divergence reported as a warning) > `"1"`.
 | `s7://datatypes` | DataType catalog JSON. |
 | `s7://examples/{scope}` | Generated example JSON for the scope. |
 | `s7://schemas/{node_type}/{key}/{version}` | Published schema JSON (few-shot). Dual auth — user tokens need `S7_PROJECT_ID`; see `s7_get_schema`. |
-| `s7://catalog-grammar` | Field reference for the six level-2-authorizable catalog models: writable fields, natural keys, FK `[natural_key]` shapes, payload semantics, plus a `resolved_vs_import` table mapping the resolved-catalog read shape to the fixture objects the import accepts, and an `expressions` section with usage guidance for `{{ expr }}` token values on `expression`-typed attributes (static, shipped with the package). |
+| `s7://catalog-grammar` | Field reference for the six level-2-authorizable catalog models: writable fields, natural keys, FK `[natural_key]` shapes, payload semantics, plus a `resolved_vs_import` table mapping the resolved-catalog read shape to the fixture objects the import accepts, an `expressions` section with usage guidance for `{{ expr }}` token values on `expression`-typed attributes, and a `usage_check` section documenting the `s7_catalog_usage` pre-check (static, shipped with the package). |
 
 ### Prompts
 
@@ -159,7 +160,9 @@ the divergence reported as a warning) > `"1"`.
   not found/not in the requested status — published for `s7_get_schema`,
   draft for `s7_get_draft`; `s7_delete_draft` on a missing or non-draft
   schema answers the same RFC-7807 body
-  `{"type": "schema_not_found", "title", "detail", "status": 404}`.
+  `{"type": "schema_not_found", "title", "detail", "status": 404}`;
+  `s7_catalog_usage` on a catalog row that does not exist answers
+  `{"error": "catalog_object_not_found", "model", "identifier"}`.
 - **`{"error": {"code": "payload_too_large", ...}}`** — the outgoing JSON body
   exceeded `S7_MAX_PAYLOAD_KB`; the request was not sent. Split/trim the schema
   or raise the limit.

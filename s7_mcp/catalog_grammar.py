@@ -324,7 +324,12 @@ CATALOG_GRAMMAR: dict = {
                     "type": "string",
                     "required": False,
                     "nullable": True,
-                    "notes": "part of the natural key; may be null",
+                    "notes": (
+                        "part of the natural key; may be null. A "
+                        "'natural_version' attributedef under a variant_key "
+                        "is rejected — a version carrier must be a "
+                        "non-variant declaration"
+                    ),
                 },
                 "name": {
                     "type": "string",

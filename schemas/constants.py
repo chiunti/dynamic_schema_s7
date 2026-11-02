@@ -112,6 +112,7 @@ ERR_SCHEMA_NOT_ARCHIVED_STATUS = "schema_not_archived: Current status is '{curre
 # Admin view error messages
 ERR_NODE_ID_REQUIRED = "node_id_required"
 ERR_ID_REQUIRED = "id is required"
+ERR_SELECTED_IDS_MUST_BE_ARRAY = "selected_ids_must_be_array"
 ERR_KEY_AND_VERSION_REQUIRED = "key_and_version_required"
 ERR_UNEXPECTED_ERROR = "Unexpected error: {error}"
 

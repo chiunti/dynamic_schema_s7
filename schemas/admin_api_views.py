@@ -17,6 +17,7 @@ from .constants import (
     ERR_DEFAULT_DATA_TYPE_NOT_FOUND,
     ERR_JSON_KEY_DUPLICATE,
     ERR_ID_REQUIRED,
+    ERR_SELECTED_IDS_MUST_BE_ARRAY,
 )
 
 
@@ -164,9 +165,12 @@ def api_attributes_by_variant(request: HttpRequest, variant_key: str) -> JsonRes
             payload = json.loads(request.body.decode("utf-8")) if request.body else {}
         except json.JSONDecodeError:
             return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+        selected_ids = payload.get("selected_ids", [])
+        if not isinstance(selected_ids, list):
+            return JsonResponse({"error": ERR_SELECTED_IDS_MUST_BE_ARRAY}, status=400)
         try:
             result = AttributeDefService().save_attributes_by_variant(
-                variant_key, payload.get("selected_ids", []), scope
+                variant_key, selected_ids, scope
             )
             return JsonResponse(result)
         except ValueError as e:

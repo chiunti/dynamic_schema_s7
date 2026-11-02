@@ -257,7 +257,7 @@ class AttributeDefRepository:
             List of dicts with node_type_id, json_key, name, is_required,
             is_common, variant_key, data_type__name, domain__domain_name and
             group, ordered by node_type_id, json_key then variant_key
-            (NULL variant_key rows sort first)
+            (PostgreSQL ASC — NULL variant_key rows sort last)
         """
         return list(
             AttributeDef.objects.filter(node_type_id__in=node_type_ids)

@@ -51,6 +51,19 @@ def _root_node_type_name_for(node_type):
     return node_type.name
 
 
+SCHEMA_TYPE_SCOPELESS = "__scopeless__"
+"""Add-form ``schema_type`` value for the scopeless root NodeType.
+
+A ``json_scope`` of NULL cannot round-trip through a ``ChoiceField``:
+the widget renders ``str(None)`` and the POST comes back as the
+literal ``'None'``, which ``get_root_node_type_by_scope`` can never
+resolve — a valid-looking choice that always failed with
+``ERR_INVALID_SCHEMA_SCOPE``. Scopeless roots carry this sentinel as
+their choice value instead; ``save_model`` translates it back to the
+scopeless-root path.
+"""
+
+
 @admin.register(Schema)
 class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
     """
@@ -78,7 +91,10 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
         if obj is None:
             root_types = NodeTypeRepository().get_all_root_node_types()
             choices = [
-                (nt.json_scope, _root_node_type_name_for(nt).replace("_", " ").title())
+                (
+                    nt.json_scope or SCHEMA_TYPE_SCOPELESS,
+                    _root_node_type_name_for(nt).replace("_", " ").title(),
+                )
                 for nt in root_types
             ]
             class SchemaAddForm(forms.ModelForm):
@@ -203,6 +219,11 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
                 or request.POST.get("scope")
                 or request.GET.get("scope")
             )
+            # The scopeless root round-trips as the sentinel choice
+            # value (see SCHEMA_TYPE_SCOPELESS): translate it back to
+            # the scopeless path before resolving.
+            if scope == SCHEMA_TYPE_SCOPELESS:
+                scope = None
             # An explicit scope must resolve on its own: falling back to
             # the scope-less root would silently mistype the schema, and a
             # node_type of None would surface as an IntegrityError at save.

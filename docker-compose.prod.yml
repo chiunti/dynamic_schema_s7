@@ -60,5 +60,36 @@ services:
           cpus: ${WEB_CPU_RESERVATION:-0.5}
           memory: ${WEB_MEMORY_RESERVATION:-256M}
 
+  # Optional s7-author MCP endpoint (streamable-http). No host port: the edge
+  # (Traefik/Coolify) routes https://<host>/mcp to mcp:8000. Per-request
+  # credentials arrive as Authorization + X-S7-Project-Id headers, so the
+  # service carries no token/project env — S7_BASE_URL points at the web
+  # service over the internal network. Drop this service entirely if the MCP
+  # endpoint is deployed elsewhere.
+  mcp:
+    build: .
+    command: python -m s7_mcp --transport streamable-http --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    environment:
+      S7_BASE_URL: http://web:8000
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8000), 5).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: ${MCP_CPU_LIMIT:-0.5}
+          memory: ${MCP_MEMORY_LIMIT:-256M}
+        reservations:
+          cpus: ${MCP_CPU_RESERVATION:-0.25}
+          memory: ${MCP_MEMORY_RESERVATION:-128M}
+
 volumes:
   postgres_data:

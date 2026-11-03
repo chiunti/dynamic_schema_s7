@@ -1,4 +1,8 @@
-"""Entry point for ``python -m s7_mcp`` — starts the stdio MCP server."""
+"""Entry point for ``python -m s7_mcp`` — starts the MCP server.
+
+Serves stdio by default; ``--transport streamable-http`` serves ``/mcp``
+over HTTP (see ``server.main``).
+"""
 
 import sys
 

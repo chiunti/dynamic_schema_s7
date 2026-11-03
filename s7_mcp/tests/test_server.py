@@ -135,9 +135,11 @@ class GetDraftTests(unittest.TestCase):
         self.assertEqual(self._call()[1]["params"], {"project_id": None})
 
     def test_tool_takes_no_project_id_argument(self):
+        # ``ctx`` is a trailing SDK-injected parameter (per-request
+        # credential resolution) — it never reaches the input schema.
         self.assertEqual(
             list(inspect.signature(server.s7_get_draft).parameters),
-            ["node_type", "key", "version"],
+            ["node_type", "key", "version", "ctx"],
         )
 
     def test_draft_envelope_propagates_verbatim(self):
@@ -208,9 +210,11 @@ class GetSchemaTests(unittest.TestCase):
         self.assertEqual(self._call()[1]["params"], {"project_id": None})
 
     def test_tool_takes_no_project_id_argument(self):
+        # ``ctx`` is a trailing SDK-injected parameter (per-request
+        # credential resolution) — it never reaches the input schema.
         self.assertEqual(
             list(inspect.signature(server.s7_get_schema).parameters),
-            ["node_type", "key", "version"],
+            ["node_type", "key", "version", "ctx"],
         )
 
     def test_schema_envelope_propagates_verbatim(self):
@@ -281,9 +285,11 @@ class DeleteDraftTests(unittest.TestCase):
         self.assertEqual(self._call()[1]["params"], {"project_id": None})
 
     def test_tool_takes_no_project_id_or_status_argument(self):
+        # ``ctx`` is a trailing SDK-injected parameter (per-request
+        # credential resolution) — it never reaches the input schema.
         self.assertEqual(
             list(inspect.signature(server.s7_delete_draft).parameters),
-            ["node_type", "key", "version"],
+            ["node_type", "key", "version", "ctx"],
         )
 
     def test_delete_reaches_delete_json_not_get_or_post(self):
@@ -573,7 +579,7 @@ class CatalogUsageTests(unittest.TestCase):
         extra knobs, same arity as the delete-object identifier."""
         self.assertEqual(
             list(inspect.signature(server.s7_catalog_usage).parameters),
-            ["model", "pk", "fields"],
+            ["model", "pk", "fields", "ctx"],
         )
 
 
@@ -650,9 +656,11 @@ class ResourceTests(unittest.TestCase):
         )
 
     def test_schema_resource_takes_no_project_id_argument(self):
+        # ``ctx`` is a trailing SDK-injected parameter (per-request
+        # credential resolution) — it never reaches the input schema.
         self.assertEqual(
             list(inspect.signature(server.schema_resource).parameters),
-            ["node_type", "key", "version"],
+            ["node_type", "key", "version", "ctx"],
         )
 
     def test_schema_resource_error_envelope_propagates_verbatim(self):
@@ -1259,18 +1267,27 @@ class PromptContentTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
-class LazyClientTests(unittest.TestCase):
-    """``_get_client`` builds the singleton only on first use."""
+class CachedClientTests(unittest.TestCase):
+    """``_get_client`` resolves config per call and caches clients per
+    resolved ``(token, project_id)`` — the env credential is one entry.
 
-    def test_client_built_once_from_config(self):
-        with patch.object(server, "_client", None), patch.object(
-            server, "get_config"
+    The full header/cache matrix lives in ``test_http_transport.py``; this
+    pins the stdio-path invariant (no ctx → one cached client).
+    """
+
+    def test_client_built_once_per_resolved_credential(self):
+        config = server.S7Config(base_url="http://backend.test", token="tok")
+        with patch.dict(server._clients, clear=True), patch.object(
+            server, "get_config", return_value=config
         ) as get_config, patch.object(server, "S7Client") as cls:
             first = server._get_client()
             second = server._get_client()
         self.assertIs(first, second)
-        get_config.assert_called_once_with()
-        cls.assert_called_once_with(get_config.return_value)
+        # The client is cached, but the env config is re-resolved on every
+        # call — always with the token optional (headers may supply it).
+        self.assertEqual(get_config.call_count, 2)
+        get_config.assert_called_with(require_token=False)
+        cls.assert_called_once_with(config)
 
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
@@ -1297,7 +1314,8 @@ class McpSurfaceTests(unittest.TestCase):
         params = list(inspect.signature(server.s7_import_draft).parameters)
         self.assertEqual(
             params,
-            ["node_type", "schema", "schema_key", "schema_version", "overwrite"],
+            ["node_type", "schema", "schema_key", "schema_version",
+             "overwrite", "ctx"],
         )
         self.assertNotIn("status", params)
         self.assertNotIn("schema_status", params)
@@ -1312,14 +1330,19 @@ class McpSurfaceTests(unittest.TestCase):
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class MainTests(unittest.TestCase):
-    """``main()`` validates config first, then serves."""
+    """``main()`` validates config first, then serves.
+
+    ``main`` now takes ``argv`` — tests always pass an explicit list so the
+    parser never consumes the unittest runner's ``sys.argv``. Transport
+    dispatch coverage lives in ``test_http_transport.py``.
+    """
 
     def test_main_runs_server_after_config_ok(self):
         with patch.object(server, "get_config") as get_config, patch.object(
             server.mcp, "run"
         ) as run:
-            server.main()
-        get_config.assert_called_once_with()
+            server.main([])
+        get_config.assert_called_once_with(require_token=True)
         run.assert_called_once_with()
 
     def test_main_propagates_config_exit_without_running(self):
@@ -1327,7 +1350,7 @@ class MainTests(unittest.TestCase):
             server, "get_config", side_effect=SystemExit(2)
         ), patch.object(server.mcp, "run") as run:
             with self.assertRaises(SystemExit) as cm:
-                server.main()
+                server.main([])
         self.assertEqual(cm.exception.code, 2)
         run.assert_not_called()
 
@@ -1374,6 +1397,15 @@ class _FakeFastMCP:
         raise AssertionError("run() must not be called during import")
 
 
+class _FakeContext:
+    """Stand-in for the SDK ``Context`` class on the ``FastMCP`` fallback.
+
+    The shim imports ``Context`` alongside ``FastMCP`` — it is only used in
+    annotations (deferred by ``from __future__ import annotations``), so an
+    empty class suffices.
+    """
+
+
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class ShimBranchTests(unittest.TestCase):
     """Both branches of the ``MCPServer``/``FastMCP`` compatibility shim."""
@@ -1397,6 +1429,7 @@ class ShimBranchTests(unittest.TestCase):
         fake_fastmcp = types.ModuleType("mcp.server.fastmcp")
         _FakeFastMCP.instances = []
         fake_fastmcp.FastMCP = _FakeFastMCP
+        fake_fastmcp.Context = _FakeContext
 
         saved = {
             name: sys.modules.get(name)

@@ -26,7 +26,7 @@ docs/
 scripts/
 fixtures/
 .devin/
-AGENTS.md
+**/AGENTS.md
 TODO.md
 SYNC_STATE.md
 PRE_RELEASE_AUDIT.md

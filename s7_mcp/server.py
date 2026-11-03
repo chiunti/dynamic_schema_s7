@@ -1,8 +1,14 @@
-"""s7-author: MCP stdio server wrapping the dynamic-schema REST API.
+"""s7-author: MCP server wrapping the dynamic-schema REST API.
 
 Thin mapping only — each tool forwards to one authenticated ``/api/`` endpoint
 and returns the JSON envelope verbatim. There is no business logic here, and
 no publish/approve/apply tools by design: publishing is a human action.
+
+Two transports share this surface: stdio (the default, one process per local
+agent — credentials come from the ``S7_*`` environment) and streamable-http
+(``--transport streamable-http``, serving ``/mcp``): each inbound request's
+``Authorization`` and ``X-S7-Project-Id`` headers supply the credential,
+which is forwarded verbatim — the backend authenticates per request.
 
 Configuration is resolved lazily inside the handlers (never at import time),
 so importing this module — which registers every tool, resource and prompt —
@@ -11,14 +17,18 @@ succeeds without any environment variables set.
 
 from __future__ import annotations
 
+import argparse
 import json
+import threading
+from collections import OrderedDict
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
 try:  # mcp >= 2.0
-    from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver import Context, MCPServer
 except ImportError:  # pragma: no cover - mcp 1.x
-    from mcp.server.fastmcp import FastMCP as MCPServer
+    from mcp.server.fastmcp import Context, FastMCP as MCPServer
 
 from . import __version__
 from .catalog_grammar import CATALOG_GRAMMAR
@@ -31,15 +41,116 @@ try:
 except TypeError:  # pragma: no cover - mcp 1.x FastMCP has no version kwarg
     mcp = MCPServer("s7-author")
 
-_client: S7Client | None = None
+# API clients are cached per resolved credential, not per process: under
+# streamable-http each request can carry its own bearer/project pair, so
+# ``(token, project_id)`` is the cache key. The env-only credential is simply
+# the entry whose key holds the configured (or absent) values — the stdio
+# path's old singleton.
+#
+# The cache is a bounded LRU: a hit moves the entry to the most-recently-used
+# end and inserting past ``_MAX_CACHED_CLIENTS`` evicts the least-recently-used
+# client and closes its ``httpx`` pool, so a long-lived hosted process does
+# not accumulate pools of rotated credentials. ``_clients_lock`` covers the
+# whole get-or-create in ``_get_client`` — two concurrent first requests for
+# the same credential build exactly one client (no orphaned pool).
+_MAX_CACHED_CLIENTS = 128
+_clients: OrderedDict[tuple[str | None, str | None], S7Client] = OrderedDict()
+_clients_lock = threading.Lock()
+
+# Inbound header names carrying the per-request credential (case-insensitive
+# on the wire; Starlette's Headers already normalize lookup).
+_HEADER_AUTHORIZATION = "authorization"
+_HEADER_PROJECT_ID = "x-s7-project-id"
 
 
-def _get_client() -> S7Client:
-    """Return the shared API client, building it lazily on first use."""
-    global _client
-    if _client is None:
-        _client = S7Client(get_config())
-    return _client
+def _request_headers(ctx: Context | None) -> Any:
+    """Return the inbound HTTP headers of the current request, or ``None``.
+
+    Under streamable-http ``ctx.request_context.request`` is the Starlette
+    ``Request`` of the POST that carried the MCP message; under stdio the
+    request is ``None`` — as it is for a bare ``Context`` built outside a
+    request — so both resolve to ``None`` (env-only credentials).
+    """
+    if ctx is None:
+        return None
+    try:
+        request = ctx.request_context.request
+    except (AttributeError, ValueError):
+        return None
+    return getattr(request, "headers", None)
+
+
+def _resolve_credentials(
+    ctx: Context | None, config: S7Config
+) -> tuple[str | None, str | None]:
+    """Resolve ``(token, project_id)`` for the current request.
+
+    Per-request headers win over the environment field by field:
+    ``Authorization: Bearer <token>`` over ``S7_TOKEN`` and
+    ``X-S7-Project-Id`` over ``S7_PROJECT_ID``. A present-but-unresolvable
+    ``Authorization`` (non-Bearer scheme or empty value) resolves to
+    ``None`` — never silently promoted to the env credential — so the
+    backend answers its own 401 verbatim. ``X-S7-Project-Id`` travels
+    verbatim too: the backend validates its shape. With no inbound headers
+    (stdio) both fields are the env values.
+    """
+    headers = _request_headers(ctx)
+    if headers is None:
+        return config.token, config.project_id
+
+    token = config.token
+    authorization = headers.get(_HEADER_AUTHORIZATION)
+    if authorization is not None:
+        parts = authorization.strip().split(None, 1)
+        token = parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else None
+    project_id = config.project_id
+    header_project = headers.get(_HEADER_PROJECT_ID)
+    if header_project is not None:
+        project_id = header_project.strip() or None
+    return token, project_id
+
+
+def _get_client(ctx: Context | None = None) -> S7Client:
+    """Return the API client for the current request's credential.
+
+    Under streamable-http the credential is resolved from the inbound
+    headers (falling back to the environment field by field); under stdio
+    it is the env credential. Clients are cached per resolved
+    ``(token, project_id)`` so distinct tenants never share a connection
+    pool.
+
+    The cache is a bounded LRU (``_MAX_CACHED_CLIENTS`` entries): a hit
+    refreshes the entry's position and inserting past the bound evicts the
+    least-recently-used client, closing its ``httpx`` pool. The whole
+    get-or-create runs under ``_clients_lock``, so concurrent first
+    requests for one credential build a single client. The env-only
+    credential follows the same policy — it is one entry like any other.
+
+    An entry may be evicted — and its pool closed — while a caller still
+    holds it: a request in flight can see its client go stale if enough
+    newer credentials arrive meanwhile. The failed request surfaces as a
+    transport error and self-heals on the next call, which resolves a
+    fresh client — an inherent trade-off of pooling without
+    refcounting.
+    """
+    config = get_config(require_token=False)
+    credentials = _resolve_credentials(ctx, config)
+    with _clients_lock:
+        client = _clients.get(credentials)
+        if client is not None:
+            _clients.move_to_end(credentials)
+            return client
+        if _clients and len(_clients) >= _MAX_CACHED_CLIENTS:
+            _, evicted = _clients.popitem(last=False)
+            try:
+                evicted._http.close()
+            except Exception:  # a broken pool must not break the request
+                pass
+        client = S7Client(
+            replace(config, token=credentials[0], project_id=credentials[1])
+        )
+        _clients[credentials] = client
+        return client
 
 
 def _q(value: str) -> str:
@@ -55,7 +166,8 @@ def _schema_payload(node_type: str, schema: dict | str,
     dumped to ``schema_text`` as the endpoint expects. No ``schema_status`` is
     ever sent — credential imports are persisted as ``draft`` by the backend.
     ``project_id`` is not part of the tool surface either: the client injects
-    it from ``S7_PROJECT_ID`` when that variable is configured.
+    the resolved project id — the ``X-S7-Project-Id`` header value under
+    streamable-http, ``S7_PROJECT_ID`` otherwise.
     """
     payload: dict[str, Any] = {
         "schema_text": schema if isinstance(schema, str) else json.dumps(schema),
@@ -74,7 +186,7 @@ def _schema_payload(node_type: str, schema: dict | str,
 
 
 @mcp.tool()
-def s7_get_catalog(scope: str) -> dict:
+def s7_get_catalog(scope: str, ctx: Context | None = None) -> dict:
     """Fetch the resolved authoring catalog for a scope.
 
     Returns ``{scope, root_node_type, node_types, domains, datatypes,
@@ -86,11 +198,12 @@ def s7_get_catalog(scope: str) -> dict:
     ``{"error": "scope_not_found", "available_scopes": [...]}``, where
     ``available_scopes`` lists every live root scope.
     """
-    return _get_client().get_json(f"catalog/{_q(scope)}/")
+    return _get_client(ctx).get_json(f"catalog/{_q(scope)}/")
 
 
 @mcp.tool()
-def s7_get_schema(node_type: str, key: str, version: str) -> dict:
+def s7_get_schema(node_type: str, key: str, version: str,
+                  ctx: Context | None = None) -> dict:
     """Fetch a published schema as ``{"data": <schema>, "meta": {...}}``.
 
     Use it for few-shot reference and to verify an import round-trips after a
@@ -98,12 +211,13 @@ def s7_get_schema(node_type: str, key: str, version: str) -> dict:
     ``{"type": "schema_not_found", "title", "detail", "status": 404}``.
 
     Dual auth: project credentials work as-is; a user MCP token is not bound
-    to a project, so the backend requires ``?project_id=<uuid>`` — set
-    ``S7_PROJECT_ID`` and the client sends it automatically (missing answers
+    to a project, so the backend requires ``?project_id=<uuid>`` — resolved
+    from the ``X-S7-Project-Id`` header under streamable-http or from
+    ``S7_PROJECT_ID`` otherwise, and sent automatically (missing answers
     ``400 {"error": "project_id is required"}``, an inaccessible project or
     scope mismatch 403).
     """
-    client = _get_client()
+    client = _get_client(ctx)
     return client.get_json(
         f"schema/{_q(node_type)}/{_q(key)}/{_q(version)}/",
         params={"project_id": client.project_id},
@@ -111,7 +225,8 @@ def s7_get_schema(node_type: str, key: str, version: str) -> dict:
 
 
 @mcp.tool()
-def s7_get_draft(node_type: str, key: str, version: str) -> dict:
+def s7_get_draft(node_type: str, key: str, version: str,
+                 ctx: Context | None = None) -> dict:
     """Fetch a draft schema as ``{"data": <schema>, "meta": {...}}``.
 
     Main use: verify an ``s7_import_draft`` round-trip right after importing,
@@ -121,11 +236,12 @@ def s7_get_draft(node_type: str, key: str, version: str) -> dict:
     "status": 404}``.
 
     Dual auth: project credentials work as-is; a user MCP token is not bound
-    to a project, so the backend requires ``?project_id=<uuid>`` — set
-    ``S7_PROJECT_ID`` and the client sends it automatically (missing answers
+    to a project, so the backend requires ``?project_id=<uuid>`` — resolved
+    from the ``X-S7-Project-Id`` header under streamable-http or from
+    ``S7_PROJECT_ID`` otherwise, and sent automatically (missing answers
     ``400 {"error": "project_id is required"}``, a scope mismatch 403).
     """
-    client = _get_client()
+    client = _get_client(ctx)
     return client.get_json(
         f"schema/draft/{_q(node_type)}/{_q(key)}/{_q(version)}/",
         params={"project_id": client.project_id},
@@ -133,7 +249,8 @@ def s7_get_draft(node_type: str, key: str, version: str) -> dict:
 
 
 @mcp.tool()
-def s7_delete_draft(node_type: str, key: str, version: str) -> dict:
+def s7_delete_draft(node_type: str, key: str, version: str,
+                    ctx: Context | None = None) -> dict:
     """Delete a draft schema — destructive and irreversible.
 
     Deleting the draft frees the node types it implemented (the catalog
@@ -147,11 +264,12 @@ def s7_delete_draft(node_type: str, key: str, version: str) -> dict:
     **User MCP token only (any level)** — this is *not* dual-auth:
     project credentials are rejected with 403. A user MCP token is not
     bound to a project, so the backend requires ``?project_id=<uuid>`` —
-    set ``S7_PROJECT_ID`` and the client sends it automatically (missing
+    resolved from the ``X-S7-Project-Id`` header under streamable-http or
+    from ``S7_PROJECT_ID`` otherwise, and sent automatically (missing
     answers ``400 {"error": "project_id is required"}``, a project the
     user cannot edit 403).
     """
-    client = _get_client()
+    client = _get_client(ctx)
     return client.delete_json(
         f"schema/draft/{_q(node_type)}/{_q(key)}/{_q(version)}/",
         params={"project_id": client.project_id},
@@ -159,15 +277,16 @@ def s7_delete_draft(node_type: str, key: str, version: str) -> dict:
 
 
 @mcp.tool()
-def s7_list_datatypes() -> dict:
+def s7_list_datatypes(ctx: Context | None = None) -> dict:
     """List the universal DataType catalog as ``{"datatypes": [...]}``."""
-    return _get_client().get_json("catalog/datatypes/")
+    return _get_client(ctx).get_json("catalog/datatypes/")
 
 
 @mcp.tool()
 def s7_validate_schema(node_type: str, schema: dict | str,
                        schema_key: str | None = None,
-                       schema_version: str | None = None) -> dict:
+                       schema_version: str | None = None,
+                       ctx: Context | None = None) -> dict:
     """Dry-run the import pipeline without persisting.
 
     ``schema`` accepts a JSON object or a JSON string. Returns
@@ -175,14 +294,15 @@ def s7_validate_schema(node_type: str, schema: dict | str,
     "warnings": [...]}`` — iterate until ``valid`` is true before importing.
     """
     payload = _schema_payload(node_type, schema, schema_key, schema_version)
-    return _get_client().post_json("schema/validate/", payload)
+    return _get_client(ctx).post_json("schema/validate/", payload)
 
 
 @mcp.tool()
 def s7_import_draft(node_type: str, schema: dict | str,
                     schema_key: str | None = None,
                     schema_version: str | None = None,
-                    overwrite: bool = False) -> dict:
+                    overwrite: bool = False,
+                    ctx: Context | None = None) -> dict:
     """Import a schema JSON; it is always persisted as a draft.
 
     ``schema`` accepts a JSON object or a JSON string. Returns the response
@@ -192,11 +312,11 @@ def s7_import_draft(node_type: str, schema: dict | str,
     """
     payload = _schema_payload(node_type, schema, schema_key, schema_version)
     payload["overwrite"] = overwrite
-    return _get_client().post_json("schema/import/", payload)
+    return _get_client(ctx).post_json("schema/import/", payload)
 
 
 @mcp.tool()
-def s7_import_catalog(objects: list[dict]) -> dict:
+def s7_import_catalog(objects: list[dict], ctx: Context | None = None) -> dict:
     """Apply a fixture-format catalog payload (MCP level 2).
 
     ``objects`` is a list of ``{"model": "schemas.<label>", "pk": <uuid?>?,
@@ -245,12 +365,13 @@ def s7_import_catalog(objects: list[dict]) -> dict:
     Requires a user MCP token with ``mcp_level >= 2`` plus per-model
     Django permissions — anything else gets a 401/403 envelope verbatim.
     """
-    return _get_client().post_json("catalog/import/", {"objects": objects})
+    return _get_client(ctx).post_json("catalog/import/", {"objects": objects})
 
 
 @mcp.tool()
 def s7_catalog_usage(model: str, pk: str | None = None,
-                     fields: dict | None = None) -> dict:
+                     fields: dict | None = None,
+                     ctx: Context | None = None) -> dict:
     """Pre-check the ``catalog_object_in_use`` gate for one catalog row.
 
     Call it on each target row BEFORE proposing field-changing updates
@@ -292,7 +413,7 @@ def s7_catalog_usage(model: str, pk: str | None = None,
     params.update(
         {k: v for k, v in (fields or {}).items() if k not in params}
     )
-    return _get_client().get_json("catalog/usage/", params=params)
+    return _get_client(ctx).get_json("catalog/usage/", params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -301,25 +422,30 @@ def s7_catalog_usage(model: str, pk: str | None = None,
 
 
 @mcp.resource("s7://catalog/{scope}", mime_type="application/json")
-def catalog_resource(scope: str) -> dict:
+def catalog_resource(scope: str, ctx: Context | None = None) -> dict:
     """Resolved authoring catalog for ``scope`` (same payload as s7_get_catalog).
 
     ``scope`` is the root node type's ``json_scope``; an unknown scope
     answers ``{"error": "scope_not_found", "available_scopes": [...]}``.
     """
-    return _get_client().get_json(f"catalog/{_q(scope)}/")
+    return _get_client(ctx).get_json(f"catalog/{_q(scope)}/")
 
 
 @mcp.resource("s7://datatypes", mime_type="application/json")
 def datatypes_resource() -> dict:
-    """Universal DataType catalog (same payload as s7_list_datatypes)."""
+    """Universal DataType catalog (same payload as s7_list_datatypes).
+
+    Static resource — the SDK injects no per-request context into
+    URI-template-less resources, so under streamable-http credentials
+    resolve from the environment only (``S7_TOKEN`` / ``S7_PROJECT_ID``).
+    """
     return _get_client().get_json("catalog/datatypes/")
 
 
 @mcp.resource("s7://examples/{scope}", mime_type="application/json")
-def example_resource(scope: str) -> Any:
+def example_resource(scope: str, ctx: Context | None = None) -> Any:
     """Generated JSON example for ``scope`` — always current with the engine."""
-    catalog = _get_client().get_json(f"catalog/{_q(scope)}/")
+    catalog = _get_client(ctx).get_json(f"catalog/{_q(scope)}/")
     if "example" not in catalog:
         return catalog  # error envelope — propagate verbatim
     # Explicit marker when the engine produced no example for the scope.
@@ -327,13 +453,15 @@ def example_resource(scope: str) -> Any:
 
 
 @mcp.resource("s7://schemas/{node_type}/{key}/{version}", mime_type="application/json")
-def schema_resource(node_type: str, key: str, version: str) -> Any:
+def schema_resource(node_type: str, key: str, version: str,
+                    ctx: Context | None = None) -> Any:
     """Published schema JSON of the project (few-shot reference).
 
     Same endpoint as ``s7_get_schema`` — dual auth: a user MCP token needs
-    ``S7_PROJECT_ID`` set (sent as ``?project_id=``).
+    the resolved project id (``X-S7-Project-Id`` header under
+    streamable-http, ``S7_PROJECT_ID`` otherwise; sent as ``?project_id=``).
     """
-    client = _get_client()
+    client = _get_client(ctx)
     body = client.get_json(
         f"schema/{_q(node_type)}/{_q(key)}/{_q(version)}/",
         params={"project_id": client.project_id},
@@ -347,7 +475,8 @@ def catalog_grammar_resource() -> dict:
 
     Static document shipped with the package — catalog-grammar metadata has
     no REST endpoint; it is versioned here and kept honest by a backend-side
-    drift test.
+    drift test. Static resources receive no per-request context, so this one
+    performs no credential resolution at all (no backend call is made).
     """
     return CATALOG_GRAMMAR
 
@@ -369,10 +498,70 @@ def author_catalog() -> str:
     return AUTHOR_CATALOG_PROMPT
 
 
-def main() -> None:
-    """Entry point: validate configuration, then serve MCP over stdio."""
-    get_config()  # fail fast on missing env before serving the protocol
-    mcp.run()
+def _run_http(host: str, port: int) -> None:
+    """Serve MCP over streamable-http at ``/mcp`` (SDK v1/v2 compat).
+
+    mcp 2.x ``MCPServer.run`` forwards ``host``/``port`` kwargs to
+    ``run_streamable_http_async``; mcp 1.x ``FastMCP.run`` only accepts
+    ``transport``, so the bind address goes on ``mcp.settings`` instead —
+    same try/except shape as the import shim (the broad ``TypeError`` also
+    swallows a genuine runtime type error into a v1 retry — an accepted
+    compat trade-off). The path is ``/mcp`` in both generations.
+
+    v1 caveat: ``settings.host`` is mutated after construction, but the
+    SDK's DNS-rebinding protection was already armed with a localhost-only
+    allowlist — a v1 server bound to ``0.0.0.0`` rejects non-localhost
+    ``Host`` headers. Edge-routed deployments therefore require mcp 2.x
+    (the resolved version in practice; the floor is ``mcp>=1.19``).
+    """
+    try:
+        mcp.run(transport="streamable-http", host=host, port=port)
+    except TypeError:  # pragma: no cover - mcp 1.x run() takes no kwargs
+        mcp.settings.host = host
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point: parse the transport, validate config, then serve MCP.
+
+    ``--transport stdio`` (default) keeps the original behavior: env-only
+    credentials, ``S7_TOKEN`` required. ``--transport streamable-http``
+    serves ``/mcp`` over HTTP: each request's ``Authorization`` /
+    ``X-S7-Project-Id`` headers supply the credential, so ``S7_TOKEN``
+    becomes an optional fallback while ``S7_BASE_URL`` stays required.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m s7_mcp",
+        description=(
+            "s7-author: MCP server exposing the dynamic-schema REST API — "
+            "a thin proxy that returns every endpoint envelope verbatim."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="transport to serve (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address for streamable-http (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="bind port for streamable-http (default: 8000)",
+    )
+    args = parser.parse_args(argv)
+
+    get_config(require_token=args.transport == "stdio")
+    if args.transport == "stdio":
+        mcp.run()
+    else:
+        _run_http(args.host, args.port)
 
 
 if __name__ == "__main__":  # pragma: no cover

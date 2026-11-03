@@ -1,16 +1,23 @@
 # s7-author
 
-`s7-author` is a thin [MCP](https://modelcontextprotocol.io) stdio server that
+`s7-author` is a thin [MCP](https://modelcontextprotocol.io) server that
 exposes the dynamic-schema REST API to AI agents. Every tool maps 1:1 to an
 already-authenticated `/api/` endpoint and returns its JSON envelope verbatim —
-there is **no business logic in this server** and no Django dependency. It runs
-standalone on the agent's machine.
+there is **no business logic in this server** and no Django dependency.
+
+Two transports share the same surface:
+
+- **stdio** (default) — one process per local agent; the credential comes from
+  the process environment (`S7_TOKEN` + `S7_PROJECT_ID`).
+- **streamable-http** (`--transport streamable-http`) — a hosted endpoint at
+  `/mcp`; each request's `Authorization` and `X-S7-Project-Id` headers supply
+  the credential, so every call operates as the connecting user.
 
 ## Install
 
 ```bash
 pip install -r s7_mcp/requirements.txt
-# or: pip install "mcp>=1.0" "httpx>=0.27"
+# or: pip install "mcp>=1.19" "httpx>=0.27"
 ```
 
 Requires Python 3.10+.
@@ -21,9 +28,9 @@ The server is configured exclusively through environment variables:
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `S7_BASE_URL` | yes | — | Backend base URL, e.g. `http://localhost:8000`. API paths resolve under `{S7_BASE_URL}/api/`. |
-| `S7_TOKEN` | yes | — | Bearer token of a `UserMCPToken` — a per-user MCP credential (see below). |
-| `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the schema reads (draft and published) and the draft delete. Set it when `S7_TOKEN` is a user MCP token — the backend requires `project_id` on those endpoints for user principals. |
+| `S7_BASE_URL` | yes (both transports) | — | Backend base URL, e.g. `http://localhost:8000`. API paths resolve under `{S7_BASE_URL}/api/`. |
+| `S7_TOKEN` | stdio: yes; streamable-http: fallback only | — | Bearer token of a `UserMCPToken` — a per-user MCP credential (see below). Under streamable-http the request's `Authorization` header wins; the env var is only the fallback when the header is absent. |
+| `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the schema reads (draft and published) and the draft delete. Set it when the credential is a user MCP token — the backend requires `project_id` on those endpoints for user principals. Under streamable-http the request's `X-S7-Project-Id` header wins over this variable. |
 | `S7_MAX_PAYLOAD_KB` | no | `512` | Outgoing JSON body limit for validate/import (KB). |
 | `S7_TIMEOUT_S` | no | `30` | HTTP timeout in seconds. |
 
@@ -93,6 +100,66 @@ Same shape: `command` = the Python interpreter, `args` = `["-m", "s7_mcp"]`,
 tuning variables). Some clients name the top-level key `mcp_config` instead
 of `mcpServers`.
 
+## Hosted endpoint (streamable-http)
+
+For remote agents the same package serves MCP over HTTP instead of stdio:
+
+```bash
+python -m s7_mcp --transport streamable-http --host 0.0.0.0 --port 8000
+```
+
+The endpoint lives at `/mcp`. There is no server-side MCP authentication of
+its own — the credential travels on each request and the backend applies
+its per-request auth, so the process only needs `S7_BASE_URL`:
+
+- `Authorization: Bearer <user-mcp-token>` — wins over `S7_TOKEN` whenever
+  present. A non-Bearer value resolves to "no credential" (never silently
+  promoted to the env token), so the backend answers its own 401 verbatim.
+- `X-S7-Project-Id: <project-uuid>` — wins over `S7_PROJECT_ID`, forwarded
+  verbatim (the backend validates its shape).
+
+Clients are cached per resolved `(token, project_id)` pair, so two tenants
+on the same endpoint never share a connection or a credential. The cache is
+a bounded LRU (128 entries): a hit refreshes the entry, and an insert past
+the bound evicts the least-recently-used client and closes its HTTP
+connection pool — a long-lived endpoint does not accumulate pools of
+rotated credentials. The static
+resources `s7://datatypes` and `s7://catalog-grammar` are an exception to
+per-request resolution — the SDK injects no request context into
+URI-template-less resources — and resolve from the environment only.
+
+Client configuration (any user holding an MCP token):
+
+```jsonc
+{
+  "mcpServers": {
+    "s7-author": {
+      "url": "https://<host>/mcp",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer <user-mcp-token>",
+        "X-S7-Project-Id": "<project-uuid>"
+      }
+    }
+  }
+}
+```
+
+**Deployment notes.** In development bind to localhost (`--host 127.0.0.1`,
+the default); the endpoint then only serves the local machine. The dev
+compose service maps it to `127.0.0.1:${S7_MCP_PORT:-8010}` — override
+`S7_MCP_PORT` to pick a different host port. In
+production the service goes behind the existing edge (TLS termination,
+allowlisting), which is also where the bearer would otherwise travel in
+plain HTTP. `S7_TOKEN`/`S7_PROJECT_ID` may still be set on the server as
+fallbacks for requests that arrive without headers — e.g. health probes or
+a shared default — but any `Authorization` header, even a malformed one,
+always wins. Edge-routed deployments require `mcp` 2.x: under `mcp` 1.x the
+SDK's DNS-rebinding protection keeps a localhost-only allowlist when the
+bind host is changed after construction, so requests with a public `Host`
+header are rejected — another reason the floor pins `mcp>=1.19` with 2.x
+resolved in practice.
+
 ## Surface
 
 ### Tools
@@ -145,15 +212,28 @@ the divergence reported as a warning) > `"1"`.
 ## Troubleshooting
 
 - **Server exits immediately / "missing required environment variable(s)" on
-  stderr** — set `S7_BASE_URL` and `S7_TOKEN` in the client's `env` block.
+  stderr** — set `S7_BASE_URL` and `S7_TOKEN` in the client's `env` block
+  (under streamable-http only `S7_BASE_URL` is required).
   Everything is logged to stderr, never stdout (stdout carries the protocol).
 - **`{"error": {"code": "transport_error", ...}}`** — the backend is
   unreachable (timeout, DNS, connection refused) or answered non-JSON. Check
   `S7_BASE_URL` and that the backend is running.
-- **HTTP 401** — invalid, expired or revoked `S7_TOKEN`.
+- **HTTP 401** — invalid, expired or revoked `S7_TOKEN` (stdio) or
+  `Authorization` bearer (streamable-http). Under streamable-http a missing
+  or non-Bearer `Authorization` header also lands here: the request goes
+  unauthenticated — never silently promoted to the env token — and the
+  backend answers its own 401 verbatim.
+- **`400 {"error": "project_id is required"}`** — a user MCP token reached
+  an endpoint without a project id. Set `S7_PROJECT_ID` (stdio) or send
+  `X-S7-Project-Id` (streamable-http).
 - **HTTP 403** — the token's owner lacks permission over the target
   project/organization, or the token's MCP level does not cover the
-  capability — the backend's error envelope is returned verbatim.
+  capability — e.g. a level-1 token calling `s7_import_catalog` (level 2).
+  The backend's error envelope is returned verbatim.
+- **Static resources ignore per-request headers** — `s7://datatypes` and
+  `s7://catalog-grammar` resolve credentials from the environment only
+  (the SDK cannot inject request context into resources without URI
+  template variables). Tools and template resources do forward them.
 - **HTTP 404** — unknown catalog scope
   (`{"error": "scope_not_found", "available_scopes": [...]}` —
   `available_scopes` lists every live root scope), or the schema is

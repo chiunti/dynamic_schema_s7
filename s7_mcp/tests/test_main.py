@@ -116,6 +116,65 @@ class ImportSafetyTests(unittest.TestCase):
         # stdio hygiene: stdout carries the MCP protocol and stays empty.
         self.assertEqual(result.stdout, "")
 
+    def test_stdio_requires_token_with_base_url_set(self):
+        """With ``S7_BASE_URL`` set but no ``S7_TOKEN``, stdio exits 2 and
+        names only the token — the mirror of the streamable-http case in
+        ``TransportArgTests``, where the same env reaches ``mcp.run``."""
+        env = {**_CLEAN_ENV, "S7_BASE_URL": "http://backend.test"}
+        result = _run("-m", "s7_mcp", env=env)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("S7_TOKEN", result.stderr)
+        self.assertNotIn("S7_BASE_URL,", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+
+@unittest.skipUnless(_DEPS, "requires mcp + httpx")
+class TransportArgTests(unittest.TestCase):
+    """``python -m s7_mcp`` argv handling — argparse and the no-token HTTP
+    path, never binding a real port."""
+
+    def test_streamable_http_without_env_fails_for_base_url_not_token(self):
+        """``S7_TOKEN`` is optional under streamable-http: a bare run still
+        exits 2, but only ``S7_BASE_URL`` is reported missing."""
+        result = _run("-m", "s7_mcp", "--transport", "streamable-http")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("S7_BASE_URL", result.stderr)
+        self.assertNotIn("S7_TOKEN", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_streamable_http_runs_without_token_env(self):
+        """With ``S7_BASE_URL`` set and no ``S7_TOKEN`` the config check
+        passes — ``mcp.run`` is stubbed in-process so the process reaches
+        the serve step without binding."""
+        code = (
+            "import s7_mcp.server as s\n"
+            "s.mcp.run = lambda **kw: print('RUN', sorted(kw), flush=True)\n"
+            "s.main(['--transport', 'streamable-http',\n"
+            "        '--host', '0.0.0.0', '--port', '9999'])\n"
+        )
+        env = {**_CLEAN_ENV, "S7_BASE_URL": "http://backend.test"}
+        result = _run("-c", code, env=env)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn(
+            "RUN ['host', 'port', 'transport']", result.stdout
+        )
+        self.assertEqual(result.stderr, "")
+
+    def test_invalid_transport_is_a_usage_error(self):
+        """``--transport bogus``: argparse exits 2 with usage on stderr and
+        stdout stays clean — before any config or bind."""
+        result = _run("-m", "s7_mcp", "--transport", "bogus")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid choice", result.stderr)
+        self.assertIn("usage:", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_help_exits_zero_on_stdout(self):
+        result = _run("-m", "s7_mcp", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("usage:", result.stdout)
+        self.assertEqual(result.stderr, "")
+
 
 @unittest.skipUnless(_DEPS, "requires mcp + httpx")
 class MissingDependencyHintTests(unittest.TestCase):

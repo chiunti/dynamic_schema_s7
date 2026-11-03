@@ -191,6 +191,64 @@ class GetConfigTests(unittest.TestCase):
         self.assertEqual(cfg.token, "tok")
 
 
+class RequireTokenTests(unittest.TestCase):
+    """``get_config(require_token=...)`` — stdio requires ``S7_TOKEN``,
+    streamable-http treats it as a per-request fallback."""
+
+    def test_require_token_defaults_to_true(self):
+        """Pin the default: forgetting the kwarg keeps the strict stdio
+        behavior."""
+        import inspect
+
+        param = inspect.signature(config.get_config).parameters[
+            "require_token"
+        ]
+        self.assertIs(param.default, True)
+
+    def test_optional_token_allows_missing_token(self):
+        """Streamable-http: ``S7_TOKEN`` absent resolves ``token=None`` —
+        each request's ``Authorization`` supplies the credential."""
+        cfg, code, stderr = _run_with_env(
+            {ENV_BASE_URL: "http://backend.test"},
+            config.get_config,
+            require_token=False,
+        )
+        self.assertIsNone(code, msg=stderr)
+        self.assertIsNone(cfg.token)
+        self.assertEqual(cfg.base_url, "http://backend.test")
+
+    def test_optional_token_still_reads_a_present_token(self):
+        """The env token stays a usable fallback when set."""
+        cfg, code, _ = _run_with_env(
+            dict(_VALID_ENV), config.get_config, require_token=False
+        )
+        self.assertIsNone(code)
+        self.assertEqual(cfg.token, "secret-token")
+
+    def test_optional_token_still_requires_base_url(self):
+        """Only the token becomes optional — ``S7_BASE_URL`` is always
+        required, and the missing-var hint stops mentioning the token."""
+        _, code, stderr = _run_with_env(
+            {}, config.get_config, require_token=False
+        )
+        self.assertEqual(code, 2)
+        self.assertIn(ENV_BASE_URL, stderr)
+        # The reported missing list must not claim S7_TOKEN — and the hint
+        # is the server-environment variant, not the client one.
+        self.assertNotIn(ENV_TOKEN, stderr)
+        self.assertIn("server environment", stderr)
+
+    def test_required_token_missing_exits_2_as_before(self):
+        """Explicit ``require_token=True`` keeps the strict contract."""
+        _, code, stderr = _run_with_env(
+            {ENV_BASE_URL: "http://backend.test"},
+            config.get_config,
+            require_token=True,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn(ENV_TOKEN, stderr)
+
+
 class ProjectIdTests(unittest.TestCase):
     """``S7_PROJECT_ID`` optional UUID parsing and validation."""
 

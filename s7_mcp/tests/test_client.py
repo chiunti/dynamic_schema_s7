@@ -36,6 +36,19 @@ class ClientConstructionTests(unittest.TestCase):
         self.assertEqual(client._http.timeout.as_dict()["read"], 7.5)
         self.assertIs(client._http.follow_redirects, True)
 
+    def test_none_token_sends_no_authorization_header(self):
+        """A token-less credential sends no ``Authorization`` at all — the
+        backend answers its own 401 verbatim (never ``Bearer None``)."""
+        client = S7Client(
+            S7Config(base_url="http://backend.test", token=None)
+        )
+        self.assertIsNone(client._http.headers.get("authorization"))
+        self.assertNotIn("authorization", client._http.headers)
+
+    def test_blank_token_sends_no_authorization_header(self):
+        client = S7Client(S7Config(base_url="http://backend.test", token=""))
+        self.assertNotIn("authorization", client._http.headers)
+
     def test_project_id_property_reflects_config(self):
         client = S7Client(
             S7Config(

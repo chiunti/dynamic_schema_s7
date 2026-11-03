@@ -1,7 +1,9 @@
 """HTTP client for the dynamic-schema REST API.
 
-Thin wrapper over ``httpx.Client``: bearer authentication, timeout, JSON
-request/response handling and an outgoing-payload size guard. It contains no
+Thin wrapper over ``httpx.Client``: bearer authentication (omitted when the
+resolved credential carries no token — the backend then answers its own
+401 verbatim), timeout, JSON request/response handling and an
+outgoing-payload size guard. It contains no
 business logic — every endpoint response body is propagated verbatim so the
 ``{valid, errors, warnings}`` envelopes reach the caller intact as context.
 
@@ -58,16 +60,21 @@ class S7Client:
     def __init__(self, config: S7Config) -> None:
         self._project_id = config.project_id
         self._max_payload_bytes = config.max_payload_kb * 1024
+        # No ``Bearer None``: an unresolved token sends no Authorization
+        # header at all, so the backend answers its own 401 verbatim.
+        headers = (
+            {"Authorization": f"Bearer {config.token}"} if config.token else {}
+        )
         self._http = httpx.Client(
             base_url=config.base_url,
-            headers={"Authorization": f"Bearer {config.token}"},
+            headers=headers,
             timeout=httpx.Timeout(config.timeout_s),
             follow_redirects=True,
         )
 
     @property
     def project_id(self) -> str | None:
-        """The configured ``S7_PROJECT_ID``, or ``None`` when unset."""
+        """The resolved project id for this client's credential, or ``None``."""
         return self._project_id
 
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -95,14 +102,16 @@ class S7Client:
     def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST ``{base}/api/{path}`` with a JSON body.
 
-        When ``S7_PROJECT_ID`` is configured, ``project_id`` is injected into
-        every POST body — the client does not scope the injection by route.
+        When the client was built with a project id (``S7_PROJECT_ID`` env or
+        the request's ``X-S7-Project-Id`` header), ``project_id`` is injected
+        into every POST body — the client does not scope the injection by
+        route.
         The schema import/validate endpoints require it for user-principal
         tokens and tolerate it for project credentials (a scope mismatch is
         still answered with the backend's own error); endpoints that do not
         declare the field simply ignore the extra key. The injection runs
         before the size check so the limit applies to the actual wire body,
-        and the env value wins over any same-named key.
+        and the resolved value wins over any same-named key.
 
         Refuses to send bodies larger than the configured limit, returning the
         ``payload_too_large`` envelope instead.

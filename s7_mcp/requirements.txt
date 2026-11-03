@@ -1,2 +1,7 @@
-mcp>=1.0,<3
+# Floor 1.19: streamable-http transport exists since 1.8, resource decorators
+# accept non-template params (ctx) since the fix for sdk#244, and Context
+# detection under `from __future__ import annotations` unions lands in 1.19 —
+# below that floor ctx leaks into inputSchema and per-request credential
+# resolution silently degrades to the env credential.
+mcp>=1.19,<3
 httpx>=0.27

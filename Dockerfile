@@ -14,10 +14,12 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies — s7_mcp requirements resolve in the same pip
+# call so `mcp` pins never conflict with transitive dependents (e.g. semgrep).
 COPY requirements.txt /app/
+COPY s7_mcp/requirements.txt /app/s7_mcp/requirements.txt
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt -r s7_mcp/requirements.txt
 
 # Copy project
 COPY . /app/

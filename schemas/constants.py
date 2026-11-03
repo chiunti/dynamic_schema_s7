@@ -53,6 +53,7 @@ ERR_UNEXPECTED_ERROR_CACHE_REBUILD = "Unexpected error during cache rebuild: {er
 
 # API and validation error messages
 ERR_INVALID_JSON_BODY = "Invalid JSON body."
+ERR_JSON_BODY_MUST_BE_OBJECT = "json_body_must_be_object"
 ERR_INVALID_UUID = "Invalid UUID for '{field}': {value}"
 ERR_PROPERTIES_MUST_BE_ARRAY = "properties_must_be_array"
 ERR_ORGANIZATION_SLUG_EXISTS = "An organization with slug '{slug}' already exists."

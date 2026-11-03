@@ -2,8 +2,6 @@
 Admin classes for definition models (NodeType, AttributeDef, DataType, Domain, etc.)
 """
 
-import json
-
 from django.contrib import admin
 from django.contrib.admin.views.main import IncorrectLookupParameters
 from django.http import JsonResponse, QueryDict, HttpResponseRedirect
@@ -22,9 +20,9 @@ from ..models import (
 )
 from ..repositories.node_type_repository import NodeTypeRepository
 from ..services.composition_service import CompositionService
+from ..utils import json_body
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
-    ERR_INVALID_JSON,
     ERR_NOT_FOUND,
     ERR_PARENT_AND_CHILD_REQUIRED,
     ERR_ALREADY_EXISTS,
@@ -195,9 +193,9 @@ class CompositionAdminMixin:
 
         if request.method == "PATCH":
             try:
-                payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-            except json.JSONDecodeError:
-                return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+                payload = json_body(request)
+            except ValueError as e:
+                return JsonResponse({"error": str(e)}, status=400)
 
             try:
                 self.composition_service.update_composition(comp_id, self.composition_model, payload)
@@ -212,9 +210,9 @@ class CompositionAdminMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         parent_type_id = payload.get("parent_type_id")
         child_type_id = payload.get("child_type_id")

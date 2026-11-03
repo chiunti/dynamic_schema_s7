@@ -4,15 +4,14 @@ These views are thin wrappers that delegate all business logic to services.
 """
 
 
-import json
 from django.http import HttpRequest, JsonResponse
 
 from .services.attribute_def_service import AttributeDefService
 from .services.node_service import NodeService
 from .services.schema_service import SchemaService
+from .utils import json_body
 from .constants import (
     ERR_METHOD_NOT_ALLOWED,
-    ERR_INVALID_JSON,
     ERR_VARIANT_KEY_NOT_FOUND,
     ERR_DEFAULT_DATA_TYPE_NOT_FOUND,
     ERR_JSON_KEY_DUPLICATE,
@@ -45,9 +44,9 @@ def api_save_component_properties(request: HttpRequest, component_type: str) -> 
     if request.method != "POST":
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
     try:
-        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except json.JSONDecodeError:
-        return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+        payload = json_body(request)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     try:
         result = AttributeDefService().save_component_properties(
             component_type, payload.get("properties", [])
@@ -71,9 +70,9 @@ def api_create_attribute_def(request: HttpRequest) -> JsonResponse:
     if request.method != "POST":
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
     try:
-        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except json.JSONDecodeError:
-        return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+        payload = json_body(request)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     try:
         result = AttributeDefService().create_attribute_def(
             variant_key=payload.get("variant_key"),
@@ -96,9 +95,9 @@ def api_update_attribute_common(request: HttpRequest) -> JsonResponse:
     if request.method != "POST":
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
     try:
-        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except json.JSONDecodeError:
-        return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+        payload = json_body(request)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     attr_id = payload.get("id")
     if not attr_id:
         return JsonResponse({"error": ERR_ID_REQUIRED}, status=400)
@@ -113,9 +112,9 @@ def api_update_attribute_specific(request: HttpRequest) -> JsonResponse:
     if request.method != "POST":
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
     try:
-        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except json.JSONDecodeError:
-        return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+        payload = json_body(request)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     attr_id = payload.get("id")
     if not attr_id:
         return JsonResponse({"error": ERR_ID_REQUIRED}, status=400)
@@ -132,9 +131,9 @@ def api_delete_attribute_def(request: HttpRequest) -> JsonResponse:
     if request.method != "POST":
         return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
     try:
-        payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except json.JSONDecodeError:
-        return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+        payload = json_body(request)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     attr_id = payload.get("id")
     if not attr_id:
         return JsonResponse({"error": ERR_ID_REQUIRED}, status=400)
@@ -162,9 +161,9 @@ def api_attributes_by_variant(request: HttpRequest, variant_key: str) -> JsonRes
 
     if request.method == "POST":
         try:
-            payload = json.loads(request.body.decode("utf-8")) if request.body else {}
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
         selected_ids = payload.get("selected_ids", [])
         if not isinstance(selected_ids, list):
             return JsonResponse({"error": ERR_SELECTED_IDS_MUST_BE_ARRAY}, status=400)

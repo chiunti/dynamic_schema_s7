@@ -23,10 +23,9 @@ from ..services.editor_extension_service import EditorExtensionService
 from ..services.node_service import NodeService
 from ..services.node_json_service import NodeJsonService
 from ..services.schema_validation_service import SchemaValidationService
-from ..utils import parse_uuid
+from ..utils import parse_uuid, json_body
 from ..constants import (
     ERR_METHOD_NOT_ALLOWED,
-    ERR_INVALID_JSON,
     ERR_NOT_FOUND,
     ERR_PARENT_NOT_FOUND,
     ERR_NODE_TYPE_NOT_FOUND,
@@ -124,12 +123,9 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            if not request.body:
-                payload = {}
-            else:
-                payload = json.loads(request.body.decode("utf-8"))
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         if "name" in payload:
             try:
@@ -163,12 +159,9 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            if not request.body:
-                payload = {}
-            else:
-                payload = json.loads(request.body.decode("utf-8"))
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         updates = payload.get("properties")
         if not isinstance(updates, dict):
@@ -190,12 +183,9 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            if not request.body:
-                payload = {}
-            else:
-                payload = json.loads(request.body.decode("utf-8"))
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         parent_id = payload.get("parent_id")
         node_type_name = payload.get("node_type")
@@ -237,12 +227,9 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            if not request.body:
-                payload = {}
-            else:
-                payload = json.loads(request.body.decode("utf-8"))
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         node_id = payload.get("node_id")
         new_parent_id = payload.get("new_parent_id")
@@ -264,12 +251,9 @@ class NodeEditorMixin:
             return JsonResponse({"error": ERR_METHOD_NOT_ALLOWED}, status=405)
 
         try:
-            if not request.body:
-                payload = {}
-            else:
-                payload = json.loads(request.body.decode("utf-8"))
-        except json.JSONDecodeError:
-            return JsonResponse({"error": ERR_INVALID_JSON}, status=400)
+            payload = json_body(request)
+        except ValueError as e:
+            return JsonResponse({"error": str(e)}, status=400)
 
         node_id = payload.get("node_id")
         direction = payload.get("direction")

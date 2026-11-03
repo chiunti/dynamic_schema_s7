@@ -56,21 +56,25 @@ def parse_uuid(value: str, field: str) -> uuid.UUID:
 
 def json_body(request) -> dict:
     """Parse JSON body from HTTP request.
-    
+
     Args:
         request: HTTP request object
-        
+
     Returns:
         Parsed JSON as dictionary
-        
+
     Raises:
-        ValueError: If body is not valid JSON
+        ValueError: If body is not valid JSON or does not parse to an object
     """
     try:
-        return json.loads(request.body.decode("utf-8")) if request.body else {}
+        parsed = json.loads(request.body.decode("utf-8")) if request.body else {}
     except json.JSONDecodeError:
         from .constants import ERR_INVALID_JSON_BODY
         raise ValueError(ERR_INVALID_JSON_BODY)
+    if not isinstance(parsed, dict):
+        from .constants import ERR_JSON_BODY_MUST_BE_OBJECT
+        raise ValueError(ERR_JSON_BODY_MUST_BE_OBJECT)
+    return parsed
 
 
 def org_to_dict(org: Organization) -> Dict[str, Any]:

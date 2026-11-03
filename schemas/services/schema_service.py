@@ -123,18 +123,6 @@ class SchemaService:
         self.data_type_repository = DataTypeRepository()
         self.node_type_repository = NodeTypeRepository()
 
-    def resolve_root_node_type(self, scope: Optional[str]) -> Optional[NodeType]:
-        """Resolve the root NodeType for a json_scope.
-
-        Falls back to the scope-less root node type (is_root with
-        json_scope IS NULL) when the scope is empty or does not match any
-        root type — it never guesses a named catalog's root.
-        """
-        node_type = self.node_type_repository.get_root_node_type_by_scope(scope) if scope else None
-        if not node_type:
-            node_type = self.node_type_repository.get_scopeless_root_node_type()
-        return node_type
-
     def generate_json_example(self, schema_type: str) -> Optional[dict]:
         """Generate a JSON example for a root schema type (by json_scope).
 

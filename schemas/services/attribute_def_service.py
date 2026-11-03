@@ -80,6 +80,10 @@ class AttributeDefService:
         Replace the DomainItems for a component type domain and sync variant AttributeDefs.
         Raises TypeError if properties is not a list.
         Raises LookupError if the default DataType is missing.
+        Raises ValueError when a property name matches a Node column
+        (key/name/sort_order/version): the minted def would be a
+        variant-scoped name-match — the declaration shape the other
+        gates reject, inert under the field-map's IS NULL rule (AI-147).
         """
         if not isinstance(properties, list):
             raise TypeError(ERR_PROPERTIES_MUST_BE_ARRAY)
@@ -107,6 +111,25 @@ class AttributeDefService:
             if not attr_def:
                 nt = self.repository.get_any_node_type()
                 if nt:
+                    # A prop named after a Node column would mint a
+                    # variant-scoped def whose name collides with the
+                    # column — the declaration shape the service-layer
+                    # gates reject (AI-141): the field-map resolves
+                    # column carriers at variant_key IS NULL scope only,
+                    # so the def could never write it. The prop is
+                    # invalid, not persisted inert — reject it where it
+                    # is born. A prop resolving to a catalog def never
+                    # reaches this branch and stays legitimate.
+                    if prop_value in _AUTHOR_SETTABLE_NODE_FIELDS:
+                        raise ValueError(
+                            ERR_VARIANT_NODE_FIELD_CARRIER_MSG.format(
+                                natural_key=[
+                                    nt.name, prop_value, component_type,
+                                ],
+                                name=prop_value,
+                                variant_key=component_type,
+                            )
+                        )
                     dt = self.repository.get_default_data_type()
                     if not dt:
                         raise LookupError(ERR_DEFAULT_DATA_TYPE_NOT_FOUND)
@@ -371,11 +394,12 @@ class AttributeDefService:
           skips variant-scoped defs and the column-mapped guard never
           persists a NodeAttribute — the def stays inert and the path
           is near-unreachable. Documented, not gated.
-        - save_component_properties can still mint a variant-scoped def
-          named after a Node column directly through the repository
-          when a component property value collides (e.g. a 'version'
-          property): pathological but declarable — the field-map keeps
-          it inert. Documented, not gated.
+        - save_component_properties was the remaining mint vector under
+          the service: it created variant-scoped defs through the
+          repository when a component property value collided with a
+          Node column (e.g. a 'version' property). Now gated there
+          (AI-147): the prop is rejected with
+          ERR_VARIANT_NODE_FIELD_CARRIER_MSG before the create.
         - NodeService.update_node_properties was a separate real
           vector: an active variant-scoped 'natural_version' def did
           write node.version in the editor. Gated there (AI-132 for

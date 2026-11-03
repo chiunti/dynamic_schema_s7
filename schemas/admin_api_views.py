@@ -52,6 +52,8 @@ def api_save_component_properties(request: HttpRequest, component_type: str) -> 
             component_type, payload.get("properties", [])
         )
         return JsonResponse(result)
+    except ValueError as e:
+        return JsonResponse({"error": str(e)}, status=400)
     except TypeError as e:
         return JsonResponse({"error": str(e)}, status=400)
     except LookupError as e:

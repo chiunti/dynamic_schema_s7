@@ -234,7 +234,14 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
 
     def get_changeform_initial_data(self, request):
         initial = super().get_changeform_initial_data(request)
-        scope = request.GET.get("scope")
+        # Two channels carry the scope hint: a literal ?scope= (deep
+        # links, takes priority — it is the more explicit one) and
+        # ?_changelist_filters= (the standard Add button wraps the
+        # changelist's GET params via Django's preserved filters — the
+        # real channel of the tab → Add flow).
+        scope = request.GET.get("scope") or QueryDict(
+            request.GET.get("_changelist_filters", ""),
+        ).get("scope")
         if scope:
             nt = NodeTypeRepository().get_root_node_type_by_scope(scope)
             if nt:

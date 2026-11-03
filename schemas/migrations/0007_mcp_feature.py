@@ -23,7 +23,8 @@ from django.db.models import Q
 #    s7_build_node_json's v_attrs, dead-variable removal from the same
 #    routine, effective-variant resolution so variant-scoped
 #    column-mapped defs emit in v_natural_attrs, structural list key
-#    backfill, and build-state invalidation.
+#    backfill, integral value_number emission as a JSON integer, and
+#    build-state invalidation.
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -1449,6 +1450,17 @@ def check_null_key_root_versions(apps, schema_editor):
 # v_natural_attrs and the keyed-children channels) and v_slots (declared,
 # never used).
 #
+# The v_attrs ELSE arm additionally restores wire fidelity for numeric
+# attributes: value_number is numeric(30,10), so the bare ::text::jsonb
+# emission rendered every stored number with decimal scale — a payload
+# that imported 26 reconstructed as 26.0. An integral value_number (equal
+# to its TRUNC) now emits to_jsonb(TRUNC(value_number)) — the scale-0
+# numeric renders the JSON integer literal without a ::bigint cast, so
+# even a 20-digit integral inside numeric(30,10) emits instead of raising
+# out of the bigint range. The check is generic across the ELSE arm
+# (number, float and any future value_number-backed datatype); the NULL
+# case still falls through to the remaining COALESCE candidates.
+#
 # The forward also NULLs last_cached_build in schema_build_state: the
 # cache-serving predicate (last_cached_build IS NOT DISTINCT FROM
 # current_build) would otherwise keep serving schema_json rows built by
@@ -1535,11 +1547,19 @@ BEGIN
   -- display_order types). display_order never stores a value row: any
   -- stored row is dead data — the emitted value is derived from
   -- sort_order in the v_natural_attrs block below.
+  -- Integral value_number emits as a JSON integer (the wire literal the
+  -- payload carried) instead of the scaled numeric form.
   SELECT
     jsonb_object_agg(ad.json_key,
                      CASE dt.name
                        WHEN 'int' THEN to_jsonb(TRUNC(na.value_number)::bigint)
-                       ELSE COALESCE(na.value_number::text::jsonb, na.value_bool::text::jsonb, na.value_json, to_jsonb(na.value_string))
+                       ELSE COALESCE(
+                         CASE
+                           WHEN na.value_number = TRUNC(na.value_number)
+                           THEN to_jsonb(TRUNC(na.value_number))
+                           ELSE na.value_number::text::jsonb
+                         END,
+                         na.value_bool::text::jsonb, na.value_json, to_jsonb(na.value_string))
                      END)
   INTO v_attrs
   FROM s7.schema_node_attributes na

@@ -865,6 +865,22 @@ class CatalogImportService:
             )
         label = model.split('.')[1]
 
+        # Params beyond the model's natural-key fields are rejected
+        # before the pk/NK exclusivity check: a stray key usually means
+        # a misspelled component or a foreign param (e.g. ``project_id``
+        # bouncing in from the schema reads) — name it instead of
+        # mislabeling the call a pk-vs-NK "conflict".
+        expected = NATURAL_KEY_FIELDS[label]
+        unknown = set(nk_params) - set(expected)
+        if unknown:
+            raise ValueError(
+                ERR_USAGE_UNKNOWN_NK_PARAMS.format(
+                    params=', '.join(sorted(unknown)),
+                    label=label,
+                    fields=', '.join(expected),
+                )
+            )
+
         has_pk = pk is not None
         has_nk = bool(nk_params)
         if has_pk and has_nk:
@@ -887,20 +903,10 @@ class CatalogImportService:
                 raise CatalogObjectNotFoundError(model, {'pk': pk})
             return self.catalog_object_usage(label, canonical_pk)
 
-        # NK arm — params beyond the model's natural-key fields are
-        # rejected rather than ignored: a stray key usually means a
-        # misspelled component, and silently dropping it would query
-        # a different (incomplete) identity than the caller meant.
-        expected = NATURAL_KEY_FIELDS[label]
-        unknown = set(nk_params) - set(expected)
-        if unknown:
-            raise ValueError(
-                ERR_USAGE_UNKNOWN_NK_PARAMS.format(
-                    params=', '.join(sorted(unknown)),
-                    label=label,
-                    fields=', '.join(expected),
-                )
-            )
+        # NK arm — the unknown-params check ran above the pk/NK
+        # exclusivity gate, so ``nk_params`` is already vocabulary-clean
+        # here: silently dropping a stray key would query a different
+        # (incomplete) identity than the caller meant.
         # NULL positions are addressed by omitting the param or by
         # sending it empty — both map to None. natural_key_for reads
         # the same fixture-format dict its import-pass calls build:

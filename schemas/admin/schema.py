@@ -193,10 +193,15 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
 
     def save_model(self, request, obj, form, change):
         if not change:
+            # The form's explicit schema_type choice wins over navigation
+            # hints: ?scope= is a changelist-tab hint (it only preselects
+            # the dropdown via get_changeform_initial_data) and POST.scope
+            # is defensive — no shipped template posts it — so they only
+            # fill in when the form itself carries no choice.
             scope = (
-                request.GET.get("scope")
+                form.cleaned_data.get("schema_type")
                 or request.POST.get("scope")
-                or form.cleaned_data.get("schema_type")
+                or request.GET.get("scope")
             )
             # An explicit scope must resolve on its own: falling back to
             # the scope-less root would silently mistype the schema, and a
@@ -234,6 +239,11 @@ class SchemaAdmin(RootNodeAdminMixin, NodeEditorMixin, admin.ModelAdmin):
             nt = NodeTypeRepository().get_root_node_type_by_scope(scope)
             if nt:
                 initial["node_type"] = nt.pk
+                # The hint preselects the visible dropdown too: save_model
+                # resolves form.cleaned_data['schema_type'] first, so the
+                # user sees — and can correct — what used to be an
+                # invisible URL override.
+                initial["schema_type"] = scope
         return initial
 
     # ------------------------------------------------------------------ #

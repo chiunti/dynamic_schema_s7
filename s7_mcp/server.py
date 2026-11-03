@@ -128,9 +128,9 @@ def _get_client(ctx: Context | None = None) -> S7Client:
 
     An entry may be evicted — and its pool closed — while a caller still
     holds it: a request in flight can see its client go stale if enough
-    newer credentials arrive meanwhile. The failed request surfaces as a
-    transport error and self-heals on the next call, which resolves a
-    fresh client — an inherent trade-off of pooling without
+    newer credentials arrive meanwhile. The failed request surfaces as the
+    ``transport_error`` envelope and self-heals on the next call, which
+    resolves a fresh client — an inherent trade-off of pooling without
     refcounting.
     """
     config = get_config(require_token=False)

@@ -134,7 +134,12 @@ class S7Client:
         try:
             response = self._http.request(method, API_PREFIX + path.lstrip("/"),
                                           content=content, headers=headers)
-        except httpx.HTTPError as exc:
+        # httpx raises a plain RuntimeError — not an HTTPError — when a
+        # request is dispatched on an already-closed client (e.g. a pool
+        # evicted from the server's bounded LRU between resolving the
+        # client and dispatching); it is still a transport failure for the
+        # caller, so it maps to the same envelope.
+        except (httpx.HTTPError, RuntimeError) as exc:
             return _error("transport_error", f"{type(exc).__name__}: {exc}")
 
         try:

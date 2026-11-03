@@ -143,6 +143,19 @@ class RequestEnvelopeTests(_ClientCase):
         self.assertIn("ConnectError", result["error"]["message"])
         self.assertIn("connection refused", result["error"]["message"])
 
+    def test_request_on_closed_client_yields_transport_error(self):
+        """A request dispatched on an already-closed ``httpx.Client`` raises
+        a plain ``RuntimeError`` (not ``HTTPError``) — it must still map to
+        the ``transport_error`` envelope. This pins the use-after-evict
+        window of the server's bounded LRU at client level: ``close()``
+        plus a deterministic request, no concurrency mocks."""
+        client = self._client(lambda request: httpx.Response(200, json={}))
+        client._http.close()
+        result = client.get_json("catalog/datatypes/")
+        self.assertEqual(result["error"]["code"], "transport_error")
+        self.assertIsNone(result["error"]["status"])
+        self.assertIn("RuntimeError", result["error"]["message"])
+
     def test_read_timeout_yields_transport_error(self):
         def handler(request):
             raise httpx.ReadTimeout("timed out")

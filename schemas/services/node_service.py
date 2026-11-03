@@ -510,8 +510,14 @@ class NodeService:
                     if d.data_type.name == 'natural_uuid':
                         continue
 
-                    # natural_key maps to schema_nodes.key column — update directly
+                    # natural_key maps to schema_nodes.key column — update directly,
+                    # but only as a non-variant declaration: the key carrier is
+                    # resolved at variant_key IS NULL scope, so variant-scoped defs
+                    # stay inert (same rule as natural_version and the import
+                    # field map).
                     if d.data_type.name == 'natural_key':
+                        if d.variant_key is not None:
+                            continue
                         node.key = str(value).strip() if value else node.key
                         self.schema_repository.update_node_key(node.id, node.key)
                         continue
@@ -532,14 +538,24 @@ class NodeService:
                                 self.schema_repository.update_node_version_by_parent(node.parent_id, v)
                         continue
 
-                    # natural_order maps to schema_nodes.sort_order column — update directly
+                    # natural_order maps to schema_nodes.sort_order column — update
+                    # directly, but only as a non-variant declaration: column
+                    # carriers are resolved at variant_key IS NULL scope, so
+                    # variant-scoped defs stay inert.
                     if d.data_type.name == 'natural_order':
+                        if d.variant_key is not None:
+                            continue
                         node.sort_order = int(value) if value is not None else 0
                         self.schema_repository.update_node_sort_order(node.id, node.sort_order)
                         continue
 
-                    # display_order maps to schema_nodes.sort_order column — update directly (1-based to 0-based)
+                    # display_order maps to schema_nodes.sort_order column — update
+                    # directly (1-based to 0-based), but only as a non-variant
+                    # declaration: column carriers are resolved at variant_key
+                    # IS NULL scope, so variant-scoped defs stay inert.
                     if d.data_type.name == 'display_order':
+                        if d.variant_key is not None:
+                            continue
                         node.sort_order = (int(value) - 1) if value is not None else 0
                         self.schema_repository.update_node_sort_order(node.id, node.sort_order)
                         continue

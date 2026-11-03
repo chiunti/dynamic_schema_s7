@@ -378,14 +378,11 @@ class AttributeDefService:
           it inert. Documented, not gated.
         - NodeService.update_node_properties was a separate real
           vector: an active variant-scoped 'natural_version' def did
-          write node.version in the editor. Now gated there (AI-132):
-          the write branch skips defs with a variant_key set, the same
-          variant_key IS NULL rule as the import field map. Its
-          natural_key / natural_order / display_order branches still
-          lack that guard, so a variant-scoped natural_* def named
-          after a column keeps writing it in the editor while the
-          import field-map now skips it — a known divergence deferred
-          to a follow-up ticket.
+          write node.version in the editor. Gated there (AI-132 for
+          natural_version, AI-146 for natural_key / natural_order /
+          display_order): every column-mapped write branch skips defs
+          with a variant_key set, the same variant_key IS NULL rule as
+          the import field map — editor and import now agree.
         """
         target_names = None
         if scope:

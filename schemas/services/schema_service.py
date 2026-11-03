@@ -1168,9 +1168,9 @@ class SchemaService:
             # catalogs declared before them. It also seals variant-scoped
             # natural_* defs named after a column (e.g. natural_key named
             # 'key'), which this map previously honored — the editor
-            # write-path (NodeService.update_node_properties) still writes
-            # those columns for variant-scoped natural_* defs, a known
-            # divergence deferred to a follow-up ticket.
+            # write-path (NodeService.update_node_properties) applies the
+            # same skip, so both surfaces resolve column carriers at
+            # IS NULL scope only.
             if attr_def.variant_key is not None:
                 continue
             if attr_def.name in _AUTHOR_SETTABLE_NODE_FIELDS:

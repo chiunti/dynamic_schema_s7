@@ -16,6 +16,8 @@ from .constants import (
     ERR_DEFAULT_DATA_TYPE_NOT_FOUND,
     ERR_JSON_KEY_DUPLICATE,
     ERR_ID_REQUIRED,
+    ERR_PROPERTIES_REQUIRED,
+    ERR_SELECTED_IDS_REQUIRED,
     ERR_SELECTED_IDS_MUST_BE_ARRAY,
 )
 
@@ -47,9 +49,11 @@ def api_save_component_properties(request: HttpRequest, component_type: str) -> 
         payload = json_body(request)
     except ValueError as e:
         return JsonResponse({"error": str(e)}, status=400)
+    if "properties" not in payload:
+        return JsonResponse({"error": ERR_PROPERTIES_REQUIRED}, status=400)
     try:
         result = AttributeDefService().save_component_properties(
-            component_type, payload.get("properties", [])
+            component_type, payload["properties"]
         )
         return JsonResponse(result)
     except ValueError as e:
@@ -166,7 +170,9 @@ def api_attributes_by_variant(request: HttpRequest, variant_key: str) -> JsonRes
             payload = json_body(request)
         except ValueError as e:
             return JsonResponse({"error": str(e)}, status=400)
-        selected_ids = payload.get("selected_ids", [])
+        if "selected_ids" not in payload:
+            return JsonResponse({"error": ERR_SELECTED_IDS_REQUIRED}, status=400)
+        selected_ids = payload["selected_ids"]
         if not isinstance(selected_ids, list):
             return JsonResponse({"error": ERR_SELECTED_IDS_MUST_BE_ARRAY}, status=400)
         try:

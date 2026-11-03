@@ -68,7 +68,7 @@ def json_body(request) -> dict:
     """
     try:
         parsed = json.loads(request.body.decode("utf-8")) if request.body else {}
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         from .constants import ERR_INVALID_JSON_BODY
         raise ValueError(ERR_INVALID_JSON_BODY)
     if not isinstance(parsed, dict):

@@ -17,10 +17,14 @@ from ..constants import (
     ERR_JSON_KEY_DUPLICATE,
     ERR_JSON_KEY_AND_NAME_REQUIRED,
     ERR_PROPERTIES_MUST_BE_ARRAY,
+    ERR_VARIANT_COLUMN_CARRIER_MSG,
     ERR_VARIANT_NODE_FIELD_CARRIER_MSG,
     ERR_VARIANT_VERSION_CARRIER_MSG,
 )
-from .datatype_plugins import _AUTHOR_SETTABLE_NODE_FIELDS
+from .datatype_plugins import (
+    _AUTHOR_SETTABLE_NODE_FIELDS,
+    is_column_mapped_datatype,
+)
 
 
 class AttributeDefService:
@@ -357,11 +361,14 @@ class AttributeDefService:
         Raises ValueError when a selected catalog template would
         materialize an inert variant-scoped Node-column carrier:
 
-        - a template carrying the 'natural_version' datatype: the copy
-          below propagates data_type verbatim, so it would become a
-          variant-scoped version carrier — inert, since the field map
-          resolves version carriers at variant_key IS NULL scope only.
-          Mirrors the catalog-import rejection (AI-117).
+        - a template carrying a column-mapped datatype
+          ('display_order' or any 'natural_*'): the copy below
+          propagates data_type verbatim, so it would become a
+          variant-scoped column carrier — inert, since the field map
+          resolves every column carrier at variant_key IS NULL scope
+          only. 'natural_version' (AI-117) keeps its specific literal;
+          the rest name the datatype (AI-154). Mirrors the
+          catalog-import rejection.
         - a template whose name matches a Node column
           (key/name/sort_order/version): the copy propagates name
           verbatim, so it would name-match a Node column under a
@@ -383,7 +390,7 @@ class AttributeDefService:
         - create_attribute_def can declare a variant-scoped def named
           after a Node column with datatype 'string' (its datatype is
           hardwired via get_default_data_type(), so it can never
-          produce 'natural_version') — gated there (AI-141).
+          produce a column-mapped datatype) — gated there (AI-141).
         - make_attribute_specific is a non-vector: it only flips
           is_common and keeps variant_key=None (a common def becomes a
           catalog template, never a variant def). A carrier template
@@ -426,19 +433,34 @@ class AttributeDefService:
         for attr_id in to_create_ids:
             catalog_attr = self.repository.get_catalog_attribute_def_by_id(node_type_ids, attr_id)
             if catalog_attr:
-                # Reject 'natural_version' templates: the copy would be a
-                # variant-scoped version carrier, which is inert (see
-                # docstring). The natural key reported is the template's
-                # own (node_type, json_key, variant_key=None); the
-                # variant_key in the message is the assignment target.
-                if catalog_attr.data_type.name == 'natural_version':
+                # Reject column-mapped datatype templates: the copy
+                # would be a variant-scoped column carrier, which is
+                # inert (see docstring). The natural key reported is the
+                # template's own (node_type, json_key, variant_key=None);
+                # the variant_key in the message is the assignment
+                # target. 'natural_version' keeps its specific literal;
+                # the rest name the datatype.
+                template_dt = catalog_attr.data_type.name
+                if is_column_mapped_datatype(template_dt):
+                    if template_dt == 'natural_version':
+                        raise ValueError(
+                            ERR_VARIANT_VERSION_CARRIER_MSG.format(
+                                natural_key=[
+                                    catalog_attr.node_type.name,
+                                    catalog_attr.json_key,
+                                    None,
+                                ],
+                                variant_key=variant_key,
+                            )
+                        )
                     raise ValueError(
-                        ERR_VARIANT_VERSION_CARRIER_MSG.format(
+                        ERR_VARIANT_COLUMN_CARRIER_MSG.format(
                             natural_key=[
                                 catalog_attr.node_type.name,
                                 catalog_attr.json_key,
                                 None,
                             ],
+                            data_type=template_dt,
                             variant_key=variant_key,
                         )
                     )

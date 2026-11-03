@@ -116,6 +116,7 @@ from ..constants import (
     ERR_USAGE_IDENTIFIER_REQUIRED,
     ERR_USAGE_MODEL_REQUIRED,
     ERR_USAGE_UNKNOWN_NK_PARAMS,
+    ERR_VARIANT_COLUMN_CARRIER_MSG,
     ERR_VARIANT_NODE_FIELD_CARRIER_MSG,
     ERR_VARIANT_VERSION_CARRIER_MSG,
     WARN_IS_REQUIRED_DEMOTED,
@@ -124,6 +125,7 @@ from ..repositories.catalog_usage_repository import CatalogUsageRepository
 from ..repositories.fixture_repository import FixtureRepository
 from .datatype_plugins import (
     _AUTHOR_SETTABLE_NODE_FIELDS,
+    is_column_mapped_datatype,
     is_server_managed_attribute,
 )
 from .exceptions import CatalogObjectNotFoundError
@@ -1075,13 +1077,17 @@ class CatalogImportService:
         NULL`` scope, so two declaration shapes are inert under a
         variant and rejected per object:
 
-        - a ``natural_version`` def: post-AI-106 the structural
-          field-map
+        - a def bound to a column-mapped datatype (``display_order``
+          or any ``natural_*``): post-AI-106 the structural field-map
           (``SchemaService._build_json_key_to_field_map``) skips
           variant-scoped defs and the root version sync resolves the
-          carrier from IS NULL declarations only, so a
-          ``natural_version`` def carrying a ``variant_key`` can never
-          write ``Node.version``.
+          carrier from IS NULL declarations only, so a column-mapped
+          def carrying a ``variant_key`` can never write the column —
+          ``natural_version`` (AI-117) is the original case; post-AI-146
+          the editor write-path skips the same defs, making the whole
+          set inert under a variant (AI-154). ``natural_version`` keeps
+          its specific literal; the rest report the generic
+          column-carrier message naming the datatype.
         - any def whose ``name`` matches a Node column
           (``key``/``name``/``sort_order``/``version``): post-AI-141
           the same field-map resolves name-matched carriers at IS
@@ -1094,8 +1100,9 @@ class CatalogImportService:
         let the catalog diverge silently, so the import declares the
         pattern invalid instead — a column carrier must be a
         non-variant declaration. An upsert matching both shapes
-        reports the ``natural_version`` diagnosis: it is the more
-        specific of the two rules it violates.
+        reports the datatype diagnosis: it is the more specific of the
+        two rules it violates (``natural_version`` names the version
+        carrier, any other column-mapped datatype names itself).
 
         Runs after structural validation — the ``data_type`` FK
         shape and ``variant_key``'s presence as a ``str``-or-``None``
@@ -1131,23 +1138,31 @@ class CatalogImportService:
                 if isinstance(dt_ref, list) and dt_ref else dt_ref
             )
             attr_name = fields.get('name')
-            is_version_carrier = (
-                isinstance(dt_name, str) and dt_name == 'natural_version'
+            is_column_carrier = (
+                isinstance(dt_name, str)
+                and is_column_mapped_datatype(dt_name)
             )
             is_node_field_carrier = (
                 isinstance(attr_name, str)
                 and attr_name in _AUTHOR_SETTABLE_NODE_FIELDS
             )
-            if not is_version_carrier and not is_node_field_carrier:
+            if not is_column_carrier and not is_node_field_carrier:
                 continue
             nk = self.fixture_service.natural_key_for(
                 'attributedef', fields,
             )
-            if is_version_carrier:
-                message = ERR_VARIANT_VERSION_CARRIER_MSG.format(
-                    natural_key=list(nk),
-                    variant_key=variant_key,
-                )
+            if is_column_carrier:
+                if dt_name == 'natural_version':
+                    message = ERR_VARIANT_VERSION_CARRIER_MSG.format(
+                        natural_key=list(nk),
+                        variant_key=variant_key,
+                    )
+                else:
+                    message = ERR_VARIANT_COLUMN_CARRIER_MSG.format(
+                        natural_key=list(nk),
+                        data_type=dt_name,
+                        variant_key=variant_key,
+                    )
             else:
                 message = ERR_VARIANT_NODE_FIELD_CARRIER_MSG.format(
                     natural_key=list(nk),

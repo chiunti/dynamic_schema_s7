@@ -13,7 +13,6 @@ from .utils import json_body
 from .constants import (
     ERR_METHOD_NOT_ALLOWED,
     ERR_VARIANT_KEY_NOT_FOUND,
-    ERR_DEFAULT_DATA_TYPE_NOT_FOUND,
     ERR_JSON_KEY_DUPLICATE,
     ERR_ID_REQUIRED,
     ERR_PROPERTIES_REQUIRED,
@@ -93,7 +92,7 @@ def api_create_attribute_def(request: HttpRequest) -> JsonResponse:
         status_code = 409 if str(e) == ERR_JSON_KEY_DUPLICATE else 400
         return JsonResponse({"error": str(e)}, status=status_code)
     except LookupError as e:
-        status_code = 404 if str(e) in (ERR_VARIANT_KEY_NOT_FOUND, ERR_DEFAULT_DATA_TYPE_NOT_FOUND) else 500
+        status_code = 404 if str(e) == ERR_VARIANT_KEY_NOT_FOUND else 500
         return JsonResponse({"error": str(e)}, status=status_code)
 
 

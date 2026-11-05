@@ -177,7 +177,10 @@ class CatalogImportService:
         self.usage_repository = CatalogUsageRepository()
 
     @transaction.atomic
-    def import_objects(self, objects: list, user: 'User') -> dict:
+    def import_objects(
+        self, objects: list, user: 'Optional[User]',
+        enforce_perms: bool = True,
+    ) -> dict:
         """Validate + apply a fixture-format catalog payload atomically.
 
         Args:
@@ -197,6 +200,19 @@ class CatalogImportService:
                 for upserts, ``schemas.delete_<label>`` for deletes —
                 plus ``delete_<dep_label>`` for every dependent row a
                 ``nodetype`` delete removes) gate each planned write.
+                May be ``None`` when ``enforce_perms`` is False.
+            enforce_perms: when False the protective gates of the
+                direct-import contract are skipped — the per-model
+                permission pass, the catalog-usage gate (implemented
+                rows accept updates and deletes), and the LogEntry
+                attribution. The payload is still validated, classified
+                and applied through the same machinery; intended for
+                transactional probes that run the real apply inside a
+                savepoint and roll it back (the changeset validator's
+                post-merge coherence tier, whose own risk classes
+                replace the usage gate) and for the governed apply a
+                changeset approval authorizes. The public endpoint
+                keeps the default True.
 
         Returns:
             On success ``{"applied": True, "created": {label: n},
@@ -301,11 +317,11 @@ class CatalogImportService:
             demoted to ``False``.
 
         Raises:
-            PermissionError: the user lacks a required per-model
-                permission; the message names codename and model. Never
-                partial — a mid-apply raise (a reclassified insert
-                missing ``add``) rolls back the writes before it with
-                the whole transaction.
+            PermissionError: (``enforce_perms`` only) the user lacks a
+                required per-model permission; the message names
+                codename and model. Never partial — a mid-apply raise
+                (a reclassified insert missing ``add``) rolls back the
+                writes before it with the whole transaction.
         """
         # PK generation runs before validation: validate_objects requires
         # a UUID pk on every entry, so fulfilling the 'pk optional'
@@ -452,7 +468,8 @@ class CatalogImportService:
         dependents = {}
         for i, obj, label, existing_pk in classified:
             if obj.get('delete') is True:
-                self._require_perm(user, 'delete', label)
+                if enforce_perms:
+                    self._require_perm(user, 'delete', label)
                 # Point the object at the resolved row — a delete never
                 # reaches deserialization, so the rewrite is reporting
                 # metadata only (results path, apply-error context).
@@ -469,19 +486,21 @@ class CatalogImportService:
                     )
                     dependents[i] = deps
                     for dep_label, dep_pks in deps['delete'].items():
-                        if dep_pks:
+                        if dep_pks and enforce_perms:
                             self._require_perm(
                                 user, 'delete', dep_label,
                             )
                 continue
             if existing_pk is not None:
-                self._require_perm(user, 'change', label)
+                if enforce_perms:
+                    self._require_perm(user, 'change', label)
                 # Point the object at the live row so deserialization
                 # updates it instead of colliding on the natural key.
                 obj['pk'] = existing_pk
                 updated[label] += 1
             else:
-                self._require_perm(user, 'add', label)
+                if enforce_perms:
+                    self._require_perm(user, 'add', label)
                 created[label] += 1
 
         # Full-row-replace guard — still before any write: an update
@@ -551,8 +570,19 @@ class CatalogImportService:
         # transaction: under READ COMMITTED a schema committed between
         # this pass and the outer commit escapes verification — a
         # residual TOCTOU window accepted for v1.
+        #
+        # Skipped under ``enforce_perms=False``: the gate is
+        # direct-import governance — an anonymous payload may never
+        # mutate an implemented row. The changeset validator runs this
+        # apply inside a savepoint under its own risk classes (tier-3
+        # classifies the impact as breaking/warning/info instead), and
+        # the governed apply the changeset approves needs the same
+        # bypass — otherwise no changeset could ever mutate an
+        # implemented row.
         usage_errors = []
-        for i, obj, label, existing_pk in classified:
+        for i, obj, label, existing_pk in (
+            classified if enforce_perms else ()
+        ):
             if obj.get('delete') is True:
                 usage = self.catalog_object_usage(
                     label, existing_pk,
@@ -681,7 +711,8 @@ class CatalogImportService:
                     # ``add_<label>`` as well, before touching the
                     # report. PermissionError is outside the caught
                     # tuple, so it propagates for a full rollback.
-                    self._require_perm(user, 'add', label)
+                    if enforce_perms:
+                        self._require_perm(user, 'add', label)
                     inserted.add(orig_i)
                     updated[label] -= 1
                     if not updated[label]:
@@ -764,9 +795,14 @@ class CatalogImportService:
                     },
                 ])
 
-        self.fixture_repository.record_catalog_import(
-            user, self._change_message(created, updated, deleted),
-        )
+        if enforce_perms:
+            # The trial apply of the changeset validator shares this
+            # machinery but writes no audit record — its writes roll
+            # back inside the savepoint and the proposer may be a
+            # credential with no User to attribute.
+            self.fixture_repository.record_catalog_import(
+                user, self._change_message(created, updated, deleted),
+            )
 
         # Per-object audit trail in payload order — ``classified`` kept
         # the original indices and the pre-apply snapshots pinpoint

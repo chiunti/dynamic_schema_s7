@@ -62,3 +62,31 @@ class CatalogImportSerializer(serializers.Serializer):
             "requires the schemas.delete_<label> permission."
         ),
     )
+
+
+class CatalogChangeSetProposeSerializer(serializers.Serializer):
+    """Request shape for proposing a catalog changeset.
+
+    Structural shape only — the op vocabulary, natural-key resolution
+    and per-field semantics are business validation enforced by the
+    service layer's three-tier validator.
+    """
+
+    rationale = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        help_text=(
+            "Why the change is proposed — required reviewer context."
+        ),
+    )
+    ops = serializers.ListField(
+        child=serializers.DictField(),
+        allow_empty=False,
+        help_text=(
+            "Ordered list of catalog mutation operations; each entry is "
+            "a dict carrying an 'op' operation name plus the fields of "
+            "its vocabulary (e.g. {op: 'add_node_type', name, label, "
+            "json_scope}, {op: 'remove_composition', parent_type, "
+            "child_type})."
+        ),
+    )

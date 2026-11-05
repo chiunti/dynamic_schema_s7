@@ -208,6 +208,32 @@ ERR_USAGE_IDENTIFIER_CONFLICT = "identify the object by 'pk' or natural-key para
 ERR_USAGE_IDENTIFIER_REQUIRED = "identify the object by 'pk' or natural-key parameters"
 ERR_USAGE_UNKNOWN_NK_PARAMS = "unknown identifier parameters: {params} — natural key of {label}: {fields}"
 
+# Catalog changeset validation — codes emitted inside the changeset's
+# validation_report JSONB by CatalogChangeSetService.validate()
+# (services/catalog_changeset_service.py). ERR_CHANGESET_INVALID_TRANSITION
+# is the raise-level message for lifecycle violations; the rest are
+# per-finding `code` values in {op_index, severity, entity, code, message,
+# remediation?} findings. Implementation findings reuse the import's
+# ERR_CATALOG_OBJECT_IN_USE code — severity carries the policy difference
+# (breaking on destructive ops, warning on mutative ones).
+ERR_CHANGESET_INVALID_TRANSITION = "changeset cannot transition from '{from_status}' to '{to_status}'"
+ERR_CHANGESET_OP_MALFORMED = "changeset_op_malformed"
+ERR_CHANGESET_OP_UNKNOWN = "changeset_op_unknown"
+ERR_CHANGESET_OP_FIELD_MISSING = "changeset_op_field_missing"
+ERR_CHANGESET_OP_FIELD_INVALID = "changeset_op_field_invalid"
+ERR_CHANGESET_OP_TARGET_NOT_FOUND = "changeset_op_target_not_found"
+ERR_CHANGESET_OP_TARGET_EXISTS = "changeset_op_target_exists"
+ERR_CHANGESET_OP_DUP_TARGET = "changeset_op_duplicate_target"
+ERR_CHANGESET_APPLY_FAILED = "changeset_apply_failed"
+ERR_CHANGESET_DISCRIMINATOR_AMBIGUOUS = "changeset_discriminator_ambiguous"
+ERR_CHANGESET_DISCRIMINATOR_UNRESOLVED = "changeset_discriminator_unresolved"
+ERR_CHANGESET_VARIANT_KEY_UNRESOLVED = "changeset_variant_key_unresolved"
+ERR_CHANGESET_PROPS_TYPE_UNRESOLVED = "changeset_props_type_unresolved"
+ERR_CHANGESET_DUP_JSON_KEY = "changeset_duplicate_json_key"
+ERR_CHANGESET_ORPHAN_COMPOSITION = "changeset_orphan_composition"
+ERR_CHANGESET_COMPOSITION_CYCLE = "changeset_composition_cycle"
+INFO_CHANGESET_ADDITIVE = "changeset_additive"
+
 # Logging error messages
 ERR_INVALID_JSON_MSG = "Invalid JSON: {error}"
 ERR_ERROR_IN_SCHEMA_VIEW = "Error in schema_view: {error}"

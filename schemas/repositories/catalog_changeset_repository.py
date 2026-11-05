@@ -13,7 +13,7 @@ from typing import Optional
 
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, IntegrityError
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from ..constants import (
@@ -28,13 +28,28 @@ from ..constants import (
     ERR_CHANGESET_STATUS_MUST_BE_VALID,
     ERR_PK_MUST_BE_VALID_UUID,
 )
-from ..models import CatalogChangeSet, ProjectAPICredential
+from ..models import (
+    AttributeDef,
+    CatalogChangeSet,
+    Domain,
+    DomainItem,
+    NodeType,
+    NodeTypeComposition,
+    NodeTypeVariant,
+    ProjectAPICredential,
+)
 
 User = get_user_model()
 
 
 class CatalogChangeSetRepository:
-    """Thin CRUD persistence for catalog changesets."""
+    """Thin CRUD persistence for catalog changesets.
+
+    Also owns the catalog read that feeds ``base_revision``:
+    ``catalog_rows_in_scopes`` returns the rows inside the scopes a
+    changeset touches — the snapshot the validator hashes and the apply
+    re-verifies.
+    """
 
     # Columns update_fields() will write. The proposer columns
     # (proposed_by_credential / proposed_by_user) are intentionally
@@ -278,3 +293,138 @@ class CatalogChangeSetRepository:
                 raise ValueError(ERR_CHANGESET_SCOPES_MUST_BE_LIST_OR_NONE)
             qs = qs.filter(scopes__has_any_keys=scopes)
         return qs
+
+    def catalog_rows_in_scopes(
+        self, scopes: Optional[list],
+    ) -> dict[str, list]:
+        """Catalog rows belonging to the given ``json_scope`` values.
+
+        Read-side of ``base_revision``: returns, per writable catalog
+        model label, the materialized rows the scope snapshot covers —
+        the node types carrying one of the scopes plus the rows
+        transitively attached to them:
+
+        - ``nodetype`` — ``NodeType.json_scope`` matching an element of
+          ``scopes``. A ``None`` element selects scopeless node types
+          (``json_scope IS NULL``); ``""`` selects rows storing the
+          literal empty string — the two are kept distinct because
+          scopes are derived server-side and fidelity matters. A plain
+          ``json_scope__in`` lookup cannot express the ``None`` arm:
+          Django discards ``None`` elements from ``__in`` lists
+          (``NULL IN (...)`` never matches), so the null branch is
+          OR'ed in explicitly.
+        - ``attributedef`` — defs bound to an in-scope node type
+          (``variant_key``-scoped defs included: they still hang off
+          the node type). Global defs (``node_type IS NULL``) are
+          always excluded — they belong to no scope; the validator
+          reports them as scope-agnostic shared grammar when an op
+          touches them, outside the scope snapshot.
+        - ``nodetypevariant`` — variants whose ``node_type`` is in
+          scope.
+        - ``nodetypecomposition`` — outgoing compositions only
+          (``parent_type`` in scope): the edge is owned by its parent,
+          so a composition whose parent lies outside the scope does not
+          belong to the child's scope even when the child is in scope.
+        - ``domain`` — domains referenced (``AttributeDef.domain``) by
+          an in-scope def; a domain is of the scope when a def of an
+          in-scope node type binds it.
+        - ``domainitem`` — items of an in-scope domain.
+
+        The labels mirror ``CATALOG_MODELS`` (and
+        ``CatalogUsageRepository._DISPATCH``); all six are always
+        present. Each list is ordered by ``pk`` — the hash
+        serialization requires a stable row order — and the FKs the
+        natural keys traverse are ``select_related`` so serializing
+        the result does not N+1.
+
+        Args:
+            scopes: ``json_scope`` values selecting the snapshot —
+                ``str`` elements, with ``None``/``""`` handled as
+                documented above. ``None`` (or ``[]``) as the argument
+                means "no scope selected" and returns every label
+                empty; elements of other types are not validated and
+                simply cannot match (or surface as a mapped
+                ``DatabaseError``).
+
+        Returns:
+            ``{label: [model instances]}`` — lists materialized here so
+            query errors are mapped in this layer rather than at the
+            caller's iteration (unlike the lazy ``list_changesets``).
+
+        Raises:
+            ValueError: ``scopes`` is neither a list nor ``None``, or
+                ``IntegrityError`` mapped — contract violation.
+            RuntimeError: ``DatabaseError`` mapped — infrastructure.
+        """
+        if scopes is None:
+            scopes = []
+        if not isinstance(scopes, list):
+            raise ValueError(ERR_CHANGESET_SCOPES_MUST_BE_LIST_OR_NONE)
+
+        labels = (
+            "nodetype", "attributedef", "nodetypevariant",
+            "nodetypecomposition", "domain", "domainitem",
+        )
+        if not scopes:
+            return {label: [] for label in labels}
+
+        try:
+            concrete_scopes = [s for s in scopes if s is not None]
+            scope_q = Q()
+            if concrete_scopes:
+                scope_q |= Q(json_scope__in=concrete_scopes)
+            if len(concrete_scopes) != len(scopes):
+                scope_q |= Q(json_scope__isnull=True)
+            node_types = list(
+                NodeType.objects.filter(scope_q).order_by("pk")
+            )
+            node_type_ids = [nt.pk for nt in node_types]
+
+            attribute_defs = list(
+                AttributeDef.objects
+                .select_related("node_type", "data_type", "domain")
+                .filter(node_type_id__in=node_type_ids)
+                .order_by("pk")
+            )
+            domain_ids = {
+                attribute_def.domain_id
+                for attribute_def in attribute_defs
+                if attribute_def.domain_id is not None
+            }
+            return {
+                "nodetype": node_types,
+                "attributedef": attribute_defs,
+                "nodetypevariant": list(
+                    NodeTypeVariant.objects
+                    .select_related("node_type", "props_node_type")
+                    .filter(node_type_id__in=node_type_ids)
+                    .order_by("pk")
+                ),
+                "nodetypecomposition": list(
+                    NodeTypeComposition.objects
+                    .select_related("parent_type", "child_type")
+                    .filter(parent_type_id__in=node_type_ids)
+                    .order_by("pk")
+                ),
+                "domain": list(
+                    Domain.objects
+                    .filter(pk__in=domain_ids)
+                    .order_by("pk")
+                ),
+                "domainitem": list(
+                    DomainItem.objects
+                    .select_related("domain")
+                    .filter(domain_id__in=domain_ids)
+                    .order_by("pk")
+                ),
+            }
+        except IntegrityError as e:
+            raise ValueError(
+                f"Catalog rows in scopes violate integrity "
+                f"constraints: {e}"
+            ) from e
+        except DatabaseError as e:
+            raise RuntimeError(
+                f"Database error during catalog rows in scopes "
+                f"fetch: {e}"
+            ) from e

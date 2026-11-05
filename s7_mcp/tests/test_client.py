@@ -441,5 +441,380 @@ class ProjectIdInjectionTests(_ClientCase):
         self.assertEqual(calls, [])
 
 
+@unittest.skipUnless(_DEPS, "requires httpx")
+class PatchJsonTests(_ClientCase):
+    """``patch_json`` mirrors ``post_json``: PATCH with a JSON body, the
+    same ``project_id`` injection, size guard and error contract."""
+
+    _PROJECT_ID = "12345678-1234-5678-1234-567812345678"
+
+    def _seen_request(self, payload, *, project_id=None, max_payload_kb=512):
+        seen = {}
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["content_type"] = request.headers.get("content-type")
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"ok": True})
+
+        result = self._client(
+            handler, project_id=project_id, max_payload_kb=max_payload_kb
+        ).patch_json("catalog/changesets/abc/", payload)
+        return result, seen, calls
+
+    def test_patch_method_and_api_path(self):
+        result, seen, _ = self._seen_request({"ops": []})
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(seen["method"], "PATCH")
+        self.assertEqual(seen["path"], "/api/catalog/changesets/abc/")
+
+    def test_patch_sends_json_body_with_content_type(self):
+        payload = {"ops": [{"op": "add_domain"}], "rationale": "why"}
+        _, seen, _ = self._seen_request(payload)
+        self.assertEqual(seen["content_type"], "application/json")
+        self.assertEqual(seen["body"], payload)
+
+    def test_project_id_injected_when_configured(self):
+        _, seen, _ = self._seen_request(
+            {"ops": []}, project_id=self._PROJECT_ID
+        )
+        self.assertEqual(seen["body"]["project_id"], self._PROJECT_ID)
+
+    def test_project_id_absent_when_not_configured(self):
+        _, seen, _ = self._seen_request({"ops": [], "rationale": "r"})
+        self.assertNotIn("project_id", seen["body"])
+        self.assertEqual(set(seen["body"]), {"ops", "rationale"})
+
+    def test_env_project_id_wins_over_same_named_key(self):
+        """A payload already carrying ``project_id`` is overridden by
+        env — same rule as ``post_json``."""
+        _, seen, _ = self._seen_request(
+            {"ops": [], "project_id": "other"}, project_id=self._PROJECT_ID
+        )
+        self.assertEqual(seen["body"]["project_id"], self._PROJECT_ID)
+
+    def test_organization_id_is_never_injected(self):
+        _, seen, _ = self._seen_request(
+            {"ops": []}, project_id=self._PROJECT_ID
+        )
+        self.assertNotIn("organization_id", seen["body"])
+
+    def test_payload_one_byte_over_limit_is_refused(self):
+        pad = "x" * (1024 - len(json.dumps({"pad": ""})) + 1)
+        _, seen, calls = self._seen_request(
+            {"pad": pad}, max_payload_kb=1
+        )
+        # The refusal happens before any request is sent — the envelope,
+        # not the wire, carries the diagnostic.
+        self.assertEqual(calls, [])
+        self.assertEqual(seen, {})
+
+    def test_payload_too_large_envelope_shape(self):
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        client = self._client(handler, max_payload_kb=1)
+        pad = "x" * (1024 - len(json.dumps({"pad": ""})) + 1)
+        result = client.patch_json("catalog/changesets/abc/", {"pad": pad})
+        self.assertEqual(result["error"]["code"], "payload_too_large")
+        self.assertIsNone(result["error"]["status"])
+        self.assertIn("1025", result["error"]["message"])
+        self.assertIn("1024", result["error"]["message"])
+        self.assertEqual(calls, [])
+
+    def test_injected_project_id_counts_toward_payload_limit(self):
+        """Injection happens before the size check: the wire body is
+        measured, same as ``post_json``."""
+        calls = []
+        rationale = "x" * (1024 - len(json.dumps(
+            {"ops": [], "rationale": "", "project_id": self._PROJECT_ID}
+        )) + 1)
+        client = self._client(
+            lambda request: calls.append(request) or httpx.Response(200, json={}),
+            max_payload_kb=1,
+            project_id=self._PROJECT_ID,
+        )
+        result = client.patch_json(
+            "catalog/changesets/abc/", {"ops": [], "rationale": rationale}
+        )
+        self.assertEqual(result["error"]["code"], "payload_too_large")
+        self.assertEqual(calls, [])
+
+    def test_transport_exception_yields_transport_error_without_status(self):
+        def handler(request):
+            raise httpx.ConnectError("connection refused")
+
+        result = self._client(handler).patch_json(
+            "catalog/changesets/abc/", {"ops": []}
+        )
+        self.assertEqual(result["error"]["code"], "transport_error")
+        self.assertIsNone(result["error"]["status"])
+        self.assertIn("ConnectError", result["error"]["message"])
+
+    def test_request_on_closed_client_yields_transport_error(self):
+        """A request on an already-closed ``httpx.Client`` raises a plain
+        ``RuntimeError`` (not ``HTTPError``) — still a transport failure,
+        same mapping as the other verbs."""
+        client = self._client(lambda request: httpx.Response(200, json={}))
+        client._http.close()
+        result = client.patch_json("catalog/changesets/abc/", {"ops": []})
+        self.assertEqual(result["error"]["code"], "transport_error")
+        self.assertIsNone(result["error"]["status"])
+        self.assertIn("RuntimeError", result["error"]["message"])
+
+    def test_error_status_body_returned_verbatim(self):
+        envelope = {"error": "changeset cannot transition from 'x' to 'y'"}
+        for status in (400, 403, 404, 409, 500):
+            with self.subTest(status=status):
+                client = self._client(
+                    lambda request: httpx.Response(status, json=envelope)
+                )
+                result = client.patch_json(
+                    "catalog/changesets/abc/", {"ops": []}
+                )
+                self.assertEqual(result, envelope)
+
+    def test_non_json_body_yields_transport_error_with_status(self):
+        client = self._client(
+            lambda request: httpx.Response(502, text="<html>Bad Gateway</html>")
+        )
+        result = client.patch_json("catalog/changesets/abc/", {"ops": []})
+        self.assertEqual(result["error"]["code"], "transport_error")
+        self.assertEqual(result["error"]["status"], 502)
+        self.assertIn("non-JSON", result["error"]["message"])
+
+    def test_non_dict_json_body_is_wrapped_in_data(self):
+        """The defensive scalar/array wrap applies to PATCH responses
+        too — callers can rely on a dict."""
+        client = self._client(
+            lambda request: httpx.Response(200, json=[1, 2, 3])
+        )
+        result = client.patch_json("catalog/changesets/abc/", {"ops": []})
+        self.assertEqual(result, {"data": [1, 2, 3]})
+
+
+@unittest.skipUnless(_DEPS, "requires httpx")
+class ChangesetMethodTests(_ClientCase):
+    """The three named changeset methods — path, body and the read's
+    deliberate lack of ``project_id``.
+
+    ``propose_changeset``/``fix_changeset`` delegate to ``post_json``/
+    ``patch_json`` (body carries ``project_id`` when configured);
+    ``get_changeset`` delegates to ``get_json`` with no params — the
+    changeset endpoints are user-token-gated, so no ``?project_id=``
+    ever travels.
+    """
+
+    _PROJECT_ID = "12345678-1234-5678-1234-567812345678"
+    _OPS = [{"op": "add_node_type", "name": "x_type", "label": "X"}]
+
+    # -- propose_changeset -------------------------------------------------
+
+    def test_propose_posts_to_changesets_collection(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(201, json={"id": "cs-1", "status": "valid"})
+
+        result = self._client(handler).propose_changeset(
+            self._OPS, "the why"
+        )
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["path"], "/api/catalog/changesets/")
+        self.assertEqual(
+            seen["body"], {"ops": self._OPS, "rationale": "the why"}
+        )
+        self.assertEqual(result, {"id": "cs-1", "status": "valid"})
+
+    def test_propose_injects_project_id_into_the_body(self):
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(201, json={})
+
+        self._client(handler, project_id=self._PROJECT_ID).propose_changeset(
+            self._OPS, "the why"
+        )
+        self.assertEqual(seen["body"]["project_id"], self._PROJECT_ID)
+
+    def test_propose_error_envelopes_propagate_verbatim(self):
+        """400 ``invalid_request`` and the post-validation 403
+        ``changeset_scopes_not_covered`` reach the caller untouched."""
+        envelopes = [
+            {"error": "invalid_request", "message": "rationale required"},
+            {"error": "changeset_scopes_not_covered", "message": "m"},
+        ]
+        for envelope in envelopes:
+            with self.subTest(envelope=envelope):
+                client = self._client(
+                    lambda request: httpx.Response(400, json=envelope)
+                )
+                result = client.propose_changeset(self._OPS, "r")
+                self.assertEqual(result, envelope)
+
+    # -- get_changeset -----------------------------------------------------
+
+    def test_get_hits_the_quoted_member_path(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["body"] = request.content
+            return httpx.Response(200, json={"id": "cs-1"})
+
+        result = self._client(handler).get_changeset("cs-1")
+        self.assertEqual(seen["method"], "GET")
+        self.assertEqual(seen["path"], "/api/catalog/changesets/cs-1/")
+        self.assertEqual(seen["body"], b"")
+        self.assertEqual(result, {"id": "cs-1"})
+
+    def test_get_quotes_reserved_characters_in_the_id(self):
+        seen = {}
+
+        def handler(request):
+            # ``url.path`` is the decoded form — ``raw_path`` carries the
+            # percent-encoded bytes that actually travel on the wire.
+            seen["raw_path"] = request.url.raw_path
+            return httpx.Response(200, json={})
+
+        self._client(handler).get_changeset("a/b c")
+        self.assertEqual(
+            seen["raw_path"], b"/api/catalog/changesets/a%2Fb%20c/"
+        )
+
+    def test_get_quotes_every_reserved_character(self):
+        """Same quoting contract as ``server._q`` — ``quote(safe="")``."""
+        seen = {}
+
+        def handler(request):
+            seen["raw_path"] = request.url.raw_path
+            return httpx.Response(200, json={})
+
+        self._client(handler).get_changeset("a/b c?%ñ")
+        self.assertEqual(
+            seen["raw_path"],
+            b"/api/catalog/changesets/a%2Fb%20c%3F%25%C3%B1/",
+        )
+
+    def test_get_sends_no_params_even_with_project_id_configured(self):
+        """Changeset reads are user-token-gated: unlike the schema
+        reads, ``?project_id=`` is never appended — the id lives in the
+        path and the credential in the bearer header."""
+        seen = {}
+
+        def handler(request):
+            seen["params"] = request.url.params
+            return httpx.Response(200, json={})
+
+        self._client(handler, project_id=self._PROJECT_ID).get_changeset(
+            "cs-1"
+        )
+        self.assertEqual(len(seen["params"]), 0)
+
+    def test_get_error_envelopes_propagate_verbatim(self):
+        envelopes = [
+            {"error": "changeset_not_found", "changeset_id": "cs-9"},
+            {"error": "changeset_scopes_not_covered", "scopes": ["forms"]},
+        ]
+        for envelope in envelopes:
+            with self.subTest(envelope=envelope):
+                client = self._client(
+                    lambda request: httpx.Response(404, json=envelope)
+                )
+                self.assertEqual(client.get_changeset("cs-9"), envelope)
+
+    # -- fix_changeset -----------------------------------------------------
+
+    def test_fix_patches_the_quoted_member_path(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"id": "cs-1", "status": "valid"})
+
+        result = self._client(handler).fix_changeset(
+            "cs-1", self._OPS, "new rationale"
+        )
+        self.assertEqual(seen["method"], "PATCH")
+        self.assertEqual(seen["path"], "/api/catalog/changesets/cs-1/")
+        self.assertEqual(
+            seen["body"],
+            {"ops": self._OPS, "rationale": "new rationale"},
+        )
+        self.assertEqual(result, {"id": "cs-1", "status": "valid"})
+
+    def test_fix_quotes_reserved_characters_in_the_id(self):
+        seen = {}
+
+        def handler(request):
+            seen["raw_path"] = request.url.raw_path
+            return httpx.Response(200, json={})
+
+        self._client(handler).fix_changeset("a/b c", self._OPS, "r")
+        self.assertEqual(
+            seen["raw_path"], b"/api/catalog/changesets/a%2Fb%20c/"
+        )
+
+    def test_fix_sends_the_new_rationale_not_the_old_one(self):
+        """Every PATCH requires a fresh non-blank rationale — the wire
+        body must carry exactly what the caller passed."""
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={})
+
+        self._client(handler).fix_changeset(
+            "cs-1", self._OPS, "addresses finding at op 0"
+        )
+        self.assertEqual(
+            seen["body"]["rationale"], "addresses finding at op 0"
+        )
+
+    def test_fix_injects_project_id_into_the_body(self):
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={})
+
+        self._client(handler, project_id=self._PROJECT_ID).fix_changeset(
+            "cs-1", self._OPS, "r"
+        )
+        self.assertEqual(seen["body"]["project_id"], self._PROJECT_ID)
+
+    def test_fix_error_envelopes_propagate_verbatim(self):
+        """409 transition rejection, 404 unknown id and 400 malformed
+        body all propagate untouched."""
+        envelopes = [
+            (409, {
+                "error": "changeset cannot transition from 'applied' "
+                         "to 'validating'",
+            }),
+            (404, {"error": "changeset_not_found", "changeset_id": "cs-9"}),
+            (400, {"error": "invalid_request", "message": "ops required"}),
+        ]
+        for status, envelope in envelopes:
+            with self.subTest(status=status):
+                client = self._client(
+                    lambda request: httpx.Response(status, json=envelope)
+                )
+                result = client.fix_changeset("cs-9", self._OPS, "r")
+                self.assertEqual(result, envelope)
+
+
 if __name__ == "__main__":
     unittest.main()

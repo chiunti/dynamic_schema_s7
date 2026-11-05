@@ -13,6 +13,12 @@ Two transports share the same surface:
   `/mcp`; each request's `Authorization` and `X-S7-Project-Id` headers supply
   the credential, so every call operates as the connecting user.
 
+The package ships a **second entry point**, `s7-catalog`
+(`python -m s7_mcp.catalog_server`), which exposes only the governed
+catalog-changeset surface — propose / read / fix — so registering
+`s7-author` alone grants an agent no propose capability. See
+[s7-catalog](#s7-catalog--governed-catalog-changesets) below.
+
 ## Install
 
 ```bash
@@ -31,7 +37,7 @@ The server is configured exclusively through environment variables:
 | `S7_BASE_URL` | yes (both transports) | — | Backend base URL, e.g. `http://localhost:8000`. API paths resolve under `{S7_BASE_URL}/api/`. |
 | `S7_TOKEN` | stdio: yes; streamable-http: fallback only | — | Bearer token of a `UserMCPToken` — a per-user MCP credential (see below). Under streamable-http the request's `Authorization` header wins; the env var is only the fallback when the header is absent. |
 | `S7_PROJECT_ID` | no | — | Target project UUID, injected as `project_id` into the validate/import request bodies and sent as the `?project_id=` query parameter on the schema reads (draft and published) and the draft delete. Set it when the credential is a user MCP token — the backend requires `project_id` on those endpoints for user principals. Under streamable-http the request's `X-S7-Project-Id` header wins over this variable. |
-| `S7_MAX_PAYLOAD_KB` | no | `512` | Outgoing JSON body limit for validate/import (KB). |
+| `S7_MAX_PAYLOAD_KB` | no | `512` | Outgoing JSON body limit for the validate/import/changeset request bodies (KB). |
 | `S7_TIMEOUT_S` | no | `30` | HTTP timeout in seconds. |
 
 ### User MCP tokens
@@ -41,7 +47,9 @@ S7 administrator (superuser → *User MCP tokens* → **Add**); the raw secret i
 shown once and only its digest is stored. Each token carries an MCP **level**
 enforced by the backend: level **1** covers schema authoring (the catalog
 reads + validate/import surface below), level **2** adds catalog-authoring
-capabilities.
+capabilities — the direct import plus, for tokens also flagged
+`can_propose_changeset`, the governed changeset surface (see
+[s7-catalog](#s7-catalog--governed-catalog-changesets)).
 
 The server does not distinguish token types or levels — it forwards the
 bearer verbatim and the backend enforces permissions, so a level-1 token
@@ -99,6 +107,10 @@ Same shape: `command` = the Python interpreter, `args` = `["-m", "s7_mcp"]`,
 `env` = `S7_BASE_URL` + `S7_TOKEN` + `S7_PROJECT_ID` (plus the optional
 tuning variables). Some clients name the top-level key `mcp_config` instead
 of `mcpServers`.
+
+To also give the agent the governed changeset surface, register a second
+entry with `args` = `["-m", "s7_mcp.catalog_server"]` — same env vars,
+same flags (see [s7-catalog](#s7-catalog--governed-catalog-changesets)).
 
 ## Hosted endpoint (streamable-http)
 
@@ -209,6 +221,53 @@ the divergence reported as a warning) > `"1"`.
   natural-key FKs (upserts and usage-gated `delete` objects) →
   `s7_import_catalog` → verify via `s7_get_catalog` on the new scope.
 
+## s7-catalog — governed catalog changesets
+
+`s7-catalog` is the package's second entry point — the governed catalog
+mutation surface. It exposes only the changeset loop (propose → read the
+validation report → fix → hand off to a human), so an agent can be granted
+propose capability without the direct catalog import: register it as a
+separate MCP server, or omit it to keep the agent out of the changeset
+surface entirely. Same transports, flags and env vars as `s7-author` —
+both entries may run side by side from the same package. One env nuance:
+`S7_PROJECT_ID` is inert on this surface — the changeset endpoints are
+scope-gated, not project-gated (an injected `project_id` in the body is
+ignored by the backend; no `?project_id=` travels on the GET).
+
+```bash
+python -m s7_mcp.catalog_server                      # stdio
+python -m s7_mcp.catalog_server --transport streamable-http --host 0.0.0.0 --port 8000
+```
+
+### Tools
+
+| Tool | Endpoint | Purpose |
+|---|---|---|
+| `s7_propose_changeset(ops, rationale)` | `POST catalog/changesets/` | Create a changeset from ordered mutation `ops` + a non-blank `rationale` (the human reviewer's context) → 201 serialized changeset `{id, status, ops, rationale, scopes, base_revision, validation_report, proposed_by_credential, proposed_by_user, reviewed_by, applied_at, created_at, updated_at}` with `status` already `valid`/`invalid` — a validation failure is still a persisted 201; `validation_report.findings` (`{op_index, severity, entity, code, message, remediation?}`) is the feedback channel. |
+| `s7_get_changeset(changeset_id)` | `GET catalog/changesets/<id>/` | Read `status` + `validation_report` → serialized changeset. Unknown id → 404 `{error: "changeset_not_found", changeset_id}`; uncovered scopes → 403 `{error: "changeset_scopes_not_covered", scopes}`. |
+| `s7_fix_changeset(changeset_id, ops, rationale)` | `PATCH catalog/changesets/<id>/` | Replace `ops` wholesale (never merged) with a fresh non-blank `rationale` — required on every PATCH — and re-validate synchronously → 200 re-validated changeset. Only `proposed`/`invalid`/`valid`/`stale` accept PATCH; `draft`/`validating`/`approved`/`applied`/`rejected`/`superseded` → 409 `{error: "changeset cannot transition from '<status>' to 'validating'"}`. |
+
+### Required capability
+
+All three tools need a **user MCP token with `mcp_level >= 2` plus the
+`can_propose_changeset` flag**: no token → 401; a project credential, a
+level-1 token or a flag-less token → 403 (the backend's envelope, verbatim).
+When the token also carries `allowed_scopes`, the `scopes` the ops derive
+server-side must be covered by it — an uncovered proposal or read answers
+403 `changeset_scopes_not_covered`, and a refused proposal/patch rolls back
+without persisting.
+
+`approve`, `apply` and `reject` are **never** tools — by design. Review
+verdicts and the governed apply are human actions in the admin; a `valid`
+changeset is the agent's finished work.
+
+### Prompts
+
+- `propose_catalog_change` — guided workflow: discover the live catalog (and
+  pre-check usage when `s7-author` is also registered) → propose with an
+  honest rationale → read `validation_report.findings` → fix with a fresh
+  rationale until `status: "valid"` → hand off to the human reviewer.
+
 ## Troubleshooting
 
 - **Server exits immediately / "missing required environment variable(s)" on
@@ -246,5 +305,7 @@ the divergence reported as a warning) > `"1"`.
 - **`{"error": {"code": "payload_too_large", ...}}`** — the outgoing JSON body
   exceeded `S7_MAX_PAYLOAD_KB`; the request was not sent. Split/trim the schema
   or raise the limit.
-- **No `publish`/`approve`/`apply` tools** — by design. Imports are forced to
-  `draft`; publishing is a human action in the admin.
+- **No `publish`/`approve`/`apply`/`reject` tools** — by design. Imports are
+  forced to `draft`; publishing is a human action in the admin, and on the
+  `s7-catalog` surface review verdicts and the changeset apply are too —
+  the agent's loop ends at `status: "valid"`.

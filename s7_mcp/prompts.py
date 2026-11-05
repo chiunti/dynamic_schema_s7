@@ -1,4 +1,4 @@
-"""Prompt templates exposed by the s7-author MCP server."""
+"""Prompt templates exposed by the s7-author and s7-catalog MCP servers."""
 
 # Authoring workflow prompt for a government-procedure ("tramite") form.
 CREATE_TRAMITE_FORM_PROMPT = """\
@@ -133,4 +133,63 @@ retry.
 are global and live immediately (no draft stage). An instance of the new \
 type can then be validated and imported with the level-1 tools \
 (`s7_validate_schema` → `s7_import_draft`).\
+"""
+
+# Governed catalog mutation prompt for the s7-catalog server — the
+# changeset loop (propose → read findings → fix → hand off to a human).
+PROPOSE_CATALOG_CHANGE_PROMPT = """\
+You are proposing a governed change to the shared catalog grammar through a \
+changeset — the reviewed mutation channel served by this MCP server. A \
+changeset is an ordered list of mutation ops (`ops`) plus a `rationale`; the \
+backend validates it synchronously on every submission and a human reviews \
+it before anything is applied. Follow these steps:
+
+1. DISCOVER — ground every op in the live catalog before writing it. If the \
+agent also has the s7-author server registered, read the `s7://catalog-grammar` \
+resource for the per-model field reference and `s7://catalog/{scope}` for \
+the resolved catalog of each scope the change touches, and pre-check \
+`s7_catalog_usage` on every row an update/rename/remove op would target — a \
+row implemented by existing schemas produces a `breaking` finding at \
+validation (or a warning for mutative ops). Without s7-author, work from \
+the scope names and row identifiers the user provides — never invent \
+natural keys.
+
+2. PROPOSE — call `s7_propose_changeset` with the `ops` list and an honest \
+`rationale` — the reviewer is a human, so state what changes and why. Each \
+op is a dict `{"op": <name>, ...fields}` over the six writable catalog \
+models (nodetype, attributedef, domain, domainitem, nodetypevariant, \
+nodetypecomposition): additive `add_*` ops (a target that already exists is \
+rejected), mutative `update_*`/`rename_*` ops (updates take a `set` dict of \
+field overrides), destructive `remove_*` ops (a `breaking` finding when the \
+row has measured implementation — except `remove_domain_item`, which is \
+mutative and warns instead of breaking). The 201 response already carries the final \
+`status` and the full `validation_report` — a validation failure is a \
+persisted changeset at `invalid`, not an error.
+
+3. READ — call `s7_get_changeset` to re-read `status` and \
+`validation_report.findings` — the feedback channel. Each finding carries \
+`op_index`, `severity` (`breaking`/`warning`/`info`), `entity` (model + \
+natural key), `code`, `message` and an optional `remediation`; `impact` \
+lists the implementation each touched row already has. Any `breaking` \
+finding means the changeset is `invalid`.
+
+4. FIX — call `s7_fix_changeset` on the same changeset with the corrected \
+`ops` (they replace the document wholesale — resubmit every op you want to \
+keep) and a NEW non-blank `rationale`, required on every PATCH — say which \
+findings the revision addresses. Iterate until `status` is `valid`. Only \
+`proposed`, `invalid`, `valid` and `stale` accept PATCH; `draft`, \
+`validating`, `approved`, `applied`, `rejected` and `superseded` answer 409.
+
+5. HAND-OFF — a `valid` changeset is ready for human review: tell the user \
+to approve and apply it in the admin. There is intentionally no \
+approve/apply/reject tool — review verdicts and the governed apply are \
+human actions, never credential capabilities.
+
+Gates: every tool here requires a user MCP token with `mcp_level >= 2` plus \
+the `can_propose_changeset` flag (401 without a token; 403 for a project \
+credential, a level-1 token or a flag-less token). When the token also \
+carries `allowed_scopes`, the scopes the ops derive server-side must be \
+covered by it — an uncovered proposal answers 403 \
+`changeset_scopes_not_covered` and rolls back, so keep the change inside \
+the token's perimeter.\
 """

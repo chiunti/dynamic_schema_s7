@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -30,6 +30,11 @@ from .config import S7Config
 
 # All API routes are mounted below this prefix on the backend.
 API_PREFIX = "/api/"
+
+
+def _q(value: str) -> str:
+    """Quote one URL path segment (same contract as ``server._q``)."""
+    return quote(value, safe="")
 
 
 def _error(code: str, message: str, status: int | None = None) -> dict[str, Any]:
@@ -127,6 +132,98 @@ class S7Client:
                 "split or trim the schema and retry",
             )
         return self._request("POST", path, content=encoded)
+
+    def patch_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """PATCH ``{base}/api/{path}`` with a JSON body.
+
+        Same contract as ``post_json``: when the client was built with a
+        project id, ``project_id`` is injected into the body before the
+        size check; an encoded body above the configured limit returns
+        the ``payload_too_large`` envelope without sending a request;
+        every HTTP response body is returned verbatim.
+        """
+        if self._project_id:
+            payload = {**payload, "project_id": self._project_id}
+        encoded = json.dumps(payload)
+        if len(encoded) > self._max_payload_bytes:
+            return _error(
+                "payload_too_large",
+                f"outgoing JSON body is {len(encoded)} bytes, above the "
+                f"{self._max_payload_bytes}-byte limit (S7_MAX_PAYLOAD_KB); "
+                "split or trim the payload and retry",
+            )
+        return self._request("PATCH", path, content=encoded)
+
+    def propose_changeset(self, ops: list[dict], rationale: str) -> dict[str, Any]:
+        """Propose a governed catalog changeset — ``POST catalog/changesets/``.
+
+        Sends ``{"ops": ops, "rationale": rationale}`` (``project_id`` is
+        injected by ``post_json`` when configured). The endpoint persists
+        the changeset and validates it synchronously, so the 201 envelope
+        is the serialized changeset — ``{id, status, ops, rationale,
+        scopes, base_revision, validation_report, proposed_by_credential,
+        proposed_by_user, reviewed_by, applied_at, created_at,
+        updated_at}`` — with ``status`` already ``valid`` or ``invalid``.
+        A validation failure is still a persisted 201, not an error:
+        ``validation_report.findings`` (``{op_index, severity, entity,
+        code, message, remediation?}`` entries) is the feedback channel.
+
+        Error envelopes (all verbatim): 400 ``{"error":
+        "invalid_request", "message"}`` on a malformed body (missing or
+        blank ``rationale``, empty or non-list ``ops``); 401 without a
+        bearer credential; 403 for a project credential, a level-1 user
+        MCP token or a token without ``can_propose_changeset``; a second
+        403 ``{"error": "changeset_scopes_not_covered", "message"}`` after
+        validation when the token's ``allowed_scopes`` do not cover the
+        server-side derived scopes — the proposal rolls back and nothing
+        persists.
+        """
+        return self.post_json(
+            "catalog/changesets/", {"ops": ops, "rationale": rationale}
+        )
+
+    def get_changeset(self, changeset_id: str) -> dict[str, Any]:
+        """Fetch one changeset — ``GET catalog/changesets/<changeset_id>/``.
+
+        The 200 envelope is the same serialized changeset shape as
+        ``propose_changeset`` — ``status`` plus the full
+        ``validation_report`` the proposer reads to correct and
+        re-propose. An unknown id answers 404 ``{"error":
+        "changeset_not_found", "changeset_id": "<id>"}`` echoing the
+        addressed value; a token whose ``allowed_scopes`` do not cover
+        the changeset's derived ``scopes`` answers 403 ``{"error":
+        "changeset_scopes_not_covered", "scopes": [...]}``.
+        """
+        return self.get_json(f"catalog/changesets/{_q(changeset_id)}/")
+
+    def fix_changeset(
+        self, changeset_id: str, ops: list[dict], rationale: str
+    ) -> dict[str, Any]:
+        """Replace ops/rationale on a changeset — ``PATCH catalog/changesets/<id>/``.
+
+        The correction arm of the feedback loop: the endpoint takes the
+        same ``{"ops", "rationale"}`` body as the propose call — a fresh
+        non-blank ``rationale`` is required on every PATCH — replaces
+        ``ops`` wholesale (never merged) and re-validates synchronously.
+        The 200 envelope is the re-validated serialized changeset at
+        ``valid``/``invalid`` with a refreshed ``validation_report``.
+
+        Error envelopes: 404 ``{"error": "changeset_not_found",
+        "changeset_id"}`` on an unknown id; 409 ``{"error": "changeset
+        cannot transition from '<status>' to 'validating'"}`` when the
+        current status has no ``→ validating`` edge — only ``proposed``,
+        ``invalid``, ``valid`` and ``stale`` accept PATCH (``draft``,
+        ``validating``, ``approved``, ``applied``, ``rejected`` and
+        ``superseded`` answer 409); 403 ``{"error":
+        "changeset_scopes_not_covered", "message"}`` when the token's
+        ``allowed_scopes`` do not cover the derived scopes (the patch
+        rolls back); 400 ``{"error": "invalid_request", "message"}`` on a
+        malformed body.
+        """
+        return self.patch_json(
+            f"catalog/changesets/{_q(changeset_id)}/",
+            {"ops": ops, "rationale": rationale},
+        )
 
     def _request(self, method: str, path: str, content: str | None = None) -> dict[str, Any]:
         """Perform a request against ``/api/{path}`` honoring the error contract."""

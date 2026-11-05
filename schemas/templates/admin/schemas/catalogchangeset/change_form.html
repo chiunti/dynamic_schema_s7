@@ -1,0 +1,46 @@
+{% extends "admin/change_form.html" %}
+
+{% comment %}
+Governed review actions for the catalog changeset change form.
+
+Django 6.1 wraps the whole change-form content in one outer <form>
+(fieldsets and submit rows alike), so independent nested <form>
+elements are not valid markup here — the inner </form> would close
+the admin's own form early. The lifecycle buttons therefore ride the
+outer form and re-target it per action via `formaction`; the form's
+existing {% csrf_token %} covers every POST, and the endpoints are
+POST-only anyway (GET answers 405).
+
+DOM order is deliberate: `reason` is the only text input on this
+page, so the reject group renders FIRST — an implicit Enter-key
+submission inside that field activates the first submit button in
+the form, which must be Reject to match the typist's intent.
+
+Buttons re-gate themselves per request: the flags arrive via
+changeform_view extra_context computed from the live status, so a
+lifecycle POST redirect lands on a form already showing the next
+legal actions.
+{% endcomment %}
+
+{% block submit_buttons_bottom %}
+{{ block.super }}
+{% if changeset_can_reject or changeset_can_approve or changeset_can_apply %}
+<div class="submit-row changeset-lifecycle-actions">
+  {% if changeset_can_reject %}
+    <input type="text" name="reason" value="" size="32"
+           placeholder="Rejection reason (optional)"
+           aria-label="Rejection reason">
+    <button type="submit"
+            formaction="{% url 'admin:schemas_catalogchangeset_reject' object_id %}">Reject</button>
+  {% endif %}
+  {% if changeset_can_approve %}
+    <button type="submit" class="default"
+            formaction="{% url 'admin:schemas_catalogchangeset_approve' object_id %}">Approve</button>
+  {% endif %}
+  {% if changeset_can_apply %}
+    <button type="submit" class="default"
+            formaction="{% url 'admin:schemas_catalogchangeset_apply' object_id %}">Apply</button>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

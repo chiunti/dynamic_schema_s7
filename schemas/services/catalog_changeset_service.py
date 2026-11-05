@@ -76,6 +76,17 @@ the plain fetch. Both mutating entry points accept an injected
 ``validate()`` derives it. A scope rejection raises
 ``PermissionError`` inside the method's ``atomic`` block, so a
 refused proposal rolls back and never persists.
+
+The reviewer arm closes the loop — admin-facing only, never
+exposed to credentials: ``approve()`` and ``reject()`` move a
+reviewable changeset to its verdict with ``reviewed_by``
+recorded, and ``apply()`` materializes an approved changeset
+through the same compile-and-import path the validator probed,
+gated by a ``base_revision`` re-check and a live usage re-measure
+that mark the changeset ``stale`` (applying nothing) when the
+catalog or its implementation surface drifted under review.
+Every lifecycle write is attributed through a best-effort admin
+``LogEntry``.
 """
 
 import hashlib
@@ -87,17 +98,23 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from django.db import transaction
+from django.utils import timezone
 
 from ..constants import (
+    CHANGESET_STATUS_APPLIED,
+    CHANGESET_STATUS_APPROVED,
     CHANGESET_STATUS_DRAFT,
     CHANGESET_STATUS_INVALID,
     CHANGESET_STATUS_PROPOSED,
+    CHANGESET_STATUS_REJECTED,
+    CHANGESET_STATUS_STALE,
     CHANGESET_STATUS_VALID,
     CHANGESET_STATUS_VALIDATING,
     CHANGESET_TRANSITIONS,
     ERR_CATALOG_OBJECT_IN_USE,
     ERR_CATALOG_OBJECT_IN_USE_MSG,
     ERR_CHANGESET_APPLY_FAILED,
+    ERR_CHANGESET_APPLY_FAILED_MSG,
     ERR_CHANGESET_COMPOSITION_CYCLE,
     ERR_CHANGESET_DISCRIMINATOR_AMBIGUOUS,
     ERR_CHANGESET_DISCRIMINATOR_UNRESOLVED,
@@ -148,6 +165,10 @@ _SEVERITY_RANK = {
     SEVERITY_WARNING: 1,
     SEVERITY_INFO: 2,
 }
+
+# Fallback detail when an import failure envelope carries no error
+# message — shared by the finding mapper and the governed apply.
+_APPLY_ERROR_FALLBACK = 'catalog apply failed'
 
 
 class _TrialApplyRollback(Exception):
@@ -347,12 +368,18 @@ class CatalogChangeSetService:
         )
 
     def get_changeset(
-        self, changeset_id: 'str | uuid.UUID',
+        self,
+        changeset_id: 'str | uuid.UUID',
+        for_update: bool = False,
     ) -> CatalogChangeSet:
         """Fetch one changeset by id — the read arm of the loop.
 
         Args:
             changeset_id: changeset UUID or its string form.
+            for_update: lock the row ``FOR UPDATE`` — lifecycle
+                methods call this inside their own atomic block so
+                concurrent reviewers serialize on the row instead of
+                racing the status gate on a stale hydrated copy.
 
         Returns:
             The ``CatalogChangeSet`` instance, with proposer/reviewer
@@ -368,7 +395,9 @@ class CatalogChangeSetService:
                 layer maps it to 400).
         """
         try:
-            return self.changeset_repository.get_by_id(changeset_id)
+            return self.changeset_repository.get_by_id(
+                changeset_id, for_update=for_update,
+            )
         except CatalogChangeSet.DoesNotExist as e:
             raise ChangesetNotFoundError(changeset_id) from e
 
@@ -486,7 +515,7 @@ class CatalogChangeSetService:
             PermissionError: ``ERR_CHANGESET_SCOPES_NOT_COVERED_MSG`` —
                 same post-validation gate as :meth:`propose`.
         """
-        changeset = self.get_changeset(changeset_id)
+        changeset = self.get_changeset(changeset_id, for_update=True)
         if not self.can_transition(
             changeset.status, CHANGESET_STATUS_VALIDATING,
         ):
@@ -524,7 +553,9 @@ class CatalogChangeSetService:
                 draft, approved or a terminal state).
         """
         if not isinstance(changeset, CatalogChangeSet):
-            changeset = self.changeset_repository.get_by_id(changeset)
+            changeset = self.changeset_repository.get_by_id(
+                changeset, for_update=True,
+            )
         if not self.can_transition(
             changeset.status, CHANGESET_STATUS_VALIDATING,
         ):
@@ -584,6 +615,291 @@ class CatalogChangeSetService:
             ),
         )
         return report
+
+    @transaction.atomic
+    def approve(
+        self,
+        changeset: 'CatalogChangeSet | str | uuid.UUID',
+        user: 'User',
+    ) -> CatalogChangeSet:
+        """Approve a validated changeset — the reviewer's accept arm.
+
+        The only lifecycle edge into ``approved`` is ``valid →
+        approved``, so the single ``can_transition`` gate rejects
+        every other current status with
+        ``ChangesetStateConflictError`` — the 409 signal, same
+        wording :meth:`patch` raises. Approval records the reviewer
+        in ``reviewed_by`` and writes a best-effort admin LogEntry
+        anchored to the changeset; the ops themselves are not
+        re-checked here — the governed apply re-verifies the base
+        revision and the payload before materializing anything.
+
+        Args:
+            changeset: a ``CatalogChangeSet`` instance or its id —
+                ids resolve through :meth:`get_changeset`.
+            user: the reviewing user; stored as ``reviewed_by``
+                and attributed the audit LogEntry.
+
+        Returns:
+            The same ``CatalogChangeSet`` instance at ``approved``.
+
+        Raises:
+            ChangesetNotFoundError: no changeset row with that id.
+            ChangesetStateConflictError: the current status has no
+                ``→ approved`` edge.
+            ValueError: malformed id or repository contract
+                violations.
+        """
+        # Re-read under FOR UPDATE: the status gate below must see
+        # the committed row, not the caller's hydrated copy — two
+        # concurrent reviewers serialize on the lock instead of both
+        # passing ``can_transition`` on a stale status.
+        changeset = self.get_changeset(
+            changeset.pk
+            if isinstance(changeset, CatalogChangeSet)
+            else changeset,
+            for_update=True,
+        )
+        if not self.can_transition(
+            changeset.status, CHANGESET_STATUS_APPROVED,
+        ):
+            raise ChangesetStateConflictError(
+                changeset.status, CHANGESET_STATUS_APPROVED,
+            )
+        self.changeset_repository.update_fields(
+            changeset,
+            status=CHANGESET_STATUS_APPROVED,
+            reviewed_by=user,
+        )
+        self.changeset_repository.record_changeset_action(
+            user, changeset, 'approved changeset',
+        )
+        return changeset
+
+    @transaction.atomic
+    def reject(
+        self,
+        changeset: 'CatalogChangeSet | str | uuid.UUID',
+        user: 'User',
+        reason: str = '',
+    ) -> CatalogChangeSet:
+        """Reject a reviewable changeset — the reviewer's decline arm.
+
+        ``proposed`` and ``valid`` carry a ``→ rejected`` edge, so
+        the ``can_transition`` gate covers both reviewable states
+        while ``approved``, ``applied`` and the terminal states
+        raise ``ChangesetStateConflictError``. Rejection is
+        terminal — the proposer's corrective arm after it is a
+        fresh proposal (before verdict, :meth:`patch` covers the
+        re-proposable states). The reviewer is recorded in
+        ``reviewed_by`` and the audit LogEntry carries the
+        optional reason appended.
+
+        Args:
+            changeset: a ``CatalogChangeSet`` instance or its id —
+                ids resolve through :meth:`get_changeset`.
+            user: the reviewing user; stored as ``reviewed_by``
+                and attributed the audit LogEntry.
+            reason: free-text verdict context; appended to the
+                LogEntry's ``change_message``, stripped and
+                truncated to a scannable length.
+
+        Returns:
+            The same ``CatalogChangeSet`` instance at
+            ``rejected``.
+
+        Raises:
+            ChangesetNotFoundError: no changeset row with that id.
+            ChangesetStateConflictError: the current status has no
+                ``→ rejected`` edge.
+            ValueError: malformed id or repository contract
+                violations.
+        """
+        # Re-read under FOR UPDATE: the status gate below must see
+        # the committed row, not the caller's hydrated copy — two
+        # concurrent reviewers serialize on the lock instead of both
+        # passing ``can_transition`` on a stale status.
+        changeset = self.get_changeset(
+            changeset.pk
+            if isinstance(changeset, CatalogChangeSet)
+            else changeset,
+            for_update=True,
+        )
+        if not self.can_transition(
+            changeset.status, CHANGESET_STATUS_REJECTED,
+        ):
+            raise ChangesetStateConflictError(
+                changeset.status, CHANGESET_STATUS_REJECTED,
+            )
+        self.changeset_repository.update_fields(
+            changeset,
+            status=CHANGESET_STATUS_REJECTED,
+            reviewed_by=user,
+        )
+        reason = (reason or '').strip()
+        change_message = 'rejected changeset'
+        if reason:
+            # Bound the audit line — LogEntry rows stay scannable;
+            # the full reasoning belongs to the review thread.
+            change_message += f' — {reason[:500]}'
+        self.changeset_repository.record_changeset_action(
+            user, changeset, change_message,
+        )
+        return changeset
+
+    @transaction.atomic
+    def apply(
+        self,
+        changeset: 'CatalogChangeSet | str | uuid.UUID',
+        user: 'User',
+    ) -> CatalogChangeSet:
+        """Materialize an approved changeset — the governed write.
+
+        ``approved → applied`` is the only edge in, so
+        ``ChangesetStateConflictError`` covers every other status.
+        The body runs three gates inside this one transaction:
+
+        1. **Stale re-check** — ``base_revision`` is recomputed
+           over the changeset's ``scopes``; drift means the
+           catalog moved under review, so the changeset is marked
+           ``stale`` (the transition is audited) and returned with
+           nothing applied — revalidation is its way back.
+        2. **Op re-validation** — the syntactic tier re-resolves
+           every op against the live catalog; a breaking finding
+           aborts with ``ValueError`` carrying
+           ``ERR_CHANGESET_APPLY_FAILED_MSG``, rolling the
+           transaction back with the row still ``approved``.
+        3. **Impact re-check** — ``base_revision`` hashes catalog
+           rows only, so usage drift (a target implemented between
+           validation and apply) is invisible to gate 1. The
+           impact tier re-measures the live usage tables; a
+           breaking finding marks the changeset ``stale`` — the
+           approval described a different reality — and nothing
+           is applied.
+        4. **Real apply** — the ops compile to fixture-format
+           objects and run through ``import_objects`` with
+           ``enforce_perms=False``: the approval IS the
+           authorization, so the direct-import gates (permissions,
+           usage, attribution) stay off and the writes COMMIT —
+           no savepoint probe like the validator's. A falsy
+           ``applied`` in the envelope aborts the same way as a
+           breaking finding. On success the changeset lands
+           ``applied`` with ``applied_at`` stamped and the audit
+           LogEntry attributes the applying user.
+
+        ``reviewed_by`` was set by :meth:`approve` and is not
+        touched here.
+
+        Args:
+            changeset: a ``CatalogChangeSet`` instance or its id —
+                ids resolve through :meth:`get_changeset`.
+            user: the applying user — attributed the audit
+                LogEntry; the import itself runs ungated.
+
+        Returns:
+            The same ``CatalogChangeSet`` instance at ``applied``
+            — or at ``stale`` when the base-revision or the
+            usage-drift gate fires (nothing was applied in either
+            case).
+
+        Raises:
+            ChangesetNotFoundError: no changeset row with that id.
+            ChangesetStateConflictError: the current status has no
+                ``→ applied`` edge.
+            ValueError: ``ERR_CHANGESET_APPLY_FAILED_MSG`` — a
+                breaking op finding or a failed apply envelope;
+                the transaction rolls back and the changeset stays
+                ``approved``.
+        """
+        # Re-read under FOR UPDATE: the status gate below must see
+        # the committed row, not the caller's hydrated copy — two
+        # concurrent reviewers serialize on the lock instead of both
+        # passing ``can_transition`` on a stale status.
+        changeset = self.get_changeset(
+            changeset.pk
+            if isinstance(changeset, CatalogChangeSet)
+            else changeset,
+            for_update=True,
+        )
+        if not self.can_transition(
+            changeset.status, CHANGESET_STATUS_APPLIED,
+        ):
+            raise ChangesetStateConflictError(
+                changeset.status, CHANGESET_STATUS_APPLIED,
+            )
+
+        # Optimistic-concurrency gate: the catalog inside
+        # ``scopes`` must still be exactly what validation hashed.
+        if (self._compute_base_revision(changeset.scopes)
+                != changeset.base_revision):
+            self.changeset_repository.update_fields(
+                changeset, status=CHANGESET_STATUS_STALE,
+            )
+            self.changeset_repository.record_changeset_action(
+                user, changeset,
+                'marked stale — base revision drifted before apply',
+            )
+            return changeset
+
+        ops = changeset.ops if isinstance(changeset.ops, list) else []
+        contexts, findings, _pending_adds = self._validate_ops(ops)
+        if self._has_breaking(findings):
+            first_breaking = next(
+                finding for finding in self._sort_findings(findings)
+                if finding.get('severity') == SEVERITY_BREAKING
+            )
+            raise ValueError(
+                ERR_CHANGESET_APPLY_FAILED_MSG.format(
+                    detail=first_breaking.get('message'),
+                )
+            )
+
+        # Usage-drift gate: ``base_revision`` hashes catalog rows
+        # only — a target implemented between validation and apply
+        # leaves the digest untouched, so the impact tier re-runs
+        # against the live usage tables. A destructive op blocked
+        # here means the approval was granted for a different
+        # catalog reality: the changeset goes ``stale`` — same
+        # "world moved" bucket as gate 1 — so the proposer can
+        # re-validate through the corrective loop instead of
+        # sitting ``approved`` with no exit edge.
+        if self._has_breaking(self._tier3_impact(contexts, [])):
+            self.changeset_repository.update_fields(
+                changeset, status=CHANGESET_STATUS_STALE,
+            )
+            self.changeset_repository.record_changeset_action(
+                user, changeset,
+                'marked stale — usage drifted before apply',
+            )
+            return changeset
+
+        objects: list = []
+        for ctx in contexts:
+            if ctx.ok:
+                objects.extend(self._compile_op(ctx))
+        result = self.import_service.import_objects(
+            objects, user=user, enforce_perms=False,
+        )
+        if not result.get('applied'):
+            errors = result.get('errors') or []
+            detail = (
+                errors[0].get('message')
+                if errors
+                else _APPLY_ERROR_FALLBACK
+            )
+            raise ValueError(
+                ERR_CHANGESET_APPLY_FAILED_MSG.format(detail=detail)
+            )
+
+        self.changeset_repository.update_fields(
+            changeset,
+            status=CHANGESET_STATUS_APPLIED,
+            applied_at=timezone.now(),
+        )
+        self.changeset_repository.record_changeset_action(
+            user, changeset, 'applied changeset to catalog',
+        )
+        return changeset
 
     # ------------------------------------------------------------------ #
     # Scope capability gate (predicate injected by the HTTP layer)       #
@@ -1291,7 +1607,7 @@ class CatalogChangeSetService:
                 SEVERITY_BREAKING,
                 ctx.entity if ctx else None,
                 error.get('code') or ERR_CHANGESET_APPLY_FAILED,
-                error.get('message') or 'catalog apply failed',
+                error.get('message') or _APPLY_ERROR_FALLBACK,
             ))
         return findings
 

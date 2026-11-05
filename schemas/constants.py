@@ -242,6 +242,9 @@ ERR_CHANGESET_DUP_JSON_KEY = "changeset_duplicate_json_key"
 ERR_CHANGESET_ORPHAN_COMPOSITION = "changeset_orphan_composition"
 ERR_CHANGESET_COMPOSITION_CYCLE = "changeset_composition_cycle"
 INFO_CHANGESET_ADDITIVE = "changeset_additive"
+ERR_CHANGESET_APPLY_FAILED_MSG = (
+    "Changeset apply failed — the changeset stays approved: {detail}"
+)
 
 # Logging error messages
 ERR_INVALID_JSON_MSG = "Invalid JSON: {error}"
@@ -341,8 +344,16 @@ CHANGESET_TRANSITIONS = {
     CHANGESET_STATUS_DRAFT: frozenset(
         {CHANGESET_STATUS_PROPOSED, CHANGESET_STATUS_SUPERSEDED}
     ),
+    # ``proposed``/``validating`` are transient inside ``propose()``'s
+    # and ``patch()``'s single transactions — no row rests in them
+    # today; their edges are state-machine-as-data for the
+    # async-validation arm.
     CHANGESET_STATUS_PROPOSED: frozenset(
-        {CHANGESET_STATUS_VALIDATING, CHANGESET_STATUS_SUPERSEDED}
+        {
+            CHANGESET_STATUS_VALIDATING,
+            CHANGESET_STATUS_REJECTED,
+            CHANGESET_STATUS_SUPERSEDED,
+        }
     ),
     CHANGESET_STATUS_VALIDATING: frozenset(
         {

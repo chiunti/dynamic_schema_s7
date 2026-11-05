@@ -9,7 +9,7 @@ Organized into modules by responsibility:
 - schema: SchemaAdmin with import, publish, archive, draft, build
 - build_state: BuildStateAdmin with dynamic tabs
 - schema_cache: SchemaCacheAdmin with dynamic tabs
-- catalog_changeset: Read-only audit admin for catalog changesets
+- catalog_changeset: Governed review admin: ops diff, validation report, approve/apply/reject actions
 """
 
 from .base import (

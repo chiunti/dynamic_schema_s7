@@ -11,8 +11,10 @@ and scope derivation live in the service layer.
 import uuid
 from typing import Optional
 
+from django.apps import apps
+from django.contrib.admin.models import CHANGE
 from django.contrib.auth import get_user_model
-from django.db import DatabaseError, IntegrityError
+from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import Q, QuerySet
 from django.utils import timezone
 
@@ -135,11 +137,19 @@ class CatalogChangeSetRepository:
                 f"Database error during changeset create: {e}"
             ) from e
 
-    def get_by_id(self, changeset_id: "str | uuid.UUID") -> CatalogChangeSet:
+    def get_by_id(
+        self,
+        changeset_id: "str | uuid.UUID",
+        for_update: bool = False,
+    ) -> CatalogChangeSet:
         """Fetch one changeset by primary key.
 
         Args:
             changeset_id: changeset UUID or its string form.
+            for_update: lock the row with ``SELECT ... FOR UPDATE``
+                — lifecycle writes (approve/reject/apply) re-read
+                under the lock so the transition gate sees the
+                committed status, not the caller's hydrated copy.
 
         Returns:
             The CatalogChangeSet, with proposer/reviewer FKs
@@ -163,16 +173,18 @@ class CatalogChangeSetRepository:
             raise ValueError(
                 ERR_PK_MUST_BE_VALID_UUID.format(pk=changeset_id)
             ) from e
+        queryset = CatalogChangeSet.objects.select_related(
+            "proposed_by_credential",
+            "proposed_by_user",
+            "reviewed_by",
+        )
+        if for_update:
+            # ``of=('self',)`` scopes the lock to the changeset row:
+            # the select_related FKs are nullable, and FOR UPDATE on
+            # an outer join's nullable side is rejected by Postgres.
+            queryset = queryset.select_for_update(of=('self',))
         try:
-            return (
-                CatalogChangeSet.objects
-                .select_related(
-                    "proposed_by_credential",
-                    "proposed_by_user",
-                    "reviewed_by",
-                )
-                .get(id=canonical_id)
-            )
+            return queryset.get(id=canonical_id)
         except IntegrityError as e:
             raise ValueError(
                 f"CatalogChangeSet {canonical_id} violates integrity "
@@ -428,3 +440,56 @@ class CatalogChangeSetRepository:
                 f"Database error during catalog rows in scopes "
                 f"fetch: {e}"
             ) from e
+
+    def record_changeset_action(
+        self, user, changeset: CatalogChangeSet, change_message: str,
+    ) -> None:
+        """Attribute a changeset lifecycle action to ``user``.
+
+        Audit bookkeeping for the governed mutation path — the
+        service calls it inside its own ``atomic`` block (approve,
+        reject, apply, mark-stale), so the LogEntry rides the same
+        transaction as the lifecycle write it records: the entry
+        commits iff the transition commits.
+
+        The changeset itself is the audit subject: the entry is
+        anchored to the ``CatalogChangeSet`` content type, carries
+        the changeset's pk as ``object_id`` and a short
+        ``pk-prefix (status)`` label as ``object_repr``, always with
+        ``action_flag=CHANGE`` — lifecycle verbs live in
+        ``change_message``.
+
+        Best-effort inside its own savepoint: any failure is
+        swallowed so bookkeeping can never break or poison the
+        caller's transaction. Users without a pk are skipped
+        silently — project principals produce no entry; they are
+        audited by the token used.
+
+        Args:
+            user: principal performing the action; must expose
+                ``pk`` or no entry is written.
+            changeset: the changeset the action ran on — its pk and
+                current status anchor the entry.
+            change_message: audit description of the action.
+        """
+        user_id = getattr(user, "pk", None)
+        if user_id is None:
+            return
+        try:
+            log_entry = apps.get_model("admin", "LogEntry")
+            content_type = apps.get_model("contenttypes", "ContentType")
+            with transaction.atomic():
+                log_entry.objects.create(
+                    user_id=user_id,
+                    content_type_id=content_type.objects
+                    .get_for_model(CatalogChangeSet).pk,
+                    object_id=str(changeset.pk),
+                    object_repr=(
+                        f"changeset {str(changeset.pk)[:8]} "
+                        f"({changeset.status})"
+                    ),
+                    action_flag=CHANGE,
+                    change_message=change_message,
+                )
+        except Exception:
+            pass

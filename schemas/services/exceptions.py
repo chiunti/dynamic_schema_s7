@@ -1,9 +1,12 @@
 """Structured service-layer exceptions for the schema pipeline."""
 
+import uuid
 from typing import Any, Optional
 
 from ..constants import (
     ERR_CATALOG_OBJECT_NOT_FOUND,
+    ERR_CHANGESET_INVALID_TRANSITION,
+    ERR_CHANGESET_NOT_FOUND,
     ERR_INVALID_SCHEMA,
     ERR_SCOPE_NOT_FOUND,
 )
@@ -76,3 +79,40 @@ class CatalogObjectNotFoundError(LookupError):
         super().__init__(ERR_CATALOG_OBJECT_NOT_FOUND)
         self.model = model
         self.identifier = identifier
+
+
+class ChangesetNotFoundError(LookupError):
+    """Changeset lookup failure for the changeset REST endpoints.
+
+    ``str(exc)`` yields ``ERR_CHANGESET_NOT_FOUND``; ``changeset_id``
+    echoes the raw addressed value for the 404 envelope. Subclasses
+    ``LookupError`` so callers that already catch ``LookupError`` keep
+    working.
+    """
+
+    def __init__(self, changeset_id: "str | uuid.UUID") -> None:
+        super().__init__(ERR_CHANGESET_NOT_FOUND)
+        self.changeset_id = changeset_id
+
+
+class ChangesetStateConflictError(ValueError):
+    """Lifecycle conflict on a changeset mutation — the 409 signal.
+
+    Raised when an endpoint-side mutation needs a ``→ validating`` edge
+    the current status does not have (e.g. ``approved``/terminal states
+    on the PATCH path). ``str(exc)`` yields the formatted
+    ``ERR_CHANGESET_INVALID_TRANSITION`` message — same wording the
+    validator raises so consumers see one vocabulary. Subclasses
+    ``ValueError`` so service callers catching ``ValueError`` keep
+    working.
+    """
+
+    def __init__(self, from_status: str, to_status: str) -> None:
+        super().__init__(
+            ERR_CHANGESET_INVALID_TRANSITION.format(
+                from_status=from_status,
+                to_status=to_status,
+            )
+        )
+        self.from_status = from_status
+        self.to_status = to_status

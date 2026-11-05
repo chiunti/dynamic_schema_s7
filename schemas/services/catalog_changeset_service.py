@@ -63,19 +63,35 @@ Any ``breaking`` finding marks the changeset ``invalid``; a clean run
 marks it ``valid``. Destructive ops on implemented rows always produce
 breaking findings; mutative ops report their impact as warnings;
 additive ops are informational.
+
+The REST-facing contract of the feedback loop lives here too:
+``propose()`` walks a fresh row through ``draft → proposed`` into
+``validate()`` — validation is synchronous, in-request — ``patch()``
+replaces ops/rationale on a re-proposable changeset (every status
+carrying a ``→ validating`` edge: ``proposed``, ``invalid``,
+``valid``, ``stale``) and re-validates, and ``get_changeset()`` is
+the plain fetch. Both mutating entry points accept an injected
+``scope_check`` predicate that runs AFTER validation by design:
+``scopes`` — the perimeter the capability covers — only exists once
+``validate()`` derives it. A scope rejection raises
+``PermissionError`` inside the method's ``atomic`` block, so a
+refused proposal rolls back and never persists.
 """
 
 import hashlib
 import json
 import re
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from django.db import transaction
 
 from ..constants import (
+    CHANGESET_STATUS_DRAFT,
     CHANGESET_STATUS_INVALID,
+    CHANGESET_STATUS_PROPOSED,
     CHANGESET_STATUS_VALID,
     CHANGESET_STATUS_VALIDATING,
     CHANGESET_TRANSITIONS,
@@ -96,10 +112,11 @@ from ..constants import (
     ERR_CHANGESET_OP_UNKNOWN,
     ERR_CHANGESET_ORPHAN_COMPOSITION,
     ERR_CHANGESET_PROPS_TYPE_UNRESOLVED,
+    ERR_CHANGESET_SCOPES_NOT_COVERED_MSG,
     ERR_CHANGESET_VARIANT_KEY_UNRESOLVED,
     INFO_CHANGESET_ADDITIVE,
 )
-from ..models import CatalogChangeSet
+from ..models import CatalogChangeSet, ProjectAPICredential
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.catalog_changeset_repository import (
     CatalogChangeSetRepository,
@@ -109,7 +126,14 @@ from ..repositories.composition_repository import CompositionRepository
 from ..repositories.fixture_repository import FixtureRepository
 from ..repositories.node_type_repository import NodeTypeRepository
 from .catalog_import_service import CatalogImportService
+from .exceptions import (
+    ChangesetNotFoundError,
+    ChangesetStateConflictError,
+)
 from .fixture_service import FK_FIELDS, NATURAL_KEY_FIELDS
+
+if TYPE_CHECKING:
+    from ..repositories.user_repository import User
 
 # Path component emitted by the import envelope for per-object errors.
 _OBJECT_PATH_RE = re.compile(r'^\$\.objects\[(\d+)\]$')
@@ -322,11 +346,165 @@ class CatalogChangeSetService:
             from_status, frozenset(),
         )
 
+    def get_changeset(
+        self, changeset_id: 'str | uuid.UUID',
+    ) -> CatalogChangeSet:
+        """Fetch one changeset by id — the read arm of the loop.
+
+        Args:
+            changeset_id: changeset UUID or its string form.
+
+        Returns:
+            The ``CatalogChangeSet`` instance, with proposer/reviewer
+            FKs select_related per the repository convention.
+
+        Raises:
+            ChangesetNotFoundError: no changeset row with that id —
+                ``LookupError`` subclass; ``str(exc)`` is
+                ``ERR_CHANGESET_NOT_FOUND`` and ``changeset_id``
+                echoes the raw addressed value for the 404 envelope.
+            ValueError: ``changeset_id`` is not a valid UUID —
+                propagated from the repository unwrapped (the HTTP
+                layer maps it to 400).
+        """
+        try:
+            return self.changeset_repository.get_by_id(changeset_id)
+        except CatalogChangeSet.DoesNotExist as e:
+            raise ChangesetNotFoundError(changeset_id) from e
+
+    @transaction.atomic
+    def propose(
+        self,
+        ops: list,
+        rationale: str,
+        *,
+        proposed_by_user: 'Optional[User]' = None,
+        proposed_by_credential: Optional[ProjectAPICredential] = None,
+        scope_check: Optional[Callable[[list], bool]] = None,
+    ) -> CatalogChangeSet:
+        """Create a changeset and validate it synchronously.
+
+        Lifecycle traversed inside this transaction: ``draft →
+        proposed → validating → valid|invalid``. The row enters as
+        ``draft``, is immediately marked ``proposed`` — the visible
+        state of an unreviewed submission — and runs through
+        :meth:`validate`, so the returned instance already carries
+        its final ``status``, the ``validation_report``, the derived
+        ``scopes`` and the ``base_revision``.
+
+        The ``scope_check`` gate runs AFTER validation by design:
+        ``scopes`` — the ``json_scope`` perimeter the ops touch — is
+        derived server-side inside ``validate()``, so no scope set
+        exists to check before it runs. A rejection raises
+        ``PermissionError`` inside the atomic block: the transaction
+        rolls back and a proposal outside the proposer's perimeter
+        never persists.
+
+        Args:
+            ops: ordered mutation ops, stored verbatim.
+            rationale: proposer-supplied context for the reviewer.
+            proposed_by_user: human proposer — XOR with
+                ``proposed_by_credential`` (the repository enforces
+                exactly one proposer).
+            proposed_by_credential: machine proposer — XOR with
+                ``proposed_by_user``.
+            scope_check: ``Callable[[list], bool]`` predicate the
+                HTTP layer injects (its permission class'
+                ``covers_scopes`` bound to the request principal) —
+                kept as a parameter so this service never imports
+                the authentication layer. ``None`` skips the check.
+
+        Returns:
+            The persisted ``CatalogChangeSet`` at ``valid`` or
+            ``invalid``.
+
+        Raises:
+            ValueError: repository contract violations — exactly one
+                proposer required, ``ops`` must be a list,
+                ``rationale`` a string.
+            PermissionError: ``ERR_CHANGESET_SCOPES_NOT_COVERED_MSG`` —
+                the principal's allowed scopes do not cover the
+                derived perimeter; the whole proposal rolls back.
+        """
+        changeset = self.changeset_repository.create(
+            ops=ops,
+            rationale=rationale,
+            proposed_by_user=proposed_by_user,
+            proposed_by_credential=proposed_by_credential,
+            status=CHANGESET_STATUS_DRAFT,
+        )
+        self.changeset_repository.update_fields(
+            changeset, status=CHANGESET_STATUS_PROPOSED,
+        )
+        self.validate(changeset)
+        self._enforce_scope_check(changeset, scope_check)
+        return changeset
+
+    @transaction.atomic
+    def patch(
+        self,
+        changeset_id: 'str | uuid.UUID',
+        *,
+        ops: list,
+        rationale: str,
+        scope_check: Optional[Callable[[list], bool]] = None,
+    ) -> CatalogChangeSet:
+        """Replace ops/rationale on a changeset and re-validate.
+
+        The corrective arm of the feedback loop: the proposer reads
+        the ``validation_report``, fixes the ops and patches the same
+        changeset — the row keeps its identity, proposer and review
+        thread while the payload is replaced wholesale (never
+        merged), then re-validated (``→ validating → valid|invalid``)
+        refreshing ``scopes`` and ``base_revision``.
+
+        Re-proposability is exactly the set of statuses carrying a
+        ``→ validating`` edge — ``proposed``, ``invalid``, ``valid``
+        and ``stale`` — so the single ``can_transition`` gate covers
+        every case: ``draft`` (never submitted), ``approved``,
+        ``applied`` and the terminal states raise
+        ``ChangesetStateConflictError`` — the 409 signal. The same
+        ``scope_check`` gate as :meth:`propose` runs post-validation
+        and rolls the correction back on rejection.
+
+        Args:
+            changeset_id: changeset UUID or its string form.
+            ops: replacement op list.
+            rationale: replacement rationale for the reviewer.
+            scope_check: same contract as :meth:`propose`.
+
+        Returns:
+            The same ``CatalogChangeSet`` instance at ``valid`` or
+            ``invalid``.
+
+        Raises:
+            ChangesetNotFoundError: no changeset row with that id.
+            ChangesetStateConflictError: the current status has no
+                ``→ validating`` edge.
+            ValueError: malformed ``changeset_id`` or repository
+                contract violations.
+            PermissionError: ``ERR_CHANGESET_SCOPES_NOT_COVERED_MSG`` —
+                same post-validation gate as :meth:`propose`.
+        """
+        changeset = self.get_changeset(changeset_id)
+        if not self.can_transition(
+            changeset.status, CHANGESET_STATUS_VALIDATING,
+        ):
+            raise ChangesetStateConflictError(
+                changeset.status, CHANGESET_STATUS_VALIDATING,
+            )
+        self.changeset_repository.update_fields(
+            changeset, ops=ops, rationale=rationale,
+        )
+        self.validate(changeset)
+        self._enforce_scope_check(changeset, scope_check)
+        return changeset
+
     @transaction.atomic
     def validate(self, changeset) -> dict:
         """Run the three validation tiers and persist the report.
 
-        Transitions the changeset ``proposed|invalid|stale →
+        Transitions the changeset ``proposed|invalid|valid|stale →
         validating → valid|invalid`` per ``CHANGESET_TRANSITIONS``,
         derives ``scopes`` and ``base_revision``, and stores the
         structured ``validation_report`` consumed by the proposer's
@@ -343,7 +521,7 @@ class CatalogChangeSetService:
         Raises:
             ValueError: ``ERR_CHANGESET_INVALID_TRANSITION`` — the
                 current status has no edge to ``validating`` (e.g.
-                draft, valid, approved or a terminal state).
+                draft, approved or a terminal state).
         """
         if not isinstance(changeset, CatalogChangeSet):
             changeset = self.changeset_repository.get_by_id(changeset)
@@ -406,6 +584,33 @@ class CatalogChangeSetService:
             ),
         )
         return report
+
+    # ------------------------------------------------------------------ #
+    # Scope capability gate (predicate injected by the HTTP layer)       #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _enforce_scope_check(
+        changeset: CatalogChangeSet,
+        scope_check: Optional[Callable[[list], bool]],
+    ) -> None:
+        """Run the injected scope-capability predicate post-validation.
+
+        ``scopes`` only exists once :meth:`validate` derives it, so
+        the gate can never run earlier in the lifecycle. A ``None``
+        predicate skips the check; a rejection raises
+        ``PermissionError`` inside the caller's ``atomic`` block,
+        rolling the whole proposal back — a refused changeset never
+        persists. The message carries the derived scopes; the HTTP
+        layer re-envelopes it under the stable
+        ``ERR_CHANGESET_SCOPES_NOT_COVERED`` code.
+        """
+        if scope_check is not None and not scope_check(changeset.scopes):
+            raise PermissionError(
+                ERR_CHANGESET_SCOPES_NOT_COVERED_MSG.format(
+                    scopes=changeset.scopes,
+                )
+            )
 
     # ------------------------------------------------------------------ #
     # Tier 1 — syntactic                                                  #

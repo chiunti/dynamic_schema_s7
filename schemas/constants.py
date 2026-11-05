@@ -208,6 +208,15 @@ ERR_USAGE_IDENTIFIER_CONFLICT = "identify the object by 'pk' or natural-key para
 ERR_USAGE_IDENTIFIER_REQUIRED = "identify the object by 'pk' or natural-key parameters"
 ERR_USAGE_UNKNOWN_NK_PARAMS = "unknown identifier parameters: {params} — natural key of {label}: {fields}"
 
+# Catalog changeset endpoint codes — envelope of
+# /api/catalog/changesets/ (views.CatalogChangeSetListCreateView,
+# views.CatalogChangeSetDetailView). The 400 family reuses the shared
+# ERR_INVALID_REQUEST code; lifecycle conflicts surface the raise-level
+# ERR_CHANGESET_INVALID_TRANSITION message under a 409 status.
+ERR_CHANGESET_NOT_FOUND = "changeset_not_found"
+ERR_CHANGESET_SCOPES_NOT_COVERED = "changeset_scopes_not_covered"
+ERR_CHANGESET_SCOPES_NOT_COVERED_MSG = "token allowed_scopes do not cover the changeset scopes: {scopes}"
+
 # Catalog changeset validation — codes emitted inside the changeset's
 # validation_report JSONB by CatalogChangeSetService.validate()
 # (services/catalog_changeset_service.py). ERR_CHANGESET_INVALID_TRANSITION
@@ -315,8 +324,8 @@ WARN_JS_PATTERNS = (
 # State machine as data — transition enforcement lives in the service layer
 # (CatalogChangeSetService). Every non-terminal state may also transition to
 # "superseded" (the wildcard edge of the lifecycle); terminal states map to an
-# empty frozenset. The "invalid" -> "validating" edge is the agent feedback
-# loop: corrected ops re-validate on the same changeset.
+# empty frozenset. The "invalid"/"valid"/"stale" -> "validating" edges are the
+# agent feedback loop: corrected ops re-validate on the same changeset.
 CHANGESET_STATUS_DRAFT = "draft"
 CHANGESET_STATUS_PROPOSED = "proposed"
 CHANGESET_STATUS_VALIDATING = "validating"
@@ -344,6 +353,7 @@ CHANGESET_TRANSITIONS = {
     ),
     CHANGESET_STATUS_VALID: frozenset(
         {
+            CHANGESET_STATUS_VALIDATING,
             CHANGESET_STATUS_APPROVED,
             CHANGESET_STATUS_REJECTED,
             CHANGESET_STATUS_SUPERSEDED,

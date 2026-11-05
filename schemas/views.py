@@ -1,5 +1,6 @@
 import json
 import logging
+from uuid import UUID
 
 from rest_framework import status
 from rest_framework.request import Request
@@ -9,6 +10,7 @@ from rest_framework.views import APIView
 from .authentication import (
     CanAuthorCatalog,
     CanImportSchema,
+    CanProposeChangeset,
     CanPublishSchema,
     CanReadSchema,
     ProjectPrincipal,
@@ -17,16 +19,27 @@ from .authentication import (
     UserMCPTokenPermission,
 )
 from .constants import (
+    ERR_CHANGESET_SCOPES_NOT_COVERED,
     ERR_INTERNAL_SERVER_ERROR,
     ERR_INVALID_REQUEST,
     ERR_PROJECT_CREDENTIAL_MISMATCH,
     ERR_PROJECT_ID_REQUIRED,
     STATUS_DRAFT,
 )
-from .serializers import CatalogImportSerializer, SchemaImportSerializer
+from .serializers import (
+    CatalogChangeSetProposeSerializer,
+    CatalogImportSerializer,
+    SchemaImportSerializer,
+)
+from .services.catalog_changeset_service import CatalogChangeSetService
 from .services.catalog_import_service import CatalogImportService
 from .services.catalog_service import CatalogService
-from .services.exceptions import CatalogObjectNotFoundError, ScopeNotFoundError
+from .services.exceptions import (
+    CatalogObjectNotFoundError,
+    ChangesetNotFoundError,
+    ChangesetStateConflictError,
+    ScopeNotFoundError,
+)
 from .services.schema_delete_service import SchemaDeleteService
 from .services.schema_import_service import SchemaImportService
 from .services.schema_publish_service import SchemaPublishService
@@ -72,6 +85,73 @@ def _resolve_project_scope(request: Request) -> tuple | Response:
     except ValueError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return project_id, request.user
+
+
+def _first_serializer_error(serializer) -> str:
+    """Format the first serializer failure as ``<field>: <message>``.
+
+    ListField children report per-item failures as
+    ``{item_index: [messages]}`` — those render as ``field[index]`` so the
+    caller can point at the offending entry.
+    """
+    field, field_errors = next(iter(serializer.errors.items()))
+    if isinstance(field_errors, dict):
+        index = next(iter(field_errors))
+        item_errors = field_errors[index]
+        detail = (
+            item_errors[0]
+            if isinstance(item_errors, (list, tuple))
+            else item_errors
+        )
+        return f"{field}[{index}]: {detail}"
+    detail = (
+        field_errors[0]
+        if isinstance(field_errors, (list, tuple))
+        else field_errors
+    )
+    return f"{field}: {detail}"
+
+
+def _serialize_changeset(changeset) -> dict:
+    """Serialize a changeset instance for the REST envelope.
+
+    Reads the ``*_id`` FK attributes rather than the related objects so no
+    extra queries fire; datetimes render ISO-8601 and nullable fields emit
+    ``None``.
+    """
+    return {
+        "id": str(changeset.id),
+        "status": changeset.status,
+        "ops": changeset.ops,
+        "rationale": changeset.rationale,
+        "scopes": changeset.scopes,
+        "base_revision": changeset.base_revision,
+        "validation_report": changeset.validation_report,
+        "proposed_by_credential": (
+            str(changeset.proposed_by_credential_id)
+            if changeset.proposed_by_credential_id
+            else None
+        ),
+        "proposed_by_user": (
+            str(changeset.proposed_by_user_id)
+            if changeset.proposed_by_user_id
+            else None
+        ),
+        "reviewed_by": (
+            str(changeset.reviewed_by_id)
+            if changeset.reviewed_by_id
+            else None
+        ),
+        "applied_at": (
+            changeset.applied_at.isoformat() if changeset.applied_at else None
+        ),
+        "created_at": (
+            changeset.created_at.isoformat() if changeset.created_at else None
+        ),
+        "updated_at": (
+            changeset.updated_at.isoformat() if changeset.updated_at else None
+        ),
+    }
 
 
 class SchemaView(APIView):
@@ -565,3 +645,189 @@ class CatalogUsageView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         return Response(result, status=status.HTTP_200_OK)
+
+
+class CatalogChangeSetListCreateView(APIView):
+    """Propose a governed catalog mutation as a changeset (AI-22).
+
+    ``POST`` accepts ``{"ops": [...], "rationale": "..."}``, persists the
+    changeset and runs validation synchronously in-request — the 201
+    response carries the final ``status`` (``valid``/``invalid``) and the
+    full ``validation_report``, which is the agent's feedback channel: a
+    validation failure is still a persisted 201, not a 400. Only a
+    malformed request body (missing ``rationale``, empty/non-list
+    ``ops``) answers 400 with the first serializer error.
+
+    The gate is ``CanProposeChangeset``: no token answers DRF's JSON
+    401; a project credential, an L1 token or a token without the
+    ``can_propose_changeset`` flag fails the duck-typed ``request.auth``
+    checks with 403. A second 403 may fire after validation, once the
+    changeset's ``scopes`` are derived server-side, when the token's
+    ``allowed_scopes`` do not cover them — the service raises
+    ``PermissionError`` through ``scope_check`` and the proposal rolls
+    back, so nothing persists.
+
+    The collection implements ``POST`` only — a paginated list is future
+    work. ``approve``/``apply``/``reject`` are intentionally absent
+    here: they belong to the human review surface (admin — AI-23) and
+    are never exposed to credentials.
+    """
+
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanProposeChangeset]
+
+    def post(self, request: Request) -> Response:
+        serializer = CatalogChangeSetProposeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "error": ERR_INVALID_REQUEST,
+                    "message": _first_serializer_error(serializer),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = serializer.validated_data
+        try:
+            changeset = CatalogChangeSetService().propose(
+                data["ops"],
+                data["rationale"],
+                proposed_by_user=request.user,
+                scope_check=lambda scopes: CanProposeChangeset.covers_scopes(
+                    request.auth, scopes
+                ),
+            )
+        except PermissionError as exc:
+            return Response(
+                {
+                    "error": ERR_CHANGESET_SCOPES_NOT_COVERED,
+                    "message": str(exc),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": ERR_INVALID_REQUEST, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Changeset propose failed")
+            return Response(
+                {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            _serialize_changeset(changeset), status=status.HTTP_201_CREATED
+        )
+
+
+class CatalogChangeSetDetailView(APIView):
+    """Read and re-propose a single changeset (AI-22).
+
+    ``GET`` returns the serialized changeset — ``status`` plus the full
+    ``validation_report`` so the proposing agent can read its findings;
+    an unknown id answers 404 echoing the addressed ``changeset_id``.
+
+    ``PATCH`` takes the same ``{"ops", "rationale"}`` body as the
+    propose endpoint: it replaces the mutation document on the same
+    changeset and re-runs validation synchronously (the corrected-ops
+    feedback loop). PATCH requires a ``→ validating`` edge on the
+    current status — ``draft``, ``validating``, ``approved``,
+    ``applied``, ``rejected`` and ``superseded`` answer 409 with the
+    invalid-transition message.
+
+    Same gate as the collection view (``CanProposeChangeset``): 401
+    without a token, 403 for credentials/L1/flag-less tokens, plus a
+    per-instance 403 when the token's ``allowed_scopes`` do not cover
+    the changeset's derived ``scopes`` — enforced on ``GET`` after the
+    fetch (``ERR_CHANGESET_SCOPES_NOT_COVERED`` envelope) and through
+    ``scope_check`` inside ``PATCH``.
+    """
+
+    authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
+    permission_classes = [CanProposeChangeset]
+
+    def get(self, request: Request, changeset_id: UUID) -> Response:
+        try:
+            changeset = CatalogChangeSetService().get_changeset(changeset_id)
+        except ChangesetNotFoundError as exc:
+            return Response(
+                {"error": str(exc), "changeset_id": str(exc.changeset_id)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": ERR_INVALID_REQUEST, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Changeset retrieval failed")
+            return Response(
+                {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not CanProposeChangeset.covers_scopes(request.auth, changeset.scopes):
+            return Response(
+                {
+                    "error": ERR_CHANGESET_SCOPES_NOT_COVERED,
+                    "scopes": changeset.scopes,
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return Response(
+            _serialize_changeset(changeset), status=status.HTTP_200_OK
+        )
+
+    def patch(self, request: Request, changeset_id: UUID) -> Response:
+        serializer = CatalogChangeSetProposeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "error": ERR_INVALID_REQUEST,
+                    "message": _first_serializer_error(serializer),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = serializer.validated_data
+        try:
+            changeset = CatalogChangeSetService().patch(
+                changeset_id,
+                ops=data["ops"],
+                rationale=data["rationale"],
+                scope_check=lambda scopes: CanProposeChangeset.covers_scopes(
+                    request.auth, scopes
+                ),
+            )
+        except ChangesetNotFoundError as exc:
+            return Response(
+                {"error": str(exc), "changeset_id": str(exc.changeset_id)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ChangesetStateConflictError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except PermissionError as exc:
+            return Response(
+                {
+                    "error": ERR_CHANGESET_SCOPES_NOT_COVERED,
+                    "message": str(exc),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": ERR_INVALID_REQUEST, "message": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Changeset patch failed")
+            return Response(
+                {"error": "Internal server error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            _serialize_changeset(changeset), status=status.HTTP_200_OK
+        )

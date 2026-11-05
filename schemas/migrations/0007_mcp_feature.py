@@ -1,6 +1,6 @@
+import django.contrib.postgres.indexes
 import django.db.models.deletion
 import django.utils.timezone
-import schemas.models
 import uuid
 from django.conf import settings
 from django.db import migrations, models
@@ -29,7 +29,9 @@ from django.db.models import Q
 # 5. Governed changesets — CatalogChangeSet audit model (proposer XOR,
 #    scopes/base_revision/validation_report, status lifecycle) plus the
 #    UserMCPToken propose capability (can_propose_changeset flag and the
-#    allowed_scopes allowlist).
+#    allowed_scopes allowlist). The scopes GIN index serializes the
+#    canonical django.contrib.postgres GinIndex (the contrib app is
+#    installed by this batch's feature commit).
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -2278,7 +2280,7 @@ class Migration(migrations.Migration):
                         fields=["status", "created_at"],
                         name="idx_scatalogchg_status_created",
                     ),
-                    schemas.models.GinIndex(
+                    django.contrib.postgres.indexes.GinIndex(
                         fields=["scopes"], name="idx_scatalogchg_scopes"
                     ),
                 ],

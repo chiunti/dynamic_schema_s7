@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -801,20 +802,6 @@ class EditorExtension(models.Model):
 
     def __str__(self):
         return self.name
-
-
-class GinIndex(models.Index):
-    """GIN index that works without ``django.contrib.postgres`` installed.
-
-    The contrib ``GinIndex`` is this same DDL plus a system check requiring
-    the contrib app in ``INSTALLED_APPS``; the project does not install it,
-    so this subclass emits ``USING gin`` directly.
-    """
-
-    def create_sql(self, model, schema_editor, **kwargs):
-        return super().create_sql(
-            model, schema_editor, using=" USING gin", **kwargs
-        )
 
 
 class CatalogChangeSet(models.Model):

@@ -111,3 +111,55 @@ class CanAuthorCatalog(UserMCPTokenPermission):
     """
 
     min_level = 2
+
+
+class CanProposeChangeset(UserMCPTokenPermission):
+    """Level-2 permission plus the per-token changeset-propose flag.
+
+    Gates governed catalog mutation: proposing a changeset is a weaker
+    grant than direct catalog authoring (the ops still pass validation and
+    human review), so it carries its own capability flag on top of
+    ``min_level = 2``. Same duck-typed closure as the base class — project
+    credentials carry neither ``mcp_level`` nor ``can_propose_changeset``
+    on ``request.auth`` and fail closed.
+
+    The ``allowed_scopes`` half of the capability is intentionally NOT
+    enforced here: a changeset's ``scopes`` are derived server-side during
+    validation, so the intersection check runs per-endpoint (see
+    :meth:`covers_scopes`) once those scopes exist — not on the raw
+    request payload.
+    """
+
+    min_level = 2
+
+    def has_permission(self, request, view) -> bool:
+        return bool(
+            super().has_permission(request, view)
+            and getattr(request.auth, 'can_propose_changeset', False)
+        )
+
+    @staticmethod
+    def covers_scopes(auth, scopes) -> bool:
+        """Whether the token row in ``auth`` may touch every derived scope.
+
+        ``allowed_scopes`` NULL or an empty list means unrestricted — the
+        only bound a user token can carry, since the catalog grammar is
+        global. A malformed (non-list) stored value fails closed —
+        including falsy non-lists like ``""``, ``0``, ``False``, ``{}``,
+        which the JSONField will happily store. ``scopes`` is the
+        changeset's derived scope list; an empty/None changeset scope set
+        is always covered. Non-scalar elements anywhere fail closed.
+        """
+        allowed = getattr(auth, 'allowed_scopes', None)
+        if allowed is None:
+            return True
+        if not isinstance(allowed, (list, tuple, set, frozenset)):
+            return False
+        if not allowed:
+            return True
+        if not isinstance(scopes, (list, tuple, set, frozenset)):
+            return False if scopes else True
+        try:
+            return set(scopes or ()) <= set(allowed)
+        except TypeError:
+            return False

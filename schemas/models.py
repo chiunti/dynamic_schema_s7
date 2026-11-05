@@ -204,6 +204,23 @@ class UserMCPToken(models.Model):
         choices=Level.choices,
         default=Level.SCHEMA_AUTHORING,
     )
+    can_propose_changeset = models.BooleanField(
+        default=False,
+        help_text=(
+            "Grants the token the changeset-propose capability on top of "
+            "catalog-authoring level — proposing governed mutations without "
+            "direct apply."
+        ),
+    )
+    allowed_scopes = models.JSONField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Allowlist of json_scope values the token's changesets may "
+            "touch. NULL or empty list means unrestricted — user tokens "
+            "carry no project bound since the catalog grammar is global."
+        ),
+    )
     expires_at = models.DateField()
     revoked_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)

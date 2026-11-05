@@ -18,7 +18,10 @@ class UserMCPTokenAddForm(forms.ModelForm):
 
     class Meta:
         model = UserMCPToken
-        fields = ("user", "name", "mcp_level", "expires_at")
+        fields = (
+            "user", "name", "mcp_level", "can_propose_changeset",
+            "allowed_scopes", "expires_at",
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -46,7 +49,10 @@ class UserMCPTokenChangeForm(forms.ModelForm):
 
     class Meta:
         model = UserMCPToken
-        fields = ("mcp_level", "expires_at")
+        fields = (
+            "mcp_level", "can_propose_changeset", "allowed_scopes",
+            "expires_at",
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -58,7 +64,7 @@ class UserMCPTokenChangeForm(forms.ModelForm):
 @admin.register(UserMCPToken)
 class UserMCPTokenAdmin(admin.ModelAdmin):
     list_display = ("name", "user_email", "level", "expires_at", "status", "created_at")
-    list_filter = ("mcp_level",)
+    list_filter = ("mcp_level", "can_propose_changeset")
     search_fields = ("name", "user__email")
     readonly_fields = (
         "user", "name", "token_digest", "revoked_at", "created_at",
@@ -78,8 +84,14 @@ class UserMCPTokenAdmin(admin.ModelAdmin):
                     "description": "A random secret is generated on save and shown only once.",
                 }),
                 ("Capability", {
-                    "fields": ("mcp_level",),
-                    "description": "Level 1: schema authoring. Level 2: catalog authoring.",
+                    "fields": (
+                        "mcp_level", "can_propose_changeset", "allowed_scopes",
+                    ),
+                    "description": (
+                        "Level 1: schema authoring. Level 2: catalog "
+                        "authoring. The changeset-propose flag requires "
+                        "level 2; allowed_scopes left empty is unrestricted."
+                    ),
                 }),
                 ("Lifecycle", {
                     "fields": ("expires_at",),
@@ -90,7 +102,9 @@ class UserMCPTokenAdmin(admin.ModelAdmin):
                 "fields": ("user", "name"),
             }),
             ("Capability", {
-                "fields": ("mcp_level",),
+                "fields": (
+                    "mcp_level", "can_propose_changeset", "allowed_scopes",
+                ),
             }),
             ("Lifecycle", {
                 "fields": ("expires_at", "is_revoked", "revoked_at", "created_at"),
@@ -146,6 +160,12 @@ class UserMCPTokenAdmin(admin.ModelAdmin):
             form.cleaned_data["mcp_level"],
             form.cleaned_data["expires_at"],
         )
+        # The capability flags are form fields, not provisioning inputs —
+        # apply the submitted values to the stored row in one update so a
+        # propose-enabled token can be granted in a single add.
+        token.can_propose_changeset = form.cleaned_data["can_propose_changeset"]
+        token.allowed_scopes = form.cleaned_data["allowed_scopes"]
+        token.save(update_fields=["can_propose_changeset", "allowed_scopes"])
         obj.pk = token.pk
         self.message_user(
             request,

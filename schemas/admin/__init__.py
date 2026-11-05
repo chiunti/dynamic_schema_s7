@@ -9,6 +9,7 @@ Organized into modules by responsibility:
 - schema: SchemaAdmin with import, publish, archive, draft, build
 - build_state: BuildStateAdmin with dynamic tabs
 - schema_cache: SchemaCacheAdmin with dynamic tabs
+- catalog_changeset: Read-only audit admin for catalog changesets
 """
 
 from .base import (
@@ -44,6 +45,7 @@ from .organization import OrganizationAdmin, OrganizationMemberInline
 from .project import ProjectAdmin
 from .project_credential import ProjectAPICredentialAdmin
 from .user_mcp_token import UserMCPTokenAdmin
+from .catalog_changeset import CatalogChangeSetAdmin
 from .editor_extension import EditorExtensionAdmin
 
 __all__ = [
@@ -75,6 +77,8 @@ __all__ = [
     'ProjectAdmin',
     'ProjectAPICredentialAdmin',
     'UserMCPTokenAdmin',
+    # Catalog governance
+    'CatalogChangeSetAdmin',
     # Tooling
     'EditorExtensionAdmin',
 ]

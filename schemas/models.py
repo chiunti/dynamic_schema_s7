@@ -5,6 +5,20 @@ from django.utils import timezone
 
 import uuid
 
+from .constants import (
+    CHANGESET_STATUS_APPLIED,
+    CHANGESET_STATUS_APPROVED,
+    CHANGESET_STATUS_DRAFT,
+    CHANGESET_STATUS_INVALID,
+    CHANGESET_STATUS_PROPOSED,
+    CHANGESET_STATUS_REJECTED,
+    CHANGESET_STATUS_STALE,
+    CHANGESET_STATUS_SUPERSEDED,
+    CHANGESET_STATUS_VALID,
+    CHANGESET_STATUS_VALIDATING,
+    ERR_CHANGESET_PROPOSER_XOR,
+)
+
 
 class OrganizationManager(models.Manager):
     def get_by_natural_key(self, slug):
@@ -770,3 +784,118 @@ class EditorExtension(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class GinIndex(models.Index):
+    """GIN index that works without ``django.contrib.postgres`` installed.
+
+    The contrib ``GinIndex`` is this same DDL plus a system check requiring
+    the contrib app in ``INSTALLED_APPS``; the project does not install it,
+    so this subclass emits ``USING gin`` directly.
+    """
+
+    def create_sql(self, model, schema_editor, **kwargs):
+        return super().create_sql(
+            model, schema_editor, using=" USING gin", **kwargs
+        )
+
+
+class CatalogChangeSet(models.Model):
+    """Governed catalog mutation proposal: AI proposes ops, a human approves/applies.
+
+    ``ops`` is the mutation document itself: a JSON list of operations the
+    proposer wants applied to the catalog. ``scopes`` is the denormalized
+    list of ``json_scope`` values the operations touch — derived
+    server-side during validation, never declared by the client, so the
+    permission filter can intersect it with the proposer's allowed scopes.
+    ``base_revision`` is the sha256 hex digest of the catalog rows inside
+    the affected scopes, computed at validation time and re-verified at
+    apply time; a mismatch marks the changeset ``stale``.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = CHANGESET_STATUS_DRAFT, "Draft"
+        PROPOSED = CHANGESET_STATUS_PROPOSED, "Proposed"
+        VALIDATING = CHANGESET_STATUS_VALIDATING, "Validating"
+        VALID = CHANGESET_STATUS_VALID, "Valid"
+        INVALID = CHANGESET_STATUS_INVALID, "Invalid"
+        APPROVED = CHANGESET_STATUS_APPROVED, "Approved"
+        APPLIED = CHANGESET_STATUS_APPLIED, "Applied"
+        REJECTED = CHANGESET_STATUS_REJECTED, "Rejected"
+        STALE = CHANGESET_STATUS_STALE, "Stale"
+        SUPERSEDED = CHANGESET_STATUS_SUPERSEDED, "Superseded"
+
+    id = models.UUIDField(
+        primary_key=True,
+        editable=False,
+        default=uuid.uuid4,
+        db_default=models.Func(function="gen_random_uuid"),
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    ops = models.JSONField(default=list)
+    rationale = models.TextField()
+    scopes = models.JSONField(default=list)
+    base_revision = models.CharField(max_length=64, null=True, blank=True)
+    validation_report = models.JSONField(null=True, blank=True)
+    proposed_by_credential = models.ForeignKey(
+        ProjectAPICredential,
+        on_delete=models.PROTECT,
+        related_name="proposed_catalog_changesets",
+        null=True,
+        blank=True,
+    )
+    proposed_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="proposed_catalog_changesets",
+        null=True,
+        blank=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reviewed_catalog_changesets",
+        null=True,
+        blank=True,
+    )
+    applied_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "schema_catalog_changesets"
+        verbose_name = "Catalog changeset"
+        verbose_name_plural = "Catalog changesets"
+        constraints = [
+            models.CheckConstraint(
+                # Exactly one proposer: an API credential or a user.
+                condition=(
+                    (
+                        Q(proposed_by_credential__isnull=False)
+                        & Q(proposed_by_user__isnull=True)
+                    )
+                    | (
+                        Q(proposed_by_credential__isnull=True)
+                        & Q(proposed_by_user__isnull=False)
+                    )
+                ),
+                name="chk_scatalogchg_one_proposer",
+                violation_error_message=ERR_CHANGESET_PROPOSER_XOR,
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["status", "created_at"],
+                name="idx_scatalogchg_status_created",
+            ),
+            # GIN (not B-tree): the permission filter resolves the overlap
+            # between allowed scopes and this jsonb array.
+            GinIndex(fields=["scopes"], name="idx_scatalogchg_scopes"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.id}:{self.status}"

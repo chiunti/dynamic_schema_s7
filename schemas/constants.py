@@ -85,6 +85,13 @@ ERR_SCHEMA_ID_MUST_BE_UUID = "schema_id must be a valid UUID"
 ERR_VALIDATED_SCHEMA_MUST_BE_DICT = "validated_schema must be a dict"
 ERR_SCHEMA_KEY_MUST_BE_NON_EMPTY_MAX_30 = "schema_key must be a non-empty string with max 30 characters"
 ERR_SCHEMA_VERSION_MUST_BE_NON_EMPTY_MAX_20 = "schema_version must be a non-empty string with max 20 characters"
+ERR_CHANGESET_PROPOSER_XOR = "exactly one of proposed_by_credential / proposed_by_user is required"
+ERR_CHANGESET_OPS_MUST_BE_LIST = "ops must be a list"
+ERR_CHANGESET_RATIONALE_MUST_BE_STRING = "rationale must be a string"
+ERR_CHANGESET_SCOPES_MUST_BE_LIST_OR_NONE = "scopes must be a list or None"
+ERR_CHANGESET_STATUS_MUST_BE_VALID = "status must be a valid changeset status, got: '{status}'"
+ERR_CHANGESET_MUST_BE_INSTANCE = "changeset must be a CatalogChangeSet instance"
+ERR_CHANGESET_FIELDS_NOT_MUTABLE = "CatalogChangeSet fields are not mutable: {rejected}"
 ERR_SCHEMA_STATUS_MUST_BE_VALID = "schema_status must be one of: draft, published, archived"
 ERR_OVERWRITE_MUST_BE_BOOLEAN = "overwrite must be a boolean"
 ERR_KEY_MUST_BE_NON_EMPTY_MAX_30 = "key must be a non-empty string with max 30 characters"
@@ -275,3 +282,61 @@ WARN_JS_PATTERNS = (
     (r"\bpostMessage\s*\(", "postMessage cross-frame communication"),
     (r"[A-Za-z0-9+/]{400,}={0,2}", "large base64 blob (possible payload)"),
 )
+
+# --------------------------------------------------------------------------- #
+# Catalog changeset lifecycle
+# --------------------------------------------------------------------------- #
+# State machine as data — transition enforcement lives in the service layer
+# (CatalogChangeSetService). Every non-terminal state may also transition to
+# "superseded" (the wildcard edge of the lifecycle); terminal states map to an
+# empty frozenset. The "invalid" -> "validating" edge is the agent feedback
+# loop: corrected ops re-validate on the same changeset.
+CHANGESET_STATUS_DRAFT = "draft"
+CHANGESET_STATUS_PROPOSED = "proposed"
+CHANGESET_STATUS_VALIDATING = "validating"
+CHANGESET_STATUS_VALID = "valid"
+CHANGESET_STATUS_INVALID = "invalid"
+CHANGESET_STATUS_APPROVED = "approved"
+CHANGESET_STATUS_APPLIED = "applied"
+CHANGESET_STATUS_REJECTED = "rejected"
+CHANGESET_STATUS_STALE = "stale"
+CHANGESET_STATUS_SUPERSEDED = "superseded"
+
+CHANGESET_TRANSITIONS = {
+    CHANGESET_STATUS_DRAFT: frozenset(
+        {CHANGESET_STATUS_PROPOSED, CHANGESET_STATUS_SUPERSEDED}
+    ),
+    CHANGESET_STATUS_PROPOSED: frozenset(
+        {CHANGESET_STATUS_VALIDATING, CHANGESET_STATUS_SUPERSEDED}
+    ),
+    CHANGESET_STATUS_VALIDATING: frozenset(
+        {
+            CHANGESET_STATUS_VALID,
+            CHANGESET_STATUS_INVALID,
+            CHANGESET_STATUS_SUPERSEDED,
+        }
+    ),
+    CHANGESET_STATUS_VALID: frozenset(
+        {
+            CHANGESET_STATUS_APPROVED,
+            CHANGESET_STATUS_REJECTED,
+            CHANGESET_STATUS_SUPERSEDED,
+        }
+    ),
+    CHANGESET_STATUS_INVALID: frozenset(
+        {CHANGESET_STATUS_VALIDATING, CHANGESET_STATUS_SUPERSEDED}
+    ),
+    CHANGESET_STATUS_APPROVED: frozenset(
+        {
+            CHANGESET_STATUS_APPLIED,
+            CHANGESET_STATUS_STALE,
+            CHANGESET_STATUS_SUPERSEDED,
+        }
+    ),
+    CHANGESET_STATUS_REJECTED: frozenset(),
+    CHANGESET_STATUS_APPLIED: frozenset(),
+    CHANGESET_STATUS_STALE: frozenset(
+        {CHANGESET_STATUS_VALIDATING, CHANGESET_STATUS_SUPERSEDED}
+    ),
+    CHANGESET_STATUS_SUPERSEDED: frozenset(),
+}

@@ -9,8 +9,9 @@ an agent's MCP configuration grants it no propose capability.
 
 Thin mapping only, same contract as ``s7-author``: each tool forwards to
 one authenticated endpoint and returns the JSON envelope verbatim. There
-is no business logic here and no approve/apply/reject tools by design —
-review verdicts and the governed apply are human actions in the admin.
+is no business logic here and no approve/apply/reject/supersede tools by
+design — review verdicts and the governed apply are human actions in the
+admin.
 
 Two transports share this surface: stdio (the default, one process per
 local agent — credentials come from the ``S7_*`` environment) and
@@ -29,23 +30,45 @@ cache) lives in ``s7_mcp.server`` and is imported, not duplicated.
 from __future__ import annotations
 
 import argparse
+import sys
 
-try:  # mcp >= 2.0
-    from mcp.server.mcpserver import Context, MCPServer
-except ImportError:  # pragma: no cover - mcp 1.x
-    from mcp.server.fastmcp import Context, FastMCP as MCPServer
+try:
+    try:  # mcp >= 2.0
+        from mcp.server.mcpserver import Context, MCPServer
+    except ImportError:  # pragma: no cover - mcp 1.x
+        from mcp.server.fastmcp import Context, FastMCP as MCPServer
 
-from . import __version__
-from .config import get_config
-from .prompts import PROPOSE_CATALOG_CHANGE_PROMPT
-# Importing ``.server`` builds its own ``MCPServer("s7-author")`` and
-# registers the s7-author tools on that instance — a dead object in this
-# process. What is reused is the credential machinery: ``_get_client``
-# (per-request header resolution + the bounded-LRU client cache); path
-# quoting lives inside the client's changeset methods. The
-# ``@mcp.tool()`` decorators below bind to this module's own ``mcp``
-# instance, so the surfaces never mix.
-from .server import _get_client
+    from . import __version__
+    from .config import get_config
+    from .prompts import PROPOSE_CATALOG_CHANGE_PROMPT
+    # Importing ``.server`` builds its own ``MCPServer("s7-author")`` and
+    # registers the s7-author tools on that instance — a dead object in this
+    # process. What is reused is the credential machinery: ``_get_client``
+    # (per-request header resolution + the bounded-LRU client cache); path
+    # quoting lives inside the client's changeset methods. The
+    # ``@mcp.tool()`` decorators below bind to this module's own ``mcp``
+    # instance, so the surfaces never mix.
+    from .server import _get_client
+except ImportError as exc:
+    # Missing optional dependencies (mcp/httpx): under ``python -m
+    # s7_mcp.catalog_server`` this module runs as ``__main__`` from its
+    # first line, so a ``__name__`` check converts the ImportError into
+    # the same friendly hint as ``s7_mcp.__main__`` — stderr only, exit
+    # 2. Imported as a library it must propagate instead: tests import
+    # this module under the ``_DEPS`` guard convention.
+    if (
+        __name__ == "__main__"
+        and exc.name
+        and exc.name.split(".", 1)[0] in ("mcp", "httpx")
+    ):
+        print(
+            f"s7-catalog: missing dependency {exc.name!r} — install the "
+            "package requirements first: "
+            "pip install -r s7_mcp/requirements.txt",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    raise
 
 try:
     mcp = MCPServer("s7-catalog", version=__version__)
@@ -217,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    get_config(require_token=args.transport == "stdio")
+    get_config(require_token=args.transport == "stdio", prog="s7-catalog")
     if args.transport == "stdio":
         mcp.run()
     else:

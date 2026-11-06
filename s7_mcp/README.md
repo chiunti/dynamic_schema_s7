@@ -270,6 +270,15 @@ changeset is the agent's finished work.
 
 ## Troubleshooting
 
+- **`s7-author:`/`s7-catalog: missing dependency 'mcp'` (or `'httpx'`) on
+  stderr, exit 2** — the optional requirements are not installed in the
+  environment that launches the server. Run
+  `pip install -r s7_mcp/requirements.txt` there. The prefix names the
+  entry point actually invoked — every fatal diagnostic does
+  (`s7-author:` for `python -m s7_mcp`, `s7-catalog:` for
+  `python -m s7_mcp.catalog_server`). Imported as a library, a missing
+  dependency raises a plain `ImportError` instead — the hint only fires
+  under `python -m`.
 - **Server exits immediately / "missing required environment variable(s)" on
   stderr** — set `S7_BASE_URL` and `S7_TOKEN` in the client's `env` block
   (under streamable-http only `S7_BASE_URL` is required).

@@ -1,4 +1,4 @@
-"""Environment-driven configuration for the s7-author MCP server.
+"""Environment-driven configuration for the s7_mcp entry points.
 
 Configuration is loaded lazily (never at import time) so that importing the
 server module — and therefore tool/resource registration — succeeds even when
@@ -66,37 +66,50 @@ class S7Config:
     project_id: str | None = None
 
 
-def _fatal(message: str) -> NoReturn:
+def _fatal(message: str, prog: str = "s7-author") -> NoReturn:
     """Print a clear diagnostic to stderr and exit non-zero.
+
+    ``prog`` names the entry point in the prefix — each server main
+    passes its own so the diagnostic reports the product the user
+    actually invoked.
 
     Never writes to stdout: that channel carries the MCP protocol frames.
     """
-    print(f"s7-author: {message}", file=sys.stderr)
+    print(f"{prog}: {message}", file=sys.stderr)
     sys.exit(2)
 
 
-def _positive_number(name: str, cast: Callable[[str], _T], default: _T) -> _T:
-    """Parse an optional env var as a positive number, or return ``default``."""
+def _positive_number(
+    name: str,
+    cast: Callable[[str], _T],
+    default: _T,
+    prog: str = "s7-author",
+) -> _T:
+    """Parse an optional env var as a positive number, or return ``default``.
+
+    ``prog`` is the ``_fatal`` prefix — forwarded from ``get_config``.
+    """
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     try:
         value = cast(raw)
     except ValueError:
-        _fatal(f"{name} must be a number (got {raw!r}).")
+        _fatal(f"{name} must be a number (got {raw!r}).", prog)
     if not math.isfinite(value) or value <= 0:
-        _fatal(f"{name} must be a positive finite number (got {raw!r}).")
+        _fatal(f"{name} must be a positive finite number (got {raw!r}).", prog)
     return value
 
 
-def get_config(require_token: bool = True) -> S7Config:
+def get_config(require_token: bool = True, prog: str = "s7-author") -> S7Config:
     """Resolve configuration from the environment.
 
     ``S7_BASE_URL`` is always required; ``S7_TOKEN`` is required only when
     ``require_token`` — i.e. on the stdio transport, whose only credential
     source is the environment. Under streamable-http each request's
     ``Authorization`` header supplies the token, so the env var is an
-    optional fallback there.
+    optional fallback there. ``prog`` prefixes the fatal diagnostics —
+    each entry point passes its own name.
 
     Exits the process with code 2 and a stderr diagnostic when a required
     variable is missing or an optional one is malformed.
@@ -114,14 +127,16 @@ def get_config(require_token: bool = True) -> S7Config:
             "missing required environment variable(s): "
             + ", ".join(missing)
             + ". "
-            + hint
+            + hint,
+            prog,
         )
     base_url = os.environ[ENV_BASE_URL].strip().rstrip("/")
     parsed = urlparse(base_url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         _fatal(
             f"{ENV_BASE_URL} must be an absolute http(s) URL "
-            f"(got {os.environ[ENV_BASE_URL]!r})."
+            f"(got {os.environ[ENV_BASE_URL]!r}).",
+            prog,
         )
     raw_project_id = os.environ.get(ENV_PROJECT_ID, "").strip()
     project_id = None
@@ -129,11 +144,19 @@ def get_config(require_token: bool = True) -> S7Config:
         try:
             project_id = str(uuid.UUID(raw_project_id))
         except ValueError:
-            _fatal(f"{ENV_PROJECT_ID} must be a UUID (got {raw_project_id!r}).")
+            _fatal(
+                f"{ENV_PROJECT_ID} must be a UUID "
+                f"(got {raw_project_id!r}).",
+                prog,
+            )
     return S7Config(
         base_url=base_url,
         token=os.environ.get(ENV_TOKEN, "").strip() or None,
-        max_payload_kb=_positive_number(ENV_MAX_PAYLOAD_KB, int, DEFAULT_MAX_PAYLOAD_KB),
-        timeout_s=_positive_number(ENV_TIMEOUT_S, float, DEFAULT_TIMEOUT_S),
+        max_payload_kb=_positive_number(
+            ENV_MAX_PAYLOAD_KB, int, DEFAULT_MAX_PAYLOAD_KB, prog
+        ),
+        timeout_s=_positive_number(
+            ENV_TIMEOUT_S, float, DEFAULT_TIMEOUT_S, prog
+        ),
         project_id=project_id,
     )

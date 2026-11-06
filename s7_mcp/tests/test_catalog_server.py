@@ -496,10 +496,12 @@ class PromptContentTests(unittest.TestCase):
 
     def test_declares_review_and_apply_as_human_actions(self):
         """The never-write rule must be discoverable in the prose the
-        agent reads: there is intentionally no approve/apply/reject
-        tool — verdicts and the governed apply are human actions."""
+        agent reads: there is intentionally no approve/apply/reject/
+        supersede tool — verdicts and the governed apply are human
+        actions."""
         self.assertIn(
-            "no approve/apply/reject tool", PROPOSE_CATALOG_CHANGE_PROMPT
+            "no approve/apply/reject/supersede tool",
+            PROPOSE_CATALOG_CHANGE_PROMPT,
         )
         self.assertIn("human actions", PROPOSE_CATALOG_CHANGE_PROMPT)
 
@@ -560,17 +562,23 @@ class MainTests(unittest.TestCase):
 
     def test_default_argv_serves_stdio_and_requires_token(self):
         get_config, run = self._run_main([])
-        get_config.assert_called_once_with(require_token=True)
+        get_config.assert_called_once_with(
+            require_token=True, prog="s7-catalog"
+        )
         run.assert_called_once_with()
 
     def test_explicit_stdio_transport(self):
         get_config, run = self._run_main(["--transport", "stdio"])
-        get_config.assert_called_once_with(require_token=True)
+        get_config.assert_called_once_with(
+            require_token=True, prog="s7-catalog"
+        )
         run.assert_called_once_with()
 
     def test_streamable_http_defaults(self):
         get_config, run = self._run_main(["--transport", "streamable-http"])
-        get_config.assert_called_once_with(require_token=False)
+        get_config.assert_called_once_with(
+            require_token=False, prog="s7-catalog"
+        )
         run.assert_called_once_with(
             transport="streamable-http", host="127.0.0.1", port=8000
         )
@@ -583,7 +591,9 @@ class MainTests(unittest.TestCase):
                 "--port", "9100",
             ]
         )
-        get_config.assert_called_once_with(require_token=False)
+        get_config.assert_called_once_with(
+            require_token=False, prog="s7-catalog"
+        )
         run.assert_called_once_with(
             transport="streamable-http", host="0.0.0.0", port=9100
         )
@@ -672,6 +682,118 @@ class ImportSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("S7_BASE_URL", result.stderr)
         self.assertNotIn("S7_TOKEN", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_env_diagnostics_carry_the_catalog_prog_name(self):
+        """Fatal config diagnostics report ``s7-catalog:`` — not the
+        sibling entry point's ``s7-author:`` prefix."""
+        result = _run("-m", "s7_mcp.catalog_server")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("s7-catalog:", result.stderr)
+        self.assertNotIn("s7-author:", result.stderr)
+
+    def test_author_entrypoint_keeps_its_own_prog_name(self):
+        """``python -m s7_mcp`` still reports ``s7-author:`` — the
+        ``prog`` default preserves the original diagnostics."""
+        result = _run("-m", "s7_mcp")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("s7-author:", result.stderr)
+        self.assertNotIn("s7-catalog:", result.stderr)
+
+
+@unittest.skipUnless(_DEPS, "requires mcp + httpx")
+class MissingDependencyHintTests(unittest.TestCase):
+    """Missing ``mcp``/``httpx`` under ``-m`` prints a friendly hint.
+
+    The poisons run the module through ``runpy.run_module`` with
+    ``run_name='__main__'`` — the same ``__name__ == '__main__'``
+    condition ``python -m s7_mcp.catalog_server`` produces, so the
+    ``__main__``-only guard fires exactly as on the real entry point.
+    """
+
+    _RUN_AS_MAIN = (
+        "import runpy\n"
+        "runpy.run_module('s7_mcp.catalog_server', run_name='__main__')\n"
+    )
+
+    def _assert_hint(self, poison, dep_name):
+        result = _run("-c", poison + self._RUN_AS_MAIN)
+        self.assertEqual(result.returncode, 2, msg=result.stderr)
+        self.assertIn("s7-catalog: missing dependency", result.stderr)
+        self.assertIn(repr(dep_name), result.stderr)
+        self.assertIn("pip install -r s7_mcp/requirements.txt", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_missing_httpx_prints_hint_and_exits_2(self):
+        """``sys.modules['httpx'] = None`` simulates the package absent."""
+        self._assert_hint("import sys; sys.modules['httpx'] = None\n", "httpx")
+
+    def test_missing_mcp_prints_hint_and_exits_2(self):
+        """A meta-path blocker makes ``mcp`` absent with a real
+        ``ModuleNotFoundError(name='mcp')`` — like an uninstalled SDK."""
+        poison = (
+            "import sys, importlib.abc\n"
+            "class _Block(importlib.abc.MetaPathFinder):\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name == 'mcp' or name.startswith('mcp.'):\n"
+            "            raise ModuleNotFoundError("
+            "'No module named %r' % name, name=name)\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, _Block())\n"
+        )
+        self._assert_hint(poison, "mcp")
+
+    def test_unrelated_import_error_under_main_propagates(self):
+        """A non-dep ImportError under ``__main__`` keeps its real name:
+        traceback, exit other than 2, no hint — the guard never claims
+        failures rooted outside ``mcp``/``httpx``."""
+        result = _run(
+            "-c",
+            "import sys; sys.modules['json'] = None\n" + self._RUN_AS_MAIN,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 2)
+        self.assertIn("Traceback", result.stderr)
+        self.assertNotIn("missing dependency", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_nameless_import_error_under_main_propagates(self):
+        """A bare ``ImportError`` (``name=None``) inside a dependency is
+        a broken environment, not missing requirements: it propagates
+        instead of crashing on ``None.split`` or printing the hint."""
+        poison = (
+            "import sys, importlib.abc\n"
+            "class _Boom(importlib.abc.MetaPathFinder):\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name == 'mcp' or name.startswith('mcp.'):\n"
+            "            raise ImportError('boom')  # no name=\n"
+            "        return None\n"
+            "sys.meta_path.insert(0, _Boom())\n"
+        )
+        result = _run("-c", poison + self._RUN_AS_MAIN)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 2)
+        self.assertIn("Traceback", result.stderr)
+        self.assertIn("ImportError: boom", result.stderr)
+        self.assertNotIn("missing dependency", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_library_import_propagates_import_error(self):
+        """Imported as a library (``__name__ != '__main__'``) the missing
+        dependency raises ``ImportError`` — never ``SystemExit``: traceback,
+        exit other than 2, no hint, stdout stays clean."""
+        result = _run(
+            "-c",
+            "import sys; sys.modules['httpx'] = None\n"
+            "import s7_mcp.catalog_server\n",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 2)
+        self.assertIn("Traceback", result.stderr)
+        self.assertRegex(
+            result.stderr, r"(ModuleNotFoundError|ImportError)"
+        )
+        self.assertNotIn("missing dependency", result.stderr)
         self.assertEqual(result.stdout, "")
 
 

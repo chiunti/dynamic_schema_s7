@@ -21,6 +21,7 @@ from ..repositories.schema_repository import SchemaRepository
 from ..repositories.attribute_def_repository import AttributeDefRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.node_type_repository import NodeTypeRepository
+from ..utils import domain_lookup_value
 from .datatype_plugins import (
     datatype_validates_expressions,
     get_storage_type,
@@ -408,21 +409,9 @@ class SchemaValidationService:
     def _domain_lookup_value(value: Any) -> str:
         """Coerce a scalar to the string form stored in ``DomainItem.value``.
 
-        ``value`` is a CharField: bools are stored lowercase
-        ('true'/'false'), so passing the raw Python value would miss the
-        lookup. Integral numbers normalize to their integer rendering —
-        a DecimalField read returns ``Decimal('5.0000000000')`` whose
-        ``str()`` form ('5.0000000000') would miss catalog item '5',
-        while the write path looked up the JSON integer ``5`` as '5'.
-        Non-integral numbers keep their plain ``str()`` form. Mirror of
-        the import pipeline's coercion.
+        Shared normalization lives in :func:`schemas.utils.domain_lookup_value`
+        (bool → 'true'/'false'; integral ``Decimal``/``float`` → ``str(int(v))``)
+        — the write path and the post-apply revalidator must never drift again
+        (an un-normalized integral float caused a false ``invalid_domain_value``).
         """
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, Decimal):
-            if value.is_finite() and value == value.to_integral_value():
-                return str(int(value))
-            return str(value)
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
-        return str(value)
+        return domain_lookup_value(value)

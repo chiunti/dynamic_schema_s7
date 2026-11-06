@@ -5,6 +5,7 @@ Utility functions for the schemas app.
 import functools
 import json
 import uuid
+from decimal import Decimal
 from typing import Any, Callable, Dict
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -75,6 +76,28 @@ def json_body(request) -> dict:
         from .constants import ERR_JSON_BODY_MUST_BE_OBJECT
         raise ValueError(ERR_JSON_BODY_MUST_BE_OBJECT)
     return parsed
+
+
+def domain_lookup_value(value: Any) -> str:
+    """Coerce a scalar to the string form stored in ``DomainItem.value``.
+
+    ``value`` is a CharField: bools are stored lowercase
+    ('true'/'false'), so passing the raw Python value would miss the
+    lookup. Integral numbers normalize to their integer rendering —
+    a DecimalField read returns ``Decimal('5.0000000000')`` whose
+    ``str()`` form ('5.0000000000') would miss catalog item '5',
+    while the write path looked up the JSON integer ``5`` as '5'.
+    Non-integral numbers keep their plain ``str()`` form.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Decimal):
+        if value.is_finite() and value == value.to_integral_value():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def org_to_dict(org: Organization) -> Dict[str, Any]:

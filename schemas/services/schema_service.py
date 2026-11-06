@@ -28,6 +28,7 @@ from .datatype_plugins import (
 )
 from .exceptions import SchemaValidationError
 from .schema_validation_service import SchemaValidationService
+from ..utils import domain_lookup_value
 from ..constants import (
     ERR_VERSION_NOT_SET,
     ERR_STATUS_ATTRIBUTE_NOT_FOUND,
@@ -2447,15 +2448,15 @@ class SchemaService:
         )
 
     @staticmethod
-    def _domain_lookup_value(value) -> str:
+    def _domain_lookup_value(value: Any) -> str:
         """Coerce a scalar to the string form stored in ``DomainItem.value``.
 
-        ``value`` is a CharField: bools are stored lowercase ('true'/'false'),
-        so passing the raw Python value would miss the lookup.
+        Shared normalization lives in :func:`schemas.utils.domain_lookup_value`
+        (bool → 'true'/'false'; integral ``Decimal``/``float`` → ``str(int(v))``)
+        — the write path and the post-apply revalidator must never drift again
+        (an un-normalized integral float caused a false ``invalid_domain_value``).
         """
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
+        return domain_lookup_value(value)
 
     def _effective_domain(self, node_type, json_key: str, variant_key: Optional[str], attr_def):
         """Resolve the domain that governs strict scalar checks for an attribute.

@@ -104,7 +104,8 @@ class FixtureService:
         """Inventory fixture files with per-row load status.
 
         Status is derived by matching fixture PKs against the DB:
-        ``not_loaded`` / ``partial`` / ``loaded``. A file that cannot be
+        ``not_loaded`` / ``partial`` / ``loaded`` (an empty file is
+        ``not_loaded`` — nothing can be applied). A file that cannot be
         parsed as a fixture payload degrades per file to ``invalid`` —
         the entry carries the failure detail in ``error`` and the
         listing survives instead of failing the whole view.
@@ -129,7 +130,7 @@ class FixtureService:
                     for label, pks in pks_by_model.items()
                 )
                 total = len(objects)
-                if existing == total:
+                if total and existing == total:
                     status = 'loaded'
                 elif existing:
                     status = 'partial'

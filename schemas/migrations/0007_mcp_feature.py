@@ -2237,6 +2237,7 @@ class Migration(migrations.Migration):
                     models.CharField(blank=True, max_length=64, null=True),
                 ),
                 ("validation_report", models.JSONField(blank=True, null=True)),
+                ("review_note", models.TextField(blank=True, null=True)),
                 ("applied_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(default=django.utils.timezone.now)),
                 ("updated_at", models.DateTimeField(auto_now=True)),

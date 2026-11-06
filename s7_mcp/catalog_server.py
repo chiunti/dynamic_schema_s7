@@ -78,8 +78,9 @@ def s7_propose_changeset(ops: list[dict], rationale: str,
     The endpoint persists the changeset and validates it synchronously,
     so the 201 envelope is the serialized changeset — ``{id, status,
     ops, rationale, scopes, base_revision, validation_report,
-    proposed_by_credential, proposed_by_user, reviewed_by, applied_at,
-    created_at, updated_at}`` — with ``status`` already ``valid`` or
+    proposed_by_credential, proposed_by_user, reviewed_by, review_note,
+    applied_at, created_at, updated_at}`` — with ``status`` already
+    ``valid`` or
     ``invalid``. A validation failure is still a persisted 201, not an
     error: ``validation_report.findings`` — entries ``{op_index,
     severity, entity, code, message, remediation?}`` classified

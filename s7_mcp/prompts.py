@@ -183,7 +183,9 @@ findings the revision addresses. Iterate until `status` is `valid`. Only \
 5. HAND-OFF — a `valid` changeset is ready for human review: tell the user \
 to approve and apply it in the admin. There is intentionally no \
 approve/apply/reject tool — review verdicts and the governed apply are \
-human actions, never credential capabilities.
+human actions, never credential capabilities. If a later `s7_get_changeset` \
+shows `rejected`, its `review_note` carries the reviewer's reason — \
+address it in a NEW changeset (`rejected` is terminal).
 
 Gates: every tool here requires a user MCP token with `mcp_level >= 2` plus \
 the `can_propose_changeset` flag (401 without a token; 403 for a project \

@@ -162,7 +162,8 @@ class S7Client:
         the changeset and validates it synchronously, so the 201 envelope
         is the serialized changeset — ``{id, status, ops, rationale,
         scopes, base_revision, validation_report, proposed_by_credential,
-        proposed_by_user, reviewed_by, applied_at, created_at,
+        proposed_by_user, reviewed_by, review_note, applied_at,
+        created_at,
         updated_at}`` — with ``status`` already ``valid`` or ``invalid``.
         A validation failure is still a persisted 201, not an error:
         ``validation_report.findings`` (``{op_index, severity, entity,

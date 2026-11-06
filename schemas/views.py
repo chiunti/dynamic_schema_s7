@@ -142,6 +142,7 @@ def _serialize_changeset(changeset) -> dict:
             if changeset.reviewed_by_id
             else None
         ),
+        "review_note": changeset.review_note,
         "applied_at": (
             changeset.applied_at.isoformat() if changeset.applied_at else None
         ),

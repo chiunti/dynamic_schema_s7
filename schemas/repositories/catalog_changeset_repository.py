@@ -64,6 +64,7 @@ class CatalogChangeSetRepository:
             "validation_report",
             "base_revision",
             "reviewed_by",
+            "review_note",
             "applied_at",
             "ops",
             "rationale",

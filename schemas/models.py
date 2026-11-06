@@ -866,6 +866,7 @@ class CatalogChangeSet(models.Model):
         null=True,
         blank=True,
     )
+    review_note = models.TextField(null=True, blank=True)
     applied_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)

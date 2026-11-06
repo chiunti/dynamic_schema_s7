@@ -54,6 +54,7 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
         "report_findings",
         "report_pretty",
         "reviewed_by",
+        "review_note",
         "applied_at",
         "created_at",
         "updated_at",
@@ -92,6 +93,7 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
             ("Review", {
                 "fields": (
                     "reviewed_by",
+                    "review_note",
                     "applied_at",
                     "created_at",
                     "updated_at",

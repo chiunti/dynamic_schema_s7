@@ -494,7 +494,9 @@ class CatalogChangeSetService:
         ``applied`` and the terminal states raise
         ``ChangesetStateConflictError`` — the 409 signal. The same
         ``scope_check`` gate as :meth:`propose` runs post-validation
-        and rolls the correction back on rejection.
+        and rolls the correction back on rejection. Re-proposal also
+        clears ``review_note``: a verdict written against the old
+        payload must not describe the new one.
 
         Args:
             changeset_id: changeset UUID or its string form.
@@ -523,7 +525,7 @@ class CatalogChangeSetService:
                 changeset.status, CHANGESET_STATUS_VALIDATING,
             )
         self.changeset_repository.update_fields(
-            changeset, ops=ops, rationale=rationale,
+            changeset, ops=ops, rationale=rationale, review_note=None,
         )
         self.validate(changeset)
         self._enforce_scope_check(changeset, scope_check)
@@ -692,16 +694,19 @@ class CatalogChangeSetService:
         terminal — the proposer's corrective arm after it is a
         fresh proposal (before verdict, :meth:`patch` covers the
         re-proposable states). The reviewer is recorded in
-        ``reviewed_by`` and the audit LogEntry carries the
-        optional reason appended.
+        ``reviewed_by`` and the stripped reason persists on
+        ``review_note`` — the proposer-facing verdict the API
+        serializes — while the audit LogEntry carries a truncated
+        copy appended.
 
         Args:
             changeset: a ``CatalogChangeSet`` instance or its id —
                 ids resolve through :meth:`get_changeset`.
             user: the reviewing user; stored as ``reviewed_by``
                 and attributed the audit LogEntry.
-            reason: free-text verdict context; appended to the
-                LogEntry's ``change_message``, stripped and
+            reason: free-text verdict context; persisted verbatim
+                (stripped) on ``review_note`` for the proposer and
+                appended to the LogEntry's ``change_message``
                 truncated to a scannable length.
 
         Returns:
@@ -731,12 +736,13 @@ class CatalogChangeSetService:
             raise ChangesetStateConflictError(
                 changeset.status, CHANGESET_STATUS_REJECTED,
             )
+        reason = (reason or '').strip()
         self.changeset_repository.update_fields(
             changeset,
             status=CHANGESET_STATUS_REJECTED,
             reviewed_by=user,
+            review_note=reason or None,
         )
-        reason = (reason or '').strip()
         change_message = 'rejected changeset'
         if reason:
             # Bound the audit line — LogEntry rows stay scannable;

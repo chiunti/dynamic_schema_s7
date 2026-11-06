@@ -99,11 +99,12 @@ changeset's attributable user proposer, chain the real
 ``approve()`` + ``apply()`` inside the same transaction. Every
 reviewer gate still runs under one commit; the ``auto:`` markers
 on ``review_note`` and the audit LogEntry keep machine-applied
-changesets greppably distinct from human verdicts. A
-cross-proposer ``patch`` (the acting user differs from the
-persisted proposer) still edits the document, but its result
-waits for human review exactly as without the flag — the arm
-never applies under an identity that did not author the proposal.
+changesets greppably distinct from human verdicts. PATCH is
+ownership-gated (AI-169): the document belongs to its proposer, so
+a cross-proposer call — the acting user differs from the persisted
+``proposed_by_user`` — is refused with ``ChangesetNotProposerError``
+before anything mutates, and the arm's own identity check stays as
+defense in depth for ``actor=None`` internal callers.
 """
 
 import hashlib
@@ -140,6 +141,7 @@ from ..constants import (
     ERR_CHANGESET_DISCRIMINATOR_UNRESOLVED,
     ERR_CHANGESET_DUP_JSON_KEY,
     ERR_CHANGESET_INVALID_TRANSITION,
+    ERR_CHANGESET_NOT_PROPOSER_MSG,
     ERR_CHANGESET_OP_DUP_TARGET,
     ERR_CHANGESET_OP_FIELD_INVALID,
     ERR_CHANGESET_OP_FIELD_MISSING,
@@ -167,6 +169,7 @@ from ..repositories.schema_repository import SchemaRepository
 from .catalog_import_service import CatalogImportService
 from .exceptions import (
     ChangesetNotFoundError,
+    ChangesetNotProposerError,
     ChangesetStateConflictError,
 )
 from .fixture_service import FK_FIELDS, NATURAL_KEY_FIELDS
@@ -569,6 +572,16 @@ class CatalogChangeSetService:
         clears ``review_note``: a verdict written against the old
         payload must not describe the new one.
 
+        The document belongs to its proposer (AI-169): when ``actor``
+        is a user other than ``proposed_by_user`` — which any real
+        user is on credential-proposed documents, whose
+        ``proposed_by_user_id`` is NULL — the call raises
+        ``ChangesetNotProposerError`` right after the ``FOR UPDATE``
+        fetch and before the transition gate, so a refused patch
+        touches neither ``patch_count`` nor ``review_note``.
+        ``actor=None`` skips the ownership gate and is reserved for
+        internal callers.
+
         When ``auto_apply_additive`` is set, the auto-apply arm of
         :meth:`propose` runs after the scope gate: a purely additive
         re-validation lands ``approved → applied`` inside this
@@ -576,14 +589,10 @@ class CatalogChangeSetService:
         above leaves room for the arm's ``auto:`` marker — never the
         other way around, since nothing writes the note between the
         scope gate and the arm. The arm fires ONLY when ``actor`` IS
-        the changeset's ``proposed_by_user``: PATCH keeps its
-        shared-document semantics — any principal the endpoint
-        admits may correct another proposer's payload — but the
-        chained verdict attributes ``reviewed_by`` and the audit
-        LogEntry to the proposer, so a cross-proposer patch never
-        auto-applies (it would mint a machine verdict under an
-        identity that did not act); the corrected document simply
-        waits for human review exactly as without the flag.
+        the changeset's ``proposed_by_user`` — the ownership gate
+        above already guarantees it at the API surface; the arm's own
+        identity check stays as defense in depth for ``actor=None``
+        internal callers.
 
         Args:
             changeset_id: changeset UUID or its string form.
@@ -594,9 +603,11 @@ class CatalogChangeSetService:
             actor: the principal executing the patch — the acting
                 user the HTTP layer resolves (``request.user``),
                 arriving as a plain model instance so this service
-                never imports the auth layer. ``None`` (or a user
-                different from the changeset's
-                ``proposed_by_user``) vetoes the auto-apply arm.
+                never imports the auth layer. A user other than the
+                changeset's ``proposed_by_user`` is refused with
+                ``ChangesetNotProposerError``; ``None`` skips the
+                ownership gate (internal callers only) and still
+                vetoes the auto-apply arm.
 
         Returns:
             The same ``CatalogChangeSet`` instance at ``valid`` or
@@ -605,6 +616,10 @@ class CatalogChangeSetService:
 
         Raises:
             ChangesetNotFoundError: no changeset row with that id.
+            ChangesetNotProposerError: ``actor`` is a user other than
+                the changeset's ``proposed_by_user`` — every real
+                user is refused on credential-proposed documents
+                (``proposed_by_user_id`` NULL).
             ChangesetStateConflictError: the current status has no
                 ``→ validating`` edge.
             ValueError: malformed ``changeset_id``, repository
@@ -615,6 +630,14 @@ class CatalogChangeSetService:
                 same post-validation gate as :meth:`propose`.
         """
         changeset = self.get_changeset(changeset_id, for_update=True)
+        # Ownership gate (AI-169): PATCH is the proposer's corrective
+        # arm, so the document belongs to its proposing user — any
+        # other acting user is refused before anything mutates.
+        # ``actor=None`` keeps the gate open for internal callers;
+        # credential-proposed documents (``proposed_by_user_id``
+        # NULL) match no real user and are never patchable via API.
+        if actor is not None and actor.pk != changeset.proposed_by_user_id:
+            raise ChangesetNotProposerError(ERR_CHANGESET_NOT_PROPOSER_MSG)
         if not self.can_transition(
             changeset.status, CHANGESET_STATUS_VALIDATING,
         ):

@@ -19,6 +19,7 @@ from .authentication import (
     UserMCPTokenPermission,
 )
 from .constants import (
+    ERR_CHANGESET_NOT_PROPOSER,
     ERR_CHANGESET_SCOPES_NOT_COVERED,
     ERR_INTERNAL_SERVER_ERROR,
     ERR_INVALID_REQUEST,
@@ -37,6 +38,7 @@ from .services.catalog_service import CatalogService
 from .services.exceptions import (
     CatalogObjectNotFoundError,
     ChangesetNotFoundError,
+    ChangesetNotProposerError,
     ChangesetStateConflictError,
     ScopeNotFoundError,
 )
@@ -750,21 +752,24 @@ class CatalogChangeSetDetailView(APIView):
     feedback loop) — and the same ``can_auto_apply_additive`` arm as
     the propose applies (AI-33): a purely-additive revision may chain
     approve+apply in-request, so the 200 may carry ``applied`` (or
-    ``stale`` on apply-gate drift) instead of ``valid``. The
-    auto-apply only runs when the acting user IS the changeset's
-    proposer — PATCH stays a shared document (any admitted principal
-    may correct another proposer's payload), but a cross-proposer
-    patch's result waits for human review. PATCH requires
+    ``stale`` on apply-gate drift) instead of ``valid``. PATCH is
+    ownership-gated (AI-169): the document belongs to its proposer,
+    so an acting user other than ``proposed_by_user`` answers 403
+    ``changeset_not_proposer`` before anything mutates —
+    credential-proposed changesets, whose ``proposed_by_user`` is
+    NULL, are not patchable through the API at all. PATCH requires
     a ``→ validating`` edge on the current status — ``draft``,
     ``validating``, ``approved``, ``applied``, ``rejected`` and
     ``superseded`` answer 409 with the invalid-transition message.
 
     Same gate as the collection view (``CanProposeChangeset``): 401
-    without a token, 403 for credentials/L1/flag-less tokens, plus a
-    per-instance 403 when the token's ``allowed_scopes`` do not cover
-    the changeset's derived ``scopes`` — enforced on ``GET`` after the
-    fetch (``ERR_CHANGESET_SCOPES_NOT_COVERED`` envelope) and through
-    ``scope_check`` inside ``PATCH``.
+    without a token, 403 for credentials/L1/flag-less tokens. The
+    per-instance 403 has two causes on ``PATCH`` —
+    ``changeset_not_proposer`` above and
+    ``changeset_scopes_not_covered`` when the token's
+    ``allowed_scopes`` do not cover the changeset's derived
+    ``scopes``; the scope cause also fires on ``GET`` after the fetch
+    (``ERR_CHANGESET_SCOPES_NOT_COVERED`` envelope).
     """
 
     authentication_classes = [UserMCPTokenAuthentication, ProjectTokenAuthentication]
@@ -834,6 +839,14 @@ class CatalogChangeSetDetailView(APIView):
             )
         except ChangesetStateConflictError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
+        except ChangesetNotProposerError as exc:
+            return Response(
+                {
+                    "error": ERR_CHANGESET_NOT_PROPOSER,
+                    "message": str(exc),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         except PermissionError as exc:
             return Response(
                 {

@@ -214,10 +214,13 @@ ERR_USAGE_UNKNOWN_NK_PARAMS = "unknown identifier parameters: {params} — natur
 # /api/catalog/changesets/ (views.CatalogChangeSetListCreateView,
 # views.CatalogChangeSetDetailView). The 400 family reuses the shared
 # ERR_INVALID_REQUEST code; lifecycle conflicts surface the raise-level
-# ERR_CHANGESET_INVALID_TRANSITION message under a 409 status.
+# ERR_CHANGESET_INVALID_TRANSITION message under a 409 status, and a
+# non-proposer PATCH surfaces ERR_CHANGESET_NOT_PROPOSER under 403.
 ERR_CHANGESET_NOT_FOUND = "changeset_not_found"
 ERR_CHANGESET_SCOPES_NOT_COVERED = "changeset_scopes_not_covered"
 ERR_CHANGESET_SCOPES_NOT_COVERED_MSG = "token allowed_scopes do not cover the changeset scopes: {scopes}"
+ERR_CHANGESET_NOT_PROPOSER = "changeset_not_proposer"
+ERR_CHANGESET_NOT_PROPOSER_MSG = "only the proposing user may patch this changeset"
 
 # Catalog changeset validation — codes emitted inside the changeset's
 # validation_report JSONB by CatalogChangeSetService.validate()

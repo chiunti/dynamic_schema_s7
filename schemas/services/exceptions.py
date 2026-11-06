@@ -7,6 +7,7 @@ from ..constants import (
     ERR_CATALOG_OBJECT_NOT_FOUND,
     ERR_CHANGESET_INVALID_TRANSITION,
     ERR_CHANGESET_NOT_FOUND,
+    ERR_CHANGESET_NOT_PROPOSER_MSG,
     ERR_INVALID_SCHEMA,
     ERR_SCOPE_NOT_FOUND,
 )
@@ -116,3 +117,24 @@ class ChangesetStateConflictError(ValueError):
         )
         self.from_status = from_status
         self.to_status = to_status
+
+
+class ChangesetNotProposerError(PermissionError):
+    """Ownership rejection on a changeset mutation — the 403 signal.
+
+    Raised by ``CatalogChangeSetService.patch()`` when the acting user
+    is not the changeset's ``proposed_by_user`` — including every real
+    user on credential-proposed documents, whose
+    ``proposed_by_user_id`` is NULL and which are never patchable
+    through the API. ``str(exc)`` yields
+    ``ERR_CHANGESET_NOT_PROPOSER_MSG``. Subclasses ``PermissionError``
+    so service callers that already catch ``PermissionError`` keep
+    working — HTTP layers must catch it BEFORE the generic
+    ``PermissionError`` arm to emit the dedicated
+    ``ERR_CHANGESET_NOT_PROPOSER`` code.
+    """
+
+    def __init__(
+        self, message: str = ERR_CHANGESET_NOT_PROPOSER_MSG,
+    ) -> None:
+        super().__init__(message)

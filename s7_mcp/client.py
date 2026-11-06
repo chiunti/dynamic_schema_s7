@@ -220,7 +220,11 @@ class S7Client:
         ``validation_report``.
 
         Error envelopes: 404 ``{"error": "changeset_not_found",
-        "changeset_id"}`` on an unknown id; 409 ``{"error": "changeset
+        "changeset_id"}`` on an unknown id; 403 ``{"error":
+        "changeset_not_proposer"}`` when the token's user did not
+        propose the changeset — PATCH is proposer-only, so a
+        ``proposed_by_credential`` changeset (no ``proposed_by_user``)
+        has no API owner and always answers it; 409 ``{"error": "changeset
         cannot transition from '<status>' to 'validating'"}`` when the
         current status has no ``→ validating`` edge — only ``proposed``,
         ``invalid``, ``valid`` and ``stale`` accept PATCH (``draft``,

@@ -416,7 +416,7 @@ The `s7-author` MCP server (`s7_mcp/`) wraps this surface for local AI agents: c
 | GET | `/api/catalog/usage/` | `can_read` · MCP L2 | Usage pre-check for one catalog object — `?model=schemas.<label>&pk=<uuid>` XOR natural-key params; 200 carries `{implemented, usage}` (same evidence as the import gate) |
 | POST | `/api/catalog/changesets/` | MCP L2 + `can_propose_changeset` | Propose a governed catalog changeset — validates synchronously; 201 carries final `status` (`valid`/`invalid`, or `applied`/`stale` when `can_auto_apply_additive` lets a purely additive payload apply in-request) + `validation_report` |
 | GET | `/api/catalog/changesets/{id}/` | MCP L2 + `can_propose_changeset` | Changeset status + full `validation_report` and `post_apply_report` — the agent's feedback channel |
-| PATCH | `/api/catalog/changesets/{id}/` | MCP L2 + `can_propose_changeset` | Replace `ops`/`rationale` on the same changeset and re-validate (corrected-ops feedback loop); 409 on non-re-proposable statuses — a purely additive payload under `can_auto_apply_additive` may land `applied`/`stale` |
+| PATCH | `/api/catalog/changesets/{id}/` | MCP L2 + `can_propose_changeset` | Replace `ops`/`rationale` on the same changeset and re-validate (corrected-ops feedback loop); proposer-only — a token whose user did not propose the changeset answers 403 `changeset_not_proposer` (`proposed_by_credential` changesets have no API owner); 409 on non-re-proposable statuses — a purely additive payload under `can_auto_apply_additive` may land `applied`/`stale` |
 
 **Schema Response Format:**
 ```json

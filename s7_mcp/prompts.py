@@ -179,7 +179,11 @@ finding means the changeset is `invalid`.
 4. FIX — call `s7_fix_changeset` on the same changeset with the corrected \
 `ops` (they replace the document wholesale — resubmit every op you want to \
 keep) and a NEW non-blank `rationale`, required on every PATCH — say which \
-findings the revision addresses. Iterate until `status` is `valid`. Only \
+findings the revision addresses. Iterate until `status` is `valid`. PATCH \
+is proposer-only — it applies to changesets your token's user proposed: \
+another user's changeset answers 403 `changeset_not_proposer`, and a \
+`proposed_by_credential` one (no `proposed_by_user`) has no API owner, so \
+corrections there must be resubmitted as a NEW changeset of your own. Only \
 `proposed`, `invalid`, `valid` and `stale` accept PATCH; `draft`, \
 `validating`, `approved`, `applied`, `rejected` and `superseded` answer 409.
 

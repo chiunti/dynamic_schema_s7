@@ -172,9 +172,15 @@ def s7_fix_changeset(changeset_id: str, ops: list[dict], rationale: str,
     ``proposed``, ``invalid``, ``valid`` and ``stale``. ``draft``,
     ``validating``, ``approved``, ``applied``, ``rejected`` and
     ``superseded`` answer 409 ``{"error": "changeset cannot transition
-    from '<status>' to 'validating'"}``. The 404/400 envelopes match the
-    read and the propose verbatim; the scope-check 403 carries
-    ``message``, as on the propose (the read echoes ``scopes`` instead).
+    from '<status>' to 'validating'"}``. The patch is also
+    proposer-only: a token whose user did not propose the changeset
+    answers 403 ``{"error": "changeset_not_proposer"}`` — and a
+    changeset proposed by a project credential
+    (``proposed_by_credential``, no ``proposed_by_user``) has no API
+    owner to patch as, so it always answers the same 403. The 404/400
+    envelopes match the read and the propose verbatim; the scope-check
+    403 carries ``message``, as on the propose (the read echoes
+    ``scopes`` instead).
     """
     return _get_client(ctx).fix_changeset(changeset_id, ops, rationale)
 

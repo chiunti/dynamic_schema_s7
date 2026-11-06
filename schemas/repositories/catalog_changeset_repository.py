@@ -8,18 +8,29 @@ maps database errors; lifecycle transition enforcement, ops validation
 and scope derivation live in the service layer.
 """
 
+import re
 import uuid
+from collections import Counter
+from datetime import datetime
+from statistics import mean, median
 from typing import Optional
 
 from django.apps import apps
 from django.contrib.admin.models import CHANGE
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import DatabaseError, IntegrityError, transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 
 from ..constants import (
+    CHANGESET_STATUS_APPLIED,
+    CHANGESET_STATUS_APPROVED,
     CHANGESET_STATUS_DRAFT,
+    CHANGESET_STATUS_REJECTED,
+    CHANGESET_STATUS_STALE,
+    CHANGESET_STATUS_SUPERSEDED,
+    CHANGESET_STATUS_VALID,
     CHANGESET_TRANSITIONS,
     ERR_CHANGESET_FIELDS_NOT_MUTABLE,
     ERR_CHANGESET_MUST_BE_INSTANCE,
@@ -27,6 +38,8 @@ from ..constants import (
     ERR_CHANGESET_PROPOSER_XOR,
     ERR_CHANGESET_RATIONALE_MUST_BE_STRING,
     ERR_CHANGESET_SCOPES_MUST_BE_LIST_OR_NONE,
+    ERR_CHANGESET_PATCH_COUNT_MUST_BE_INT,
+    ERR_CHANGESET_SINCE_MUST_BE_DATETIME_OR_NONE,
     ERR_CHANGESET_STATUS_MUST_BE_VALID,
     ERR_PK_MUST_BE_VALID_UUID,
 )
@@ -69,6 +82,7 @@ class CatalogChangeSetRepository:
             "applied_at",
             "ops",
             "rationale",
+            "patch_count",
         }
     )
 
@@ -243,6 +257,11 @@ class CatalogChangeSetRepository:
             raise ValueError(ERR_CHANGESET_SCOPES_MUST_BE_LIST_OR_NONE)
         if "rationale" in fields and not isinstance(fields["rationale"], str):
             raise ValueError(ERR_CHANGESET_RATIONALE_MUST_BE_STRING)
+        if "patch_count" in fields and (
+            not isinstance(fields["patch_count"], int)
+            or isinstance(fields["patch_count"], bool)
+        ):
+            raise ValueError(ERR_CHANGESET_PATCH_COUNT_MUST_BE_INT)
         for name, value in fields.items():
             setattr(changeset, name, value)
         changeset.updated_at = timezone.now()
@@ -497,3 +516,385 @@ class CatalogChangeSetRepository:
                 )
         except Exception:
             pass
+
+    # Final-state "was valid" numerator: ``valid`` itself plus the
+    # statuses only reachable through it — ``approved`` (``valid →
+    # approved``), ``applied`` (``approved → applied``) and ``stale``
+    # (``approved → stale`` is its only inbound edge, so a stale row
+    # is proven to have passed valid+approved — drift at apply time
+    # does not erase that). ``superseded`` and ``rejected`` are
+    # excluded — both are reachable from non-valid statuses, so the
+    # snapshot cannot tell whether they ever were valid (conservative
+    # undercount).
+    _METRIC_VALID_OR_BETTER = frozenset(
+        {
+            CHANGESET_STATUS_VALID,
+            CHANGESET_STATUS_APPROVED,
+            CHANGESET_STATUS_APPLIED,
+            CHANGESET_STATUS_STALE,
+        }
+    )
+    # Review verdicts: the approve arm (approved — with ``applied``
+    # folded in as the approved-and-executed end state) versus the
+    # reject arm. ``stale``/``superseded`` are operational outcomes,
+    # not verdicts — they stay out of this denominator.
+    _METRIC_VERDICT_ACCEPT = frozenset(
+        {CHANGESET_STATUS_APPROVED, CHANGESET_STATUS_APPLIED}
+    )
+    # ``updated_at`` last moved with the decision write for these
+    # statuses — the "time to verdict" proxy.
+    _METRIC_DECIDED = frozenset(
+        {
+            CHANGESET_STATUS_APPROVED,
+            CHANGESET_STATUS_REJECTED,
+            CHANGESET_STATUS_APPLIED,
+        }
+    )
+
+    def changeset_metrics(self, since: Optional[datetime] = None) -> dict:
+        """Snapshot metrics over the changeset loop's final state.
+
+        Read-only aggregation feeding the private ``changeset_metrics``
+        command — a point-in-time report over the rows' CURRENT status
+        plus the audit LogEntry trail, not an event reconstruction.
+        JSON blobs (``ops``, ``validation_report``) are aggregated in
+        Python at snapshot scale rather than via jsonb operators.
+
+        Report shape::
+
+            {
+                "window": {"since": iso|None, "total": int},
+                "by_status": {status: int},
+                "rates": {
+                    "proposed_total": int,          # denominator below
+                    "valid_or_better": {"count": int, "ratio": f|None},
+                    "approved_or_applied": int,
+                    "rejected": int,
+                    "verdict_total": int,           # approved_or_applied
+                                                  # + rejected
+                    "approve_ratio": f|None,
+                    "reject_ratio": f|None,
+                    "superseded": {"count": int, "ratio": f|None},
+                },
+                "iterations": {
+                    "patch_rounds_per_changeset":
+                        {"mean": f|None, "median": f|None, "max": int},
+                    "patch_rounds_to_valid":
+                        {"mean": f|None, "median": f|None, "max": int},
+                    "audit_entries_per_changeset":
+                        {"mean": f|None, "median": f|None, "max": int},
+                    "audited_changesets": int,
+                    "by_verb": {verb: int},
+                },
+                "tiers_passed": {tier_value|unvalidated|unknown: int},
+                "top_ops": [{"op": str, "count": int}],          # <=5
+                "top_findings": [{"code": str, "count": int}],   # <=5
+                "durations_seconds": {
+                    "applied": {"count": int, "mean": f|None,
+                                "median": f|None},
+                    "decided": {"count": int, "mean": f|None,
+                                "median": f|None},
+                },
+            }
+
+        Denominators, populations and heuristics:
+
+        - ``proposed_total`` = every changeset that left ``draft``
+          (``total − draft``): all non-draft resting statuses passed
+          through ``proposed``, so it is the honest "was proposed"
+          population. Transient ``proposed``/``validating`` rows count
+          too — none rest there, but a mid-request snapshot could
+          carry them.
+        - ``valid_or_better.ratio`` = (valid+approved+applied+stale) /
+          proposed_total — see ``_METRIC_VALID_OR_BETTER``: ``stale``
+          counts because ``approved → stale`` is its only inbound edge
+          (a stale row provably passed valid+approved), while
+          ``superseded``/``rejected`` stay out — both are reachable
+          from non-valid statuses, so the snapshot cannot tell whether
+          they ever were valid (conservative undercount).
+        - ``verdict_total`` = approved_or_applied + rejected — the
+          shared denominator ``approve_ratio``/``reject_ratio`` divide
+          by, exported so consumers never recompute it; both ratios
+          are ``None`` when no verdict exists yet. ``stale`` is no
+          verdict arm: it is an apply-time drift outcome, not a review
+          decision.
+        - ``superseded.ratio`` = superseded / proposed_total.
+        - ``top_ops`` / ``top_findings`` / ``tiers_passed`` read the
+          NON-DRAFT population (the same ``exclude(status='draft')``
+          as the patch-round arms): drafts never entered the propose
+          loop, so their payloads would report ops and validations
+          that never ran. ``by_status`` is the deliberate exception —
+          it lists every in-window row, drafts included.
+          ``top_findings`` groups by the finding ``code`` alone;
+          findings without a ``code`` and non-dict findings land in
+          the ``"<missing>"`` bucket — the same sentinel ops without
+          an ``op`` key use.
+        - Iterations carry two distinct populations:
+          ``patch_rounds_per_changeset`` aggregates the persisted
+          ``patch_count`` column over ALL NON-DRAFT changesets —
+          ``propose()`` writes 1 and each ``patch()`` adds 1 inside
+          the same transaction as the changeset write; ``invalid`` /
+          ``superseded`` / transient rows count too (their counters
+          censor mid-loop), so read it as "rounds spent per changeset
+          that left draft". ``patch_rounds_to_valid`` narrows to the
+          reached-valid final statuses (``_METRIC_VALID_OR_BETTER``)
+          — the "rounds to a valid proposal" distribution; a row
+          resting at ``invalid``/``rejected``/``superseded`` cannot be
+          proven to have passed ``valid`` and stays out. The counter
+          exists because proposer-side actions produce no
+          ``LogEntry``: token principals carry no user pk, so the
+          audit trail can never count the agent path.
+          ``audit_entries_per_changeset``, ``audited_changesets`` and
+          ``by_verb`` still describe the reviewer-side
+          ``record_changeset_action`` LogEntry trail (changeset
+          content type, ``object_id=str(pk)``,
+          ``action_flag=CHANGE``, verb = the ``change_message`` head —
+          the text before the first ``' — '`` or ``':'``). Their
+          population is ALL in-window changesets — drafts included,
+          zero-filled — deliberately wider than the patch-round arms
+          (non-draft / reached-valid): audit coverage is measured
+          over the whole window.
+        - ``durations_seconds.applied`` = ``applied_at − created_at``
+          over ``applied`` rows with ``applied_at`` set;
+          ``decided`` = ``updated_at − created_at`` over
+          ``_METRIC_DECIDED`` rows.
+
+        Args:
+            since: aware or naive datetime lower bound on
+                ``created_at``; ``None`` aggregates all rows.
+
+        Returns:
+            The JSON-serializable report dict described above.
+
+        Raises:
+            ValueError: ``since`` is neither a datetime nor ``None``.
+            RuntimeError: ``DatabaseError`` mapped — infrastructure;
+                a missing ``CatalogChangeSet`` content type
+                (``ObjectDoesNotExist`` from ``get_for_model``, which
+                is no ``DatabaseError``) maps there too.
+        """
+        if since is not None and not isinstance(since, datetime):
+            raise ValueError(
+                ERR_CHANGESET_SINCE_MUST_BE_DATETIME_OR_NONE.format(
+                    since=since
+                )
+            )
+        try:
+            queryset = CatalogChangeSet.objects.all()
+            if since is not None:
+                queryset = queryset.filter(created_at__gte=since)
+
+            total = queryset.count()
+            by_status = {
+                row["status"]: row["n"]
+                for row in queryset.values("status").annotate(
+                    n=Count("id")
+                )
+            }
+
+            proposed_total = total - by_status.get(
+                CHANGESET_STATUS_DRAFT, 0
+            )
+            valid_or_better = sum(
+                by_status.get(status, 0)
+                for status in self._METRIC_VALID_OR_BETTER
+            )
+            approved_or_applied = sum(
+                by_status.get(status, 0)
+                for status in self._METRIC_VERDICT_ACCEPT
+            )
+            rejected = by_status.get(CHANGESET_STATUS_REJECTED, 0)
+            verdicts = approved_or_applied + rejected
+            superseded = by_status.get(CHANGESET_STATUS_SUPERSEDED, 0)
+
+            # Ops/findings/tiers aggregate the non-draft population
+            # only — drafts never entered the propose loop, so their
+            # raw payloads would count ops and validations that never
+            # ran. ``by_status`` above is the deliberate exception:
+            # it lists every in-window row, drafts included.
+            non_draft = queryset.exclude(status=CHANGESET_STATUS_DRAFT)
+            op_counter: Counter = Counter()
+            finding_counter: Counter = Counter()
+            tiers_counter: Counter = Counter()
+            for ops, report in non_draft.values_list(
+                "ops", "validation_report"
+            ):
+                if isinstance(ops, list):
+                    for op in ops:
+                        name = op.get("op") if isinstance(op, dict) else None
+                        op_counter[
+                            str(name) if name is not None else "<missing>"
+                        ] += 1
+                if isinstance(report, dict):
+                    tiers = report.get("tiers_passed")
+                    tiers_counter[
+                        str(tiers) if tiers is not None else "unknown"
+                    ] += 1
+                    findings = report.get("findings")
+                    if isinstance(findings, list):
+                        for finding in findings:
+                            # Grouped by ``code`` alone; a missing
+                            # key — or a non-dict finding — lands in
+                            # the ``<missing>`` bucket like ops do.
+                            code = (
+                                finding.get("code")
+                                if isinstance(finding, dict)
+                                else None
+                            )
+                            finding_counter[
+                                str(code) if code is not None else "<missing>"
+                            ] += 1
+                else:
+                    tiers_counter["unvalidated"] += 1
+
+            # Audit trail: LogEntry rows anchored to this content type
+            # whose object_id points at an in-window changeset.
+            log_entry = apps.get_model("admin", "LogEntry")
+            content_type = apps.get_model("contenttypes", "ContentType")
+            changeset_ids = [
+                str(pk) for pk in queryset.values_list("id", flat=True)
+            ]
+            entries = (
+                log_entry.objects.filter(
+                    content_type_id=content_type.objects
+                    .get_for_model(CatalogChangeSet).pk,
+                    action_flag=CHANGE,
+                    object_id__in=changeset_ids,
+                ).values_list("object_id", "change_message")
+            )
+            all_counts: Counter = Counter()
+            verb_counter: Counter = Counter()
+            for object_id, change_message in entries:
+                verb = re.split(
+                    r"\s—\s|:", change_message or "", maxsplit=1
+                )[0].strip()
+                verb_counter[verb] += 1
+                all_counts[object_id] += 1
+            audit_counts = [
+                all_counts.get(changeset_id, 0)
+                for changeset_id in changeset_ids
+            ]
+
+            # Iteration counts come from the persisted patch_count
+            # column — the LogEntry trail cannot supply them:
+            # proposer-side writes produce no entries for token
+            # principals. Two populations:
+            # ``patch_rounds_per_changeset`` reads every non-draft row
+            # (drafts never entered the feedback loop) — invalid /
+            # superseded / transient counters censor mid-loop but
+            # still measure rounds spent; ``patch_rounds_to_valid``
+            # narrows to the reached-valid final statuses
+            # (``_METRIC_VALID_OR_BETTER``) for the honest
+            # "rounds to a valid proposal" distribution.
+            patch_counts = [
+                count if count is not None else 0
+                for count in non_draft.values_list(
+                    "patch_count", flat=True
+                )
+            ]
+            valid_patch_counts = [
+                count if count is not None else 0
+                for count in non_draft.filter(
+                    status__in=self._METRIC_VALID_OR_BETTER
+                ).values_list("patch_count", flat=True)
+            ]
+
+            applied_durations = [
+                (applied_at - created_at).total_seconds()
+                for created_at, applied_at in queryset.filter(
+                    status=CHANGESET_STATUS_APPLIED,
+                    applied_at__isnull=False,
+                ).values_list("created_at", "applied_at")
+            ]
+            decided_durations = [
+                (updated_at - created_at).total_seconds()
+                for created_at, updated_at in queryset.filter(
+                    status__in=self._METRIC_DECIDED
+                ).values_list("created_at", "updated_at")
+            ]
+        except IntegrityError as e:
+            raise ValueError(
+                f"CatalogChangeSet metrics violate integrity "
+                f"constraints: {e}"
+            ) from e
+        except ObjectDoesNotExist as e:
+            # ``get_for_model`` hits the contenttype table on a cache
+            # miss — a missing CatalogChangeSet ContentType row is
+            # infrastructure failure (``DoesNotExist`` is no
+            # ``DatabaseError``), mapped like one per this layer's
+            # convention.
+            raise RuntimeError(
+                f"CatalogChangeSet content type missing during "
+                f"changeset metrics: {e}"
+            ) from e
+        except DatabaseError as e:
+            raise RuntimeError(
+                f"Database error during changeset metrics: {e}"
+            ) from e
+
+        def _ratio(part: int, whole: int) -> Optional[float]:
+            return part / whole if whole else None
+
+        def _distribution(values: list) -> dict:
+            return {
+                "mean": mean(values) if values else None,
+                "median": median(values) if values else None,
+                "max": max(values) if values else 0,
+            }
+
+        def _duration_stats(values: list) -> dict:
+            return {
+                "count": len(values),
+                "mean": mean(values) if values else None,
+                "median": median(values) if values else None,
+            }
+
+        return {
+            "window": {
+                "since": since.isoformat() if since is not None else None,
+                "total": total,
+            },
+            "by_status": by_status,
+            "rates": {
+                "proposed_total": proposed_total,
+                "valid_or_better": {
+                    "count": valid_or_better,
+                    "ratio": _ratio(valid_or_better, proposed_total),
+                },
+                "approved_or_applied": approved_or_applied,
+                "rejected": rejected,
+                "verdict_total": verdicts,
+                "approve_ratio": _ratio(approved_or_applied, verdicts),
+                "reject_ratio": _ratio(rejected, verdicts),
+                "superseded": {
+                    "count": superseded,
+                    "ratio": _ratio(superseded, proposed_total),
+                },
+            },
+            "iterations": {
+                "patch_rounds_per_changeset": _distribution(
+                    patch_counts
+                ),
+                "patch_rounds_to_valid": _distribution(
+                    valid_patch_counts
+                ),
+                "audit_entries_per_changeset": _distribution(audit_counts),
+                "audited_changesets": len(all_counts),
+                "by_verb": dict(verb_counter.most_common()),
+            },
+            "tiers_passed": dict(
+                sorted(tiers_counter.items(), key=lambda item: item[0])
+            ),
+            "top_ops": [
+                {"op": name, "count": count}
+                for name, count in op_counter.most_common(5)
+            ],
+            "top_findings": [
+                {"code": code, "count": count}
+                for code, count in finding_counter.most_common(5)
+            ],
+            "durations_seconds": {
+                "applied": _duration_stats(applied_durations),
+                "decided": _duration_stats(decided_durations),
+            },
+        }

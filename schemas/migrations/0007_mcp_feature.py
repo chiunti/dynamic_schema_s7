@@ -34,6 +34,11 @@ from django.db.models import Q
 #    GinIndex (the contrib app is installed by this batch's feature
 #    commit). post_apply_report persists the post-apply revalidation
 #    outcome of the affected published schemas on the changeset itself.
+#    patch_count persists the propose/patch iteration counter (propose
+#    writes 1, each patch +1 — proposer-side actions produce no
+#    LogEntry for token principals, so the audit trail cannot count
+#    them); folded per the unpublished-batch carve-out, dev-local sync
+#    = manual ADD COLUMN since 0007 was already applied.
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -2240,6 +2245,7 @@ class Migration(migrations.Migration):
                 ),
                 ("validation_report", models.JSONField(blank=True, null=True)),
                 ("post_apply_report", models.JSONField(blank=True, null=True)),
+                ("patch_count", models.IntegerField(default=0)),
                 ("review_note", models.TextField(blank=True, null=True)),
                 ("applied_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(default=django.utils.timezone.now)),

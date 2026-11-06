@@ -50,6 +50,7 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
         "ops_diff",
         "ops_pretty",
         "scopes",
+        "patch_count",
         "base_revision",
         "validation_report",
         "report_findings",
@@ -85,6 +86,7 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
                     "ops_diff",
                     "ops_pretty",
                     "scopes",
+                    "patch_count",
                 ),
             }),
             ("Validation", {

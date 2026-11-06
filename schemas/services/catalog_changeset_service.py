@@ -468,8 +468,13 @@ class CatalogChangeSetService:
             proposed_by_credential=proposed_by_credential,
             status=CHANGESET_STATUS_DRAFT,
         )
+        # patch_count=1 marks the first feedback round — written in the
+        # same transaction as the changeset row because proposer-side
+        # actions produce no LogEntry for token principals.
         self.changeset_repository.update_fields(
-            changeset, status=CHANGESET_STATUS_PROPOSED,
+            changeset,
+            status=CHANGESET_STATUS_PROPOSED,
+            patch_count=1,
         )
         self.validate(changeset)
         self._enforce_scope_check(changeset, scope_check)
@@ -530,8 +535,15 @@ class CatalogChangeSetService:
             raise ChangesetStateConflictError(
                 changeset.status, CHANGESET_STATUS_VALIDATING,
             )
+        # patch_count rides the same write — each correction round
+        # increments the persisted iteration counter (the proposer-side
+        # actions leave no LogEntry for token principals).
         self.changeset_repository.update_fields(
-            changeset, ops=ops, rationale=rationale, review_note=None,
+            changeset,
+            ops=ops,
+            rationale=rationale,
+            review_note=None,
+            patch_count=(changeset.patch_count or 0) + 1,
         )
         self.validate(changeset)
         self._enforce_scope_check(changeset, scope_check)

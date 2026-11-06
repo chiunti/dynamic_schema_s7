@@ -819,6 +819,12 @@ class CatalogChangeSet(models.Model):
     (``{affected, revalidated, skipped_unpublished, failing,
     cache_invalidated}``), written in the same apply transaction after a
     successful import.
+    ``patch_count`` is the persisted propose/patch iteration counter:
+    ``propose()`` writes 1 and each ``patch()`` adds 1, always inside
+    the same transaction as the changeset write it annotates. It
+    exists because proposer-side actions produce no admin
+    ``LogEntry`` — token principals carry no user pk — so
+    LogEntry-based iteration counting can never cover the agent path.
     """
 
     class Status(models.TextChoices):
@@ -850,6 +856,12 @@ class CatalogChangeSet(models.Model):
     base_revision = models.CharField(max_length=64, null=True, blank=True)
     validation_report = models.JSONField(null=True, blank=True)
     post_apply_report = models.JSONField(null=True, blank=True)
+    # Propose/patch iteration counter — propose() sets 1, each patch()
+    # increments by 1, written in the same transaction as the changeset
+    # write. Proposer-side actions produce no admin LogEntry for token
+    # principals, so this persisted counter replaces LogEntry-based
+    # iteration counting.
+    patch_count = models.IntegerField(default=0)
     proposed_by_credential = models.ForeignKey(
         ProjectAPICredential,
         on_delete=models.PROTECT,

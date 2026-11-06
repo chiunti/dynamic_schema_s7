@@ -722,9 +722,17 @@ class SchemaRepository:
         ``project_id=None`` restricts the delete to the NULL bucket
         (rows with no project, ``project_id__isnull`` — the ORM equivalent of
         ``IS NOT DISTINCT FROM NULL``) — it does NOT mean "any project".
+
+        Returns:
+            The ``QuerySet.delete()`` contract — a ``(count, detail)``
+            tuple where ``count`` is the total number of rows deleted
+            and ``detail`` maps each model label to its deleted count.
+            Callers unpacking the pair (e.g. the post-apply cache
+            invalidation, which sums ``count``) depend on the tuple
+            riding back verbatim.
         """
         from ..models import SchemaCache
-        SchemaCache.objects.filter(key=key, version=version, project_id=project_id).delete()
+        return SchemaCache.objects.filter(key=key, version=version, project_id=project_id).delete()
 
     def get_node_attributes(self, node, attribute_def):
         """Get node attribute by node and attribute def"""
@@ -745,6 +753,22 @@ class SchemaRepository:
         """Get all node attributes for a node with attribute_def select_related"""
         from ..models import NodeAttribute
         return NodeAttribute.objects.filter(node=node).select_related('attribute_def')
+
+    def get_node_attributes_with_defs(self, node):
+        """Get all node attributes with def/data_type/domain select_related.
+
+        Same read as ``get_node_attributes_by_node`` but also follows
+        ``attribute_def__data_type`` and ``attribute_def__domain``, so a
+        consumer iterating values and validating each against the def's
+        data type and domain does not N+1 — used by the post-apply
+        schema revalidator.
+        """
+        from ..models import NodeAttribute
+        return NodeAttribute.objects.filter(node=node).select_related(
+            'attribute_def',
+            'attribute_def__data_type',
+            'attribute_def__domain',
+        )
 
     def delete_node_attributes(self, node, attribute_def):
         """Delete node attributes for a given node and attribute def"""
@@ -1045,6 +1069,24 @@ class SchemaRepository:
         """
         from ..models import Node
         return list(Node.objects.filter(parent_id=parent_id).values_list("id", flat=True))
+
+    def get_children_with_type_by_parent(self, parent_id):
+        """Get children of a parent node as ``{id, node_type_id}`` dicts.
+
+        Lightweight projection for per-child-type counting — the
+        post-apply cardinality check needs each child's type id, not
+        the node instance.
+
+        Args:
+            parent_id: UUID of the parent node
+
+        Returns:
+            List of dicts with ``id`` and ``node_type_id`` keys
+        """
+        from ..models import Node
+        return list(
+            Node.objects.filter(parent_id=parent_id).values("id", "node_type_id")
+        )
 
     def get_node_by_id(self, node_id):
         """

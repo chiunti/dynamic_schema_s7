@@ -815,6 +815,10 @@ class CatalogChangeSet(models.Model):
     ``base_revision`` is the sha256 hex digest of the catalog rows inside
     the affected scopes, computed at validation time and re-verified at
     apply time; a mismatch marks the changeset ``stale``.
+    ``post_apply_report`` is the persisted post-apply revalidation report
+    (``{affected, revalidated, skipped_unpublished, failing,
+    cache_invalidated}``), written in the same apply transaction after a
+    successful import.
     """
 
     class Status(models.TextChoices):
@@ -845,6 +849,7 @@ class CatalogChangeSet(models.Model):
     scopes = models.JSONField(default=list)
     base_revision = models.CharField(max_length=64, null=True, blank=True)
     validation_report = models.JSONField(null=True, blank=True)
+    post_apply_report = models.JSONField(null=True, blank=True)
     proposed_by_credential = models.ForeignKey(
         ProjectAPICredential,
         on_delete=models.PROTECT,

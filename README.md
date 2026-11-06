@@ -415,7 +415,7 @@ The `s7-author` MCP server (`s7_mcp/`) wraps this surface for local AI agents: c
 | POST | `/api/catalog/import/` | MCP L2 + per-model `add_*`/`change_*` | Import catalog grammar (node types, attribute defs, compositions, domains, variants) |
 | GET | `/api/catalog/usage/` | `can_read` · MCP L2 | Usage pre-check for one catalog object — `?model=schemas.<label>&pk=<uuid>` XOR natural-key params; 200 carries `{implemented, usage}` (same evidence as the import gate) |
 | POST | `/api/catalog/changesets/` | MCP L2 + `can_propose_changeset` | Propose a governed catalog changeset — validates synchronously; 201 carries final `status` (`valid`/`invalid`) + `validation_report` |
-| GET | `/api/catalog/changesets/{id}/` | MCP L2 + `can_propose_changeset` | Changeset status + full `validation_report` — the agent's feedback channel |
+| GET | `/api/catalog/changesets/{id}/` | MCP L2 + `can_propose_changeset` | Changeset status + full `validation_report` and `post_apply_report` — the agent's feedback channel |
 | PATCH | `/api/catalog/changesets/{id}/` | MCP L2 + `can_propose_changeset` | Replace `ops`/`rationale` on the same changeset and re-validate (corrected-ops feedback loop); 409 on non-re-proposable statuses |
 
 **Schema Response Format:**

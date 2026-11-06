@@ -62,6 +62,7 @@ class CatalogChangeSetRepository:
             "status",
             "scopes",
             "validation_report",
+            "post_apply_report",
             "base_revision",
             "reviewed_by",
             "review_note",

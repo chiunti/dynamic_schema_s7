@@ -27,11 +27,13 @@ from django.db.models import Q
 #    backfill, integral value_number emission as a JSON integer, and
 #    build-state invalidation.
 # 5. Governed changesets — CatalogChangeSet audit model (proposer XOR,
-#    scopes/base_revision/validation_report, status lifecycle) plus the
-#    UserMCPToken propose capability (can_propose_changeset flag and the
-#    allowed_scopes allowlist). The scopes GIN index serializes the
-#    canonical django.contrib.postgres GinIndex (the contrib app is
-#    installed by this batch's feature commit).
+#    scopes/base_revision/validation_report/post_apply_report, status
+#    lifecycle) plus the UserMCPToken propose capability
+#    (can_propose_changeset flag and the allowed_scopes allowlist). The
+#    scopes GIN index serializes the canonical django.contrib.postgres
+#    GinIndex (the contrib app is installed by this batch's feature
+#    commit). post_apply_report persists the post-apply revalidation
+#    outcome of the affected published schemas on the changeset itself.
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -2237,6 +2239,7 @@ class Migration(migrations.Migration):
                     models.CharField(blank=True, max_length=64, null=True),
                 ),
                 ("validation_report", models.JSONField(blank=True, null=True)),
+                ("post_apply_report", models.JSONField(blank=True, null=True)),
                 ("review_note", models.TextField(blank=True, null=True)),
                 ("applied_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(default=django.utils.timezone.now)),

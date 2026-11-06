@@ -59,6 +59,9 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
         "applied_at",
         "created_at",
         "updated_at",
+        "post_apply_report",
+        "post_apply_findings",
+        "post_apply_pretty",
     )
 
     def get_fieldsets(self, request, obj=None):
@@ -98,6 +101,16 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
                     "applied_at",
                     "created_at",
                     "updated_at",
+                ),
+            }),
+            # Last chapter of the lifecycle narrative: the revalidation
+            # report only exists once the apply recorded in "Review"
+            # (``applied_at``) has run — placing it before Review would
+            # show a consequence ahead of its cause.
+            ("Post-apply revalidation", {
+                "fields": (
+                    "post_apply_findings",
+                    "post_apply_pretty",
                 ),
             }),
         )
@@ -450,6 +463,137 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
             return "—"
         return format_html(
             "<pre>{}</pre>", json.dumps(obj.validation_report, indent=2, default=str)
+        )
+
+    @admin.display(description="Post-apply revalidation")
+    def post_apply_findings(self, obj):
+        """``post_apply_report`` as a summary line or per-schema failure list.
+
+        Pure presentation of the JSON persisted by the post-apply
+        revalidation pass — the admin never re-queries the affected
+        schemas. The report derives from agent-supplied data, so every
+        value is escaped through ``format_html``.
+        """
+        report = obj.post_apply_report
+        if not isinstance(report, dict):
+            return "—"
+        failing = report.get("failing")
+        if not failing:
+            # No failing schemas — summarize the run counts instead.
+            return format_html(
+                '<span style="color:#666;">{} schema(s) revalidated, '
+                "{} non-published skipped, cache invalidated: {} "
+                "— no failures.</span>",
+                report.get("revalidated", "?"),
+                report.get("skipped_unpublished", "?"),
+                report.get("cache_invalidated", "?"),
+            )
+        if not isinstance(failing, list):
+            # Malformed shape still surfaces instead of vanishing.
+            failing = [failing]
+        return format_html(
+            '<ul class="changeset-findings" '
+            'style="margin:0;padding-left:1.2em;">{}</ul>',
+            format_html_join(
+                "",
+                "{}",
+                (
+                    (self._post_apply_schema_line(entry),)
+                    for entry in failing
+                ),
+            ),
+        )
+
+    def _post_apply_schema_line(self, entry):
+        """One ``failing`` entry: badge, ``schema_key:version`` and its findings."""
+        if not isinstance(entry, dict):
+            return format_html("<li>{}</li>", self._short_value(entry))
+        findings = entry.get("findings")
+        if findings is None:
+            findings_list = []
+        elif isinstance(findings, list):
+            findings_list = findings
+        else:
+            # Malformed `findings` renders as a single raw line.
+            findings_list = [findings]
+        badge = format_html(
+            '<span style="color:{};font-weight:600;'
+            'text-transform:uppercase;font-size:0.8em;">{}</span>',
+            self._SEVERITY_COLORS["breaking"],
+            "failing",
+        )
+        line = format_html(
+            "{} <code>{}:{}</code>",
+            badge,
+            entry.get("schema_key", "?"),
+            entry.get("version", "?"),
+        )
+        context_bits = []
+        if entry.get("project_id"):
+            context_bits.append(
+                format_html("project {}", entry["project_id"])
+            )
+        context_bits.append(
+            format_html("{} finding(s)", len(findings_list))
+        )
+        line = format_html(
+            '{} <span style="color:#666;">({})</span>',
+            line,
+            format_html_join(
+                " · ", "{}", ((bit,) for bit in context_bits)
+            ),
+        )
+        if findings_list:
+            line = format_html(
+                '{}<ul style="margin:0.2em 0 0;'
+                'padding-left:1.2em;">{}</ul>',
+                line,
+                format_html_join(
+                    "",
+                    "{}",
+                    (
+                        (self._post_apply_finding_line(finding),)
+                        for finding in findings_list
+                    ),
+                ),
+            )
+        return format_html("<li>{}</li>", line)
+
+    def _post_apply_finding_line(self, finding):
+        """One post-apply finding: ``code`` + ``message`` + node context."""
+        if not isinstance(finding, dict):
+            return format_html("<li>{}</li>", self._short_value(finding))
+        line = format_html(
+            "<code>{}</code> {}",
+            finding.get("code", ""),
+            finding.get("message", ""),
+        )
+        context_bits = []
+        if finding.get("node_type"):
+            context_bits.append(
+                format_html("type={}", finding["node_type"])
+            )
+        if finding.get("node_key"):
+            context_bits.append(
+                format_html("key={}", finding["node_key"])
+            )
+        if context_bits:
+            line = format_html(
+                '{} <span style="color:#666;">({})</span>',
+                line,
+                format_html_join(
+                    " · ", "{}", ((bit,) for bit in context_bits)
+                ),
+            )
+        return format_html("<li>{}</li>", line)
+
+    @admin.display(description="Post-apply report (raw)")
+    def post_apply_pretty(self, obj):
+        if obj.post_apply_report is None:
+            return "—"
+        return format_html(
+            "<pre>{}</pre>",
+            json.dumps(obj.post_apply_report, indent=2, default=str),
         )
 
     def get_queryset(self, request):

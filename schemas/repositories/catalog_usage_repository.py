@@ -5,6 +5,11 @@ schemas already instantiate. This repository answers "is this catalog
 row implemented?" for each writable catalog model, counting the schema
 rows that realize it and listing the projects that own them.
 
+The read companion ``implementing_schemas`` answers the follow-up
+question the post-apply schema revalidation pass asks — which root
+schema nodes implement a touched row — resolving the same implementing
+rows through shared helpers so it cannot diverge from the usage gate.
+
 Semantics shared by every lookup:
 
 - **Global scope** — the grammar is shared across organizations and
@@ -28,6 +33,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
+from django.db import DatabaseError, connection
 from django.db.models import Count, Q, QuerySet
 
 from ..constants import (
@@ -56,8 +62,10 @@ class CatalogUsageRepository:
 
     ``usage_for`` is the single entry point consumed by the catalog
     import usage gate: it resolves the addressed catalog row once and
-    dispatches to the per-model lookup. All lookups are read-only and
-    side-effect free.
+    dispatches to the per-model lookup. ``implementing_schemas`` is the
+    read companion consumed by the post-apply revalidation pass: it
+    resolves the same implementing rows to their root schema nodes.
+    All lookups are read-only and side-effect free.
 
     Timing: the gate runs inside the caller's transaction, but under
     READ COMMITTED a schema import committed between this check and the
@@ -78,6 +86,23 @@ class CatalogUsageRepository:
         'nodetypevariant': (NodeTypeVariant, '_variant_usage'),
         'domain': (Domain, '_domain_usage'),
         'domainitem': (DomainItem, '_domain_item_usage'),
+    }
+
+    # Catalog import label -> (implementing-rows helper name, column on
+    # the returned rows that identifies the implementing Node): 'id'
+    # for helpers returning a Node queryset, 'node_id' for helpers
+    # returning a NodeAttribute queryset. Same keys as _DISPATCH — the
+    # helpers are the shared source of truth for "which rows implement
+    # this catalog row", consumed by both the _*_usage counters (the
+    # tier-3 gate) and implementing_schemas (the post-apply
+    # revalidation reachable set).
+    _IMPLEMENTING = {
+        'nodetype': ('_node_type_nodes', 'id'),
+        'attributedef': ('_attribute_def_attrs', 'node_id'),
+        'nodetypecomposition': ('_composition_nodes', 'id'),
+        'nodetypevariant': ('_variant_attrs', 'node_id'),
+        'domain': ('_domain_attrs', 'node_id'),
+        'domainitem': ('_domain_item_attrs', 'node_id'),
     }
 
     def usage_for(self, label: str, pk: 'str | uuid.UUID') -> dict:
@@ -114,6 +139,147 @@ class CatalogUsageRepository:
                 validation — the caller only reaches this lookup with
                 values it produced itself.
         """
+        row = self._resolve_row(label, pk)
+        return getattr(self, self._DISPATCH[label][1])(row)
+
+    def implementing_schemas(
+        self, label: str, pk: 'str | uuid.UUID',
+    ) -> list[dict]:
+        """Root schema nodes implementing one catalog row.
+
+        Read companion to ``usage_for`` for the post-apply schema
+        revalidation pass: given the same ``label``/``pk`` address, it
+        resolves the set of Node ids implementing the row through the
+        SAME shared helpers the tier-3 usage gate counts on — so the
+        reachable set is consistent with the usage gate by
+        construction, and the two cannot diverge — then walks
+        ``schema_nodes.parent_id`` up to the root ancestors in a single
+        recursive CTE.
+
+        Args:
+            label: the catalog model label — same vocabulary and
+                validation as ``usage_for``.
+            pk: primary key of the catalog row — same validation as
+                ``usage_for``.
+
+        Returns:
+            A list of ``{"node_id": str, "key": str | None,
+            "version": str | None, "project_id": str | None,
+            "status": str | None}``, one entry per distinct root node
+            reachable from the implementing rows. ``status`` is the
+            ``value_string`` of the root's ``status`` attribute — the
+            same resolution ``v_schema_published`` applies
+            (``0003_s7_views.py``, redefined in ``0007_mcp_feature``):
+            the ``AttributeDef`` must belong to the root's own node
+            type, carry ``json_key='status'`` and a non-variant
+            ``variant_key`` (``NULL`` or ``''``), and the scalar
+            subquery orders by ``ad.id`` so the pick stays
+            deterministic when sibling defs coexist — ``None`` when
+            the root does not carry the attribute.
+
+            Only parent-less nodes of ``is_root`` node types qualify:
+            schemas are born under ``is_root`` types, so an orphaned
+            non-root node (``parent_id IS NULL`` without a root type)
+            must not inflate the affected set.
+
+            ALL roots are returned — published, draft and archived
+            alike; filtering by lifecycle status is the service
+            layer's decision, not this lookup's. A well-formed pk
+            whose row no longer exists, or a row nothing implements,
+            returns ``[]``.
+
+            Recursive CTE notes: the ``UNION`` (not ``UNION ALL``)
+            dedupes visited ids, so the walk terminates even on a
+            pathological parent cycle (the ``s7_prevent_node_cycles``
+            trigger normally prevents them); ``Node.parent`` is
+            ``on_delete=DO_NOTHING``, so a node whose parent was
+            deleted out from under it simply never reaches a root —
+            it contributes nothing rather than inventing one.
+
+        Raises:
+            ValueError: ``label`` is not a writable catalog model
+                label, or ``pk`` is not a valid UUID — same contract
+                as ``usage_for``.
+            RuntimeError: ``DatabaseError`` mapped — infrastructure.
+        """
+        row = self._resolve_row(label, pk)
+        helper_name, node_id_column = self._IMPLEMENTING[label]
+        implementing_rows = getattr(self, helper_name)(row)
+        node_ids = list(
+            implementing_rows
+            .values_list(node_id_column, flat=True)
+            .distinct()
+        )
+        if not node_ids:
+            return []
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    WITH RECURSIVE visited(id) AS (
+                        SELECT id FROM schema_nodes
+                        WHERE id = ANY(%s::uuid[])
+                        UNION
+                        SELECT n.parent_id
+                          FROM schema_nodes n
+                          JOIN visited v ON n.id = v.id
+                         WHERE n.parent_id IS NOT NULL
+                    )
+                    SELECT n.id, n.key, n.version, n.project_id,
+                           (SELECT na.value_string
+                              FROM schema_node_attributes na
+                              JOIN schema_attribute_defs ad
+                                ON ad.id = na.attribute_def_id
+                             WHERE na.node_id = n.id
+                               AND ad.node_type_id = n.node_type_id
+                               AND ad.json_key = 'status'
+                               AND (ad.variant_key IS NULL
+                                    OR ad.variant_key = '')
+                             ORDER BY ad.id
+                             LIMIT 1) AS status
+                      FROM schema_nodes n
+                      JOIN schema_node_types nt
+                        ON nt.id = n.node_type_id
+                       AND nt.is_root = TRUE
+                     WHERE n.id IN (SELECT id FROM visited)
+                       AND n.parent_id IS NULL
+                    """,
+                    [[str(node_id) for node_id in node_ids]],
+                )
+                rows = cursor.fetchall()
+        except DatabaseError as e:
+            raise RuntimeError(
+                f"Database error during implementing schemas lookup "
+                f"for label='{label}' pk='{pk}': {e}"
+            ) from e
+        return [
+            {
+                'node_id': str(root_id),
+                'key': key,
+                'version': version,
+                'project_id': (
+                    str(project_id) if project_id is not None else None
+                ),
+                'status': status,
+            }
+            for root_id, key, version, project_id, status in rows
+        ]
+
+    def _resolve_row(self, label: str, pk: 'str | uuid.UUID'):
+        """Validate ``label``/``pk`` and fetch the addressed catalog row.
+
+        Shared entry validation for ``usage_for`` and
+        ``implementing_schemas`` — both public lookups carry the same
+        error contract, so it lives in one place.
+
+        Returns:
+            The catalog model instance, or None when a well-formed pk
+            matches no row — the callers' "not implemented" answer.
+
+        Raises:
+            ValueError: ``label`` is not a writable catalog model
+                label, or ``pk`` is not a valid UUID.
+        """
         if not isinstance(label, str) or label not in self._DISPATCH:
             raise ValueError(
                 ERR_UNKNOWN_CATALOG_MODEL_LABEL.format(label=label),
@@ -128,16 +294,14 @@ class CatalogUsageRepository:
             raise ValueError(
                 ERR_PK_MUST_BE_VALID_UUID.format(pk=pk),
             ) from e
-
-        model, handler_name = self._DISPATCH[label]
-        row = model.objects.filter(pk=canonical_pk).first()
-        return getattr(self, handler_name)(row)
+        model, _handler_name = self._DISPATCH[label]
+        return model.objects.filter(pk=canonical_pk).first()
 
     def _node_type_usage(self, node_type: Optional[NodeType]) -> dict:
         """A NodeType is implemented once any Node instantiates it."""
         if node_type is None:
             return self._empty_usage('nodes')
-        nodes = Node.objects.filter(node_type_id=node_type.id)
+        nodes = self._node_type_nodes(node_type)
         return self._result('nodes', nodes.count(), self._node_projects(nodes))
 
     def _attribute_def_usage(
@@ -152,9 +316,7 @@ class CatalogUsageRepository:
         """
         if attribute_def is None:
             return self._empty_usage('node_attributes')
-        attributes = NodeAttribute.objects.filter(
-            attribute_def_id=attribute_def.id,
-        )
+        attributes = self._attribute_def_attrs(attribute_def)
         return self._result(
             'node_attributes',
             attributes.count(),
@@ -173,48 +335,21 @@ class CatalogUsageRepository:
         """
         if composition is None:
             return self._empty_usage('nodes')
-        nodes = Node.objects.filter(
-            node_type_id=composition.child_type_id,
-            parent__node_type_id=composition.parent_type_id,
-        )
+        nodes = self._composition_nodes(composition)
         return self._result('nodes', nodes.count(), self._node_projects(nodes))
 
     def _variant_usage(self, variant: Optional[NodeTypeVariant]) -> dict:
         """Implemented once a node stores ``variant_key`` in the discriminator.
 
-        The discriminator is resolved from the variant row itself —
-        every ``AttributeDef`` with ``node_type=variant.node_type`` and
-        ``json_key=variant.discriminator_attr`` is a candidate: sibling
-        defs may share that pair under different ``variant_key`` values
-        (``uq_sattr_defs_key`` allows it), so matching only one def
-        could attribute the implementing rows to a sibling and report
-        an implemented variant as free.
-
-        When the row declares no discriminator (``discriminator_attr``
-        NULL marks a props-node-type variant inherited from its parent,
-        which has no variant-specific instantiation of its own) or no
-        AttributeDef matches, the variant cannot be instantiated *as a
-        variant* — zeroed usage is returned.
-
-        The comparison targets the ``value_*`` column selected by each
-        def's ``data_type.primary_storage_type``; see ``_value_q`` for
-        the string→column conversion policy.
+        The implementing rows are resolved by ``_variant_attrs`` — see
+        it for the discriminator resolution, the props-node-type NULL
+        discriminator case and the storage-column conversion policy.
+        A variant that cannot be instantiated *as a variant* yields an
+        empty queryset, which counts as zeroed usage.
         """
         if variant is None or not variant.discriminator_attr:
             return self._empty_usage('nodes')
-        value_q = self._defs_value_q(
-            variant.variant_key,
-            self._defs_by_storage(
-                node_type_id=variant.node_type_id,
-                json_key=variant.discriminator_attr,
-            ),
-        )
-        if value_q is None:
-            return self._empty_usage('nodes')
-        attributes = NodeAttribute.objects.filter(
-            value_q,
-            node__node_type_id=variant.node_type_id,
-        )
+        attributes = self._variant_attrs(variant)
         # (node, attribute_def) is unique so each row is already one
         # node, but the metric is distinct nodes — the aggregate keeps
         # the count honest by construction.
@@ -229,9 +364,7 @@ class CatalogUsageRepository:
         """Implemented once any AttributeDef bound to the domain has rows."""
         if domain is None:
             return self._empty_usage('node_attributes')
-        attributes = NodeAttribute.objects.filter(
-            attribute_def__domain_id=domain.id,
-        )
+        attributes = self._domain_attrs(domain)
         return self._result(
             'node_attributes',
             attributes.count(),
@@ -241,6 +374,130 @@ class CatalogUsageRepository:
     def _domain_item_usage(self, item: Optional[DomainItem]) -> dict:
         """Implemented when ``item.value`` is stored by a def of its domain.
 
+        The implementing rows are resolved by ``_domain_item_attrs`` —
+        see it for the per-storage-type value conversion; a value no
+        storage column can hold yields an empty queryset, which counts
+        as zeroed usage.
+        """
+        if item is None:
+            return self._empty_usage('node_attributes')
+        attributes = self._domain_item_attrs(item)
+        return self._result(
+            'node_attributes',
+            attributes.count(),
+            self._attribute_projects(attributes),
+        )
+
+    # ------------------------------------------------------------------
+    # Implementing-rows helpers — single source of truth for "which rows
+    # instantiate this catalog row". The _*_usage counters above count
+    # and project them (the tier-3 usage gate);
+    # ``implementing_schemas`` projects them to node ids (the post-apply
+    # revalidation reachable set) — both consume the same querysets, so
+    # the gate and the reachable set cannot diverge.
+    #
+    # Each helper returns a lazy queryset: a Node queryset for
+    # type/edge instantiation, a NodeAttribute queryset for
+    # attribute-value instantiation. ``QuerySet.none()`` stands in for
+    # "cannot be instantiated" — a missing row, a missing
+    # discriminator, or a value no storage column can hold — so the
+    # helpers are total functions safe to call on an unresolved row.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _node_type_nodes(node_type: Optional[NodeType]) -> QuerySet:
+        """Nodes instantiating ``node_type`` via the ``node_type`` FK."""
+        if node_type is None:
+            return Node.objects.none()
+        return Node.objects.filter(node_type_id=node_type.id)
+
+    @staticmethod
+    def _attribute_def_attrs(
+        attribute_def: Optional[AttributeDef],
+    ) -> QuerySet:
+        """NodeAttribute rows referencing ``attribute_def``.
+
+        Rows whose ``value_*`` columns are all NULL count too: the
+        attribute is already referenced by a node even with no value
+        set.
+        """
+        if attribute_def is None:
+            return NodeAttribute.objects.none()
+        return NodeAttribute.objects.filter(
+            attribute_def_id=attribute_def.id,
+        )
+
+    @staticmethod
+    def _composition_nodes(
+        composition: Optional[NodeTypeComposition],
+    ) -> QuerySet:
+        """Nodes instantiating the declared parent→child edge.
+
+        Only the existence of a ``child_type`` node under a
+        ``parent_type`` node instantiates the row — ``collection_key``
+        is catalog metadata, not part of the instantiation edge.
+        """
+        if composition is None:
+            return Node.objects.none()
+        return Node.objects.filter(
+            node_type_id=composition.child_type_id,
+            parent__node_type_id=composition.parent_type_id,
+        )
+
+    def _variant_attrs(
+        self, variant: Optional[NodeTypeVariant],
+    ) -> QuerySet:
+        """NodeAttribute rows storing ``variant_key`` in the discriminator.
+
+        The discriminator is resolved from the variant row itself —
+        every ``AttributeDef`` with ``node_type=variant.node_type`` and
+        ``json_key=variant.discriminator_attr`` is a candidate: sibling
+        defs may share that pair under different ``variant_key`` values
+        (``uq_sattr_defs_key`` allows it), so matching only one def
+        could attribute the implementing rows to a sibling and report
+        an implemented variant as free.
+
+        When the row declares no discriminator (``discriminator_attr``
+        NULL marks a props-node-type variant inherited from its parent,
+        which has no variant-specific instantiation of its own) or no
+        AttributeDef/storage column can hold the key, the variant
+        cannot be instantiated *as a variant* — an empty queryset is
+        returned.
+
+        The comparison targets the ``value_*`` column selected by each
+        def's ``data_type.primary_storage_type``; see ``_value_q`` for
+        the string→column conversion policy.
+        """
+        if variant is None or not variant.discriminator_attr:
+            return NodeAttribute.objects.none()
+        value_q = self._defs_value_q(
+            variant.variant_key,
+            self._defs_by_storage(
+                node_type_id=variant.node_type_id,
+                json_key=variant.discriminator_attr,
+            ),
+        )
+        if value_q is None:
+            return NodeAttribute.objects.none()
+        return NodeAttribute.objects.filter(
+            value_q,
+            node__node_type_id=variant.node_type_id,
+        )
+
+    @staticmethod
+    def _domain_attrs(domain: Optional[Domain]) -> QuerySet:
+        """NodeAttribute rows of any AttributeDef bound to ``domain``."""
+        if domain is None:
+            return NodeAttribute.objects.none()
+        return NodeAttribute.objects.filter(
+            attribute_def__domain_id=domain.id,
+        )
+
+    def _domain_item_attrs(
+        self, item: Optional[DomainItem],
+    ) -> QuerySet:
+        """NodeAttribute rows storing ``item.value`` via a def of its domain.
+
         The item's value is a catalog string, but NodeAttribute rows
         persist it under the ``value_*`` column chosen by each def's
         ``data_type.primary_storage_type`` — and defs bound to the same
@@ -248,23 +505,18 @@ class CatalogUsageRepository:
         grouped by storage type and OR'd into a single query, each
         group with the item value converted for its column (see
         ``_value_q``); a storage type the value cannot convert to
-        simply cannot contain it and is skipped.
+        simply cannot contain it and is skipped — and when no group can
+        hold the value at all, an empty queryset is returned.
         """
         if item is None:
-            return self._empty_usage('node_attributes')
+            return NodeAttribute.objects.none()
         value_q = self._defs_value_q(
             item.value,
             self._defs_by_storage(domain_id=item.domain_id),
         )
         if value_q is None:
-            return self._empty_usage('node_attributes')
-
-        attributes = NodeAttribute.objects.filter(value_q)
-        return self._result(
-            'node_attributes',
-            attributes.count(),
-            self._attribute_projects(attributes),
-        )
+            return NodeAttribute.objects.none()
+        return NodeAttribute.objects.filter(value_q)
 
     @staticmethod
     def _defs_by_storage(**filters) -> dict:

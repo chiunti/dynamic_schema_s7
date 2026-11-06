@@ -245,6 +245,15 @@ INFO_CHANGESET_ADDITIVE = "changeset_additive"
 ERR_CHANGESET_APPLY_FAILED_MSG = (
     "Changeset apply failed — the changeset stays approved: {detail}"
 )
+# Post-apply revalidation finding codes — emitted by
+# SchemaValidationService.revalidate_schema into the changeset's
+# post_apply_report JSONB (services/catalog_changeset_service.py). The
+# per-node checks reuse WARN_MISSING_REQUIRED_ATTRIBUTES,
+# ERR_INVALID_DOMAIN_VALUE and ERR_INVALID_SCHEMA from the blocks
+# above as findings of the same family.
+ERR_INVALID_DATATYPE_VALUE = "invalid_datatype_value"
+ERR_CARDINALITY_VIOLATION = "cardinality_violation"
+ERR_STORAGE_COLUMN_MISMATCH = "storage_column_mismatch"
 
 # Logging error messages
 ERR_INVALID_JSON_MSG = "Invalid JSON: {error}"

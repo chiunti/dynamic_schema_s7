@@ -133,6 +133,7 @@ from ..constants import (
     ERR_CHANGESET_SCOPES_NOT_COVERED_MSG,
     ERR_CHANGESET_VARIANT_KEY_UNRESOLVED,
     INFO_CHANGESET_ADDITIVE,
+    STATUS_PUBLISHED,
 )
 from ..models import CatalogChangeSet, ProjectAPICredential
 from ..repositories.attribute_def_repository import AttributeDefRepository
@@ -143,12 +144,14 @@ from ..repositories.catalog_usage_repository import CatalogUsageRepository
 from ..repositories.composition_repository import CompositionRepository
 from ..repositories.fixture_repository import FixtureRepository
 from ..repositories.node_type_repository import NodeTypeRepository
+from ..repositories.schema_repository import SchemaRepository
 from .catalog_import_service import CatalogImportService
 from .exceptions import (
     ChangesetNotFoundError,
     ChangesetStateConflictError,
 )
 from .fixture_service import FK_FIELDS, NATURAL_KEY_FIELDS
+from .schema_validation_service import SchemaValidationService
 
 if TYPE_CHECKING:
     from ..repositories.user_repository import User
@@ -355,6 +358,8 @@ class CatalogChangeSetService:
         self.attribute_def_repository = AttributeDefRepository()
         self.composition_repository = CompositionRepository()
         self.fixture_repository = FixtureRepository()
+        self.schema_repository = SchemaRepository()
+        self.validation_service = SchemaValidationService()
         self._model_defaults_cache: dict = {}
 
     # ------------------------------------------------------------------ #
@@ -764,7 +769,8 @@ class CatalogChangeSetService:
 
         ``approved → applied`` is the only edge in, so
         ``ChangesetStateConflictError`` covers every other status.
-        The body runs three gates inside this one transaction:
+        The body runs four gates inside this one transaction, then
+        revalidates the affected published schemas:
 
         1. **Stale re-check** — ``base_revision`` is recomputed
            over the changeset's ``scopes``; drift means the
@@ -793,6 +799,14 @@ class CatalogChangeSetService:
            breaking finding. On success the changeset lands
            ``applied`` with ``applied_at`` stamped and the audit
            LogEntry attributes the applying user.
+        5. **Post-apply revalidation** — the affected published
+           schemas (captured pre-write: a ``remove_*`` erases its
+           target from the usage tables, so the blast radius only
+           exists before the apply commits) are re-checked against
+           the new catalog and the report persists on the
+           changeset's ``post_apply_report``; findings never roll
+           back (consequence, not gate), infrastructure exceptions
+           do.
 
         ``reviewed_by`` was set by :meth:`approve` and is not
         touched here.
@@ -880,6 +894,14 @@ class CatalogChangeSetService:
             )
             return changeset
 
+        # Pre-apply capture of the blast radius: the schemas
+        # implementing the touched rows must be resolved BEFORE the
+        # apply writes — a ``remove_*`` op deletes its target (and
+        # the implementing NodeAttribute rows through CASCADE), so
+        # post-write the usage tables no longer describe who
+        # implemented what.
+        affected = self._capture_affected_schemas(contexts)
+
         objects: list = []
         for ctx in contexts:
             if ctx.ok:
@@ -906,6 +928,7 @@ class CatalogChangeSetService:
         self.changeset_repository.record_changeset_action(
             user, changeset, 'applied changeset to catalog',
         )
+        self._revalidate_affected_schemas(changeset, affected, user)
         return changeset
 
     @transaction.atomic
@@ -2438,3 +2461,115 @@ class CatalogChangeSetService:
             seen.add(key)
             deduped.append(finding)
         return deduped
+
+    # ------------------------------------------------------------------ #
+    # Post-apply revalidation                                            #
+    # ------------------------------------------------------------------ #
+
+    def _capture_affected_schemas(self, contexts: list) -> dict:
+        """Resolve the schemas implementing the rows the ops will touch.
+
+        Runs after the tier-3 gate and BEFORE the apply writes — the
+        capture is mandatory pre-apply: a ``remove_*`` op deletes its
+        target catalog row (and the implementing NodeAttribute rows
+        through CASCADE) once the apply lands, so the blast radius only
+        exists in the usage tables pre-write. Mutative and destructive
+        ops measure their own resolved target; add ops have no target
+        yet — their blast radius is the anchor row they land under (the
+        same anchor set the impact tier measures).
+
+        Returns:
+            ``{node_id: root_row}`` deduped by root node id — a schema
+            implementing three touched rows is captured once.
+        """
+        affected: dict = {}
+        for ctx in contexts:
+            if not ctx.ok:
+                continue
+            if ctx.kind in ('update', 'rename', 'remove'):
+                candidates = self.usage_repository.implementing_schemas(
+                    ctx.label, ctx.resolved_pk,
+                )
+            elif ctx.kind == 'add':
+                candidates = []
+                for anchor_label, anchor_nk in self._anchors(ctx):
+                    anchor_pk = (
+                        self.fixture_repository.get_pk_by_natural_key(
+                            anchor_label, list(anchor_nk),
+                        )
+                    )
+                    if anchor_pk is None:
+                        continue
+                    candidates.extend(
+                        self.usage_repository.implementing_schemas(
+                            anchor_label, anchor_pk,
+                        )
+                    )
+            else:
+                continue
+            for row in candidates:
+                affected.setdefault(row['node_id'], row)
+        return affected
+
+    def _revalidate_affected_schemas(
+        self,
+        changeset: CatalogChangeSet,
+        affected: dict,
+        user: 'User',
+    ) -> None:
+        """Re-validate affected published schemas against the new catalog.
+
+        Runs at the tail of :meth:`apply`, inside the same transaction —
+        the revalidation reads the catalog exactly as the apply left
+        it. Draft and archived roots are counted but skipped
+        (re-validating them is an opt-in outside this scope). Every
+        affected root — published or not — gets its ``SchemaCache``
+        row invalidated: a mutated catalog row can leave the
+        precomputed resolved JSON stale even when the schema still
+        validates.
+
+        Findings never roll the apply back — they are a consequence,
+        not a gate, and the schema's ``status`` is never touched. An
+        infrastructure exception (database error, repository contract
+        violation) propagates and DOES roll the transaction back,
+        leaving the changeset ``approved``.
+        """
+        report = {
+            'affected': len(affected),
+            'revalidated': 0,
+            'skipped_unpublished': 0,
+            'failing': [],
+            'cache_invalidated': 0,
+        }
+        for root in affected.values():
+            deleted, _detail = (
+                self.schema_repository.delete_schema_cache_by_key_version(
+                    root['key'], root['version'],
+                    project_id=root['project_id'],
+                )
+            )
+            report['cache_invalidated'] += deleted
+            if root['status'] != STATUS_PUBLISHED:
+                report['skipped_unpublished'] += 1
+                continue
+            findings = self.validation_service.revalidate_schema(
+                uuid.UUID(root['node_id']),
+            )
+            report['revalidated'] += 1
+            if findings:
+                report['failing'].append({
+                    'schema_key': root['key'],
+                    'version': root['version'],
+                    'project_id': root['project_id'],
+                    'findings': findings,
+                })
+        self.changeset_repository.update_fields(
+            changeset, post_apply_report=report,
+        )
+        self.changeset_repository.record_changeset_action(
+            user, changeset,
+            'post-apply revalidation: '
+            f"{report['revalidated']} revalidated, "
+            f"{len(report['failing'])} failing, "
+            f"{report['skipped_unpublished']} unpublished skipped",
+        )

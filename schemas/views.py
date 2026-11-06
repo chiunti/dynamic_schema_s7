@@ -127,6 +127,7 @@ def _serialize_changeset(changeset) -> dict:
         "scopes": changeset.scopes,
         "base_revision": changeset.base_revision,
         "validation_report": changeset.validation_report,
+        "post_apply_report": changeset.post_apply_report,
         "proposed_by_credential": (
             str(changeset.proposed_by_credential_id)
             if changeset.proposed_by_credential_id

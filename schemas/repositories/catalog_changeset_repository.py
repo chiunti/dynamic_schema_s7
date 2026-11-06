@@ -148,9 +148,10 @@ class CatalogChangeSetRepository:
         Args:
             changeset_id: changeset UUID or its string form.
             for_update: lock the row with ``SELECT ... FOR UPDATE``
-                — lifecycle writes (approve/reject/apply) re-read
-                under the lock so the transition gate sees the
-                committed status, not the caller's hydrated copy.
+                — lifecycle writes (approve/reject/apply/supersede)
+                re-read under the lock so the transition gate sees
+                the committed status, not the caller's hydrated
+                copy.
 
         Returns:
             The CatalogChangeSet, with proposer/reviewer FKs
@@ -449,7 +450,8 @@ class CatalogChangeSetRepository:
 
         Audit bookkeeping for the governed mutation path — the
         service calls it inside its own ``atomic`` block (approve,
-        reject, apply, mark-stale), so the LogEntry rides the same
+        reject, apply, supersede, mark-stale), so the LogEntry rides
+        the same
         transaction as the lifecycle write it records: the entry
         commits iff the transition commits.
 

@@ -108,6 +108,7 @@ from ..constants import (
     CHANGESET_STATUS_PROPOSED,
     CHANGESET_STATUS_REJECTED,
     CHANGESET_STATUS_STALE,
+    CHANGESET_STATUS_SUPERSEDED,
     CHANGESET_STATUS_VALID,
     CHANGESET_STATUS_VALIDATING,
     CHANGESET_TRANSITIONS,
@@ -904,6 +905,83 @@ class CatalogChangeSetService:
         )
         self.changeset_repository.record_changeset_action(
             user, changeset, 'applied changeset to catalog',
+        )
+        return changeset
+
+    @transaction.atomic
+    def supersede(
+        self,
+        changeset: 'CatalogChangeSet | str | uuid.UUID',
+        user: 'User',
+        reason: str = '',
+    ) -> CatalogChangeSet:
+        """Abandon a changeset — the audited escape hatch.
+
+        ``superseded`` is the generic abandon terminal: every live
+        status carries a ``→ superseded`` edge, so the single
+        ``can_transition`` gate admits them all while ``applied``,
+        ``rejected`` and ``superseded`` itself raise
+        ``ChangesetStateConflictError``. Superseding is not a
+        verdict on the proposal — that is what :meth:`reject`
+        covers — but an operational abandon: the case it exists
+        for is an ``approved`` changeset whose apply fails
+        deterministically, which otherwise has no legal exit. The
+        abandoning reviewer lands on ``reviewed_by``, the reason
+        persists on ``review_note`` for the proposer (same
+        visibility contract as :meth:`reject`) and the audit
+        LogEntry carries a truncated copy.
+
+        Args:
+            changeset: a ``CatalogChangeSet`` instance or its id —
+                ids resolve through :meth:`get_changeset`.
+            user: the abandoning user; stored as ``reviewed_by``
+                and attributed the audit LogEntry.
+            reason: free-text abandon context; persisted verbatim
+                (stripped) on ``review_note`` and appended to the
+                LogEntry's ``change_message`` truncated to a
+                scannable length.
+
+        Returns:
+            The same ``CatalogChangeSet`` instance at
+            ``superseded``.
+
+        Raises:
+            ChangesetNotFoundError: no changeset row with that id.
+            ChangesetStateConflictError: the current status has no
+                ``→ superseded`` edge.
+            ValueError: malformed id or repository contract
+                violations.
+        """
+        # Re-read under FOR UPDATE: the status gate below must see
+        # the committed row, not the caller's hydrated copy — two
+        # concurrent reviewers serialize on the lock instead of both
+        # passing ``can_transition`` on a stale status.
+        changeset = self.get_changeset(
+            changeset.pk
+            if isinstance(changeset, CatalogChangeSet)
+            else changeset,
+            for_update=True,
+        )
+        if not self.can_transition(
+            changeset.status, CHANGESET_STATUS_SUPERSEDED,
+        ):
+            raise ChangesetStateConflictError(
+                changeset.status, CHANGESET_STATUS_SUPERSEDED,
+            )
+        reason = (reason or '').strip()
+        self.changeset_repository.update_fields(
+            changeset,
+            status=CHANGESET_STATUS_SUPERSEDED,
+            reviewed_by=user,
+            review_note=reason or None,
+        )
+        change_message = 'superseded changeset'
+        if reason:
+            # Bound the audit line — LogEntry rows stay scannable;
+            # the full reasoning lives on ``review_note``.
+            change_message += f' — {reason[:500]}'
+        self.changeset_repository.record_changeset_action(
+            user, changeset, change_message,
         )
         return changeset
 

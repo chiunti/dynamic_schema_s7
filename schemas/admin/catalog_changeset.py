@@ -22,7 +22,8 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
     Changesets are created through the governed propose flow (API/service),
     never by hand — this admin is where a human reviewer inspects the ops
     diff and the validation report, then drives the lifecycle through the
-    approve/reject/apply POST endpoints wired in ``get_urls``. Every
+    approve/reject/apply/supersede POST endpoints wired in ``get_urls``.
+    Every
     transition is executed by ``CatalogChangeSetService``; the admin stays
     a thin presentation/delegation shell.
     """
@@ -119,14 +120,14 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
                 {"action": action},
                 name=f"schemas_catalogchangeset_{action}",
             )
-            for action in ("approve", "apply", "reject")
+            for action in ("approve", "apply", "reject", "supersede")
         ]
         return custom + urls
 
     def _lifecycle_action_view(self, request, object_id, action):
         """POST endpoint driving one changeset lifecycle transition.
 
-        Shared by the three action routes — each binds its ``action``
+        Shared by the four action routes — each binds its ``action``
         through the pattern kwargs. POST-only (GET answers 405): state
         changes must never be link-followable. The superuser gate mirrors
         the ``has_*_permission`` hooks — the custom URL needs its own
@@ -183,6 +184,15 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
                         f"'{changeset.status}'.",
                         messages.WARNING,
                     )
+            elif action == "supersede":
+                service.supersede(
+                    changeset,
+                    request.user,
+                    reason=request.POST.get("reason", ""),
+                )
+                self.message_user(
+                    request, "Changeset superseded.", messages.SUCCESS,
+                )
             else:
                 # Unreachable through the wired routes — guards a future
                 # route typo from silently no-op'ing.
@@ -228,6 +238,10 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
                         CatalogChangeSet.Status.VALID,
                         CatalogChangeSet.Status.PROPOSED,
                     )
+                ),
+                "changeset_can_supersede": (
+                    obj is not None
+                    and obj.status == CatalogChangeSet.Status.APPROVED
                 ),
             }
         return super().changeform_view(
@@ -458,7 +472,8 @@ class CatalogChangeSetAdmin(admin.ModelAdmin):
         # Read-only object: denying change permission makes Django serve
         # the detail screen without a submit row — a "Save" would bump
         # ``updated_at`` on a no-op write. Mutation paths (approve /
-        # reject / apply) live behind the POST-only lifecycle endpoints
+        # reject / apply / supersede) live behind the POST-only lifecycle
+        # endpoints
         # above and run through the service layer.
         return False
 

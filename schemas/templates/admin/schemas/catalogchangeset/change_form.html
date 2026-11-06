@@ -12,9 +12,13 @@ existing {% csrf_token %} covers every POST, and the endpoints are
 POST-only anyway (GET answers 405).
 
 DOM order is deliberate: `reason` is the only text input on this
-page, so the reject group renders FIRST — an implicit Enter-key
-submission inside that field activates the first submit button in
-the form, which must be Reject to match the typist's intent.
+page, shared by Reject (valid/proposed) and Supersede (approved) —
+their gating statuses are disjoint, so it stays a single field.
+An implicit Enter-key submission inside it activates the FIRST
+submit button in the form, which must match the typist's intent:
+Reject renders before everything else, and Supersede renders
+before Apply (on `approved` they coexist — Enter after typing an
+abandon reason must not apply the changeset).
 
 Buttons re-gate themselves per request: the flags arrive via
 changeform_view extra_context computed from the live status, so a
@@ -24,14 +28,20 @@ legal actions.
 
 {% block submit_buttons_bottom %}
 {{ block.super }}
-{% if changeset_can_reject or changeset_can_approve or changeset_can_apply %}
+{% if changeset_can_reject or changeset_can_approve or changeset_can_apply or changeset_can_supersede %}
 <div class="submit-row changeset-lifecycle-actions">
-  {% if changeset_can_reject %}
+  {% if changeset_can_reject or changeset_can_supersede %}
     <input type="text" name="reason" value="" size="32"
-           placeholder="Rejection reason (optional)"
-           aria-label="Rejection reason">
+           placeholder="Reason (optional)"
+           aria-label="Reason">
+  {% endif %}
+  {% if changeset_can_reject %}
     <button type="submit"
             formaction="{% url 'admin:schemas_catalogchangeset_reject' object_id %}">Reject</button>
+  {% endif %}
+  {% if changeset_can_supersede %}
+    <button type="submit"
+            formaction="{% url 'admin:schemas_catalogchangeset_supersede' object_id %}">Supersede</button>
   {% endif %}
   {% if changeset_can_approve %}
     <button type="submit" class="default"

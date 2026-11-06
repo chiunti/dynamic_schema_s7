@@ -87,6 +87,23 @@ that mark the changeset ``stale`` (applying nothing) when the
 catalog or its implementation surface drifted under review.
 Every lifecycle write is attributed through a best-effort admin
 ``LogEntry``.
+
+A token carrying the ``can_auto_apply_additive`` capability can
+collapse the loop to one round-trip: ``propose()`` and ``patch()``
+accept the capability as the plain ``auto_apply_additive`` flag
+plus the acting user as a plain ``actor`` — this service never
+sees the auth principal — and, when the validated payload is
+purely additive — ``add_*`` ops only, three tiers
+passed, no warning-or-worse finding — and the actor IS the
+changeset's attributable user proposer, chain the real
+``approve()`` + ``apply()`` inside the same transaction. Every
+reviewer gate still runs under one commit; the ``auto:`` markers
+on ``review_note`` and the audit LogEntry keep machine-applied
+changesets greppably distinct from human verdicts. A
+cross-proposer ``patch`` (the acting user differs from the
+persisted proposer) still edits the document, but its result
+waits for human review exactly as without the flag — the arm
+never applies under an identity that did not author the proposal.
 """
 
 import hashlib
@@ -95,12 +112,14 @@ import re
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from django.db import transaction
 from django.utils import timezone
 
 from ..constants import (
+    CHANGESET_AUTO_APPLY_LOG_MESSAGE,
+    CHANGESET_AUTO_APPLY_REVIEW_NOTE,
     CHANGESET_STATUS_APPLIED,
     CHANGESET_STATUS_APPROVED,
     CHANGESET_STATUS_DRAFT,
@@ -416,6 +435,7 @@ class CatalogChangeSetService:
         proposed_by_user: 'Optional[User]' = None,
         proposed_by_credential: Optional[ProjectAPICredential] = None,
         scope_check: Optional[Callable[[list], bool]] = None,
+        auto_apply_additive: bool = False,
     ) -> CatalogChangeSet:
         """Create a changeset and validate it synchronously.
 
@@ -435,6 +455,26 @@ class CatalogChangeSetService:
         rolls back and a proposal outside the proposer's perimeter
         never persists.
 
+        ``auto_apply_additive`` — the ``can_auto_apply_additive``
+        token capability arriving as a plain flag, keeping this
+        service free of the auth layer — extends the lifecycle to
+        ``draft → proposed → validating → valid → approved →
+        applied`` inside this same transaction when the payload is
+        purely additive and the proposer is an attributable user:
+        the real reviewer arm runs (:meth:`approve` + :meth:`apply`
+        re-fetch the row ``FOR UPDATE`` and re-run every gate —
+        transition edge, stale re-check, op re-validation, impact
+        re-check; nothing is skipped, it is committed once), with
+        ``reviewed_by`` on the proposing user and the ``auto:``
+        markers on ``review_note``/LogEntry keeping machine-applied
+        changesets greppably distinct from human verdicts. The arm
+        degrades honestly: a non-qualifying payload simply skips the
+        chain (the changeset stays at its validated status), a
+        ``stale`` apply outcome commits ``stale`` for the corrective
+        loop, and a ``ValueError`` from the apply propagates so the
+        whole proposal rolls back — all-or-nothing, same contract
+        as the scope gate.
+
         Args:
             ops: ordered mutation ops, stored verbatim.
             rationale: proposer-supplied context for the reviewer.
@@ -448,15 +488,24 @@ class CatalogChangeSetService:
                 ``covers_scopes`` bound to the request principal) —
                 kept as a parameter so this service never imports
                 the authentication layer. ``None`` skips the check.
+            auto_apply_additive: the ``can_auto_apply_additive``
+                token capability as a plain flag — a ``valid``
+                purely-additive payload proposed by a user is
+                approved and applied inside this transaction; see
+                the lifecycle note above.
 
         Returns:
-            The persisted ``CatalogChangeSet`` at ``valid`` or
-            ``invalid``.
+            The persisted ``CatalogChangeSet`` — ``valid`` or
+            ``invalid``, or the terminal ``applied``/``stale``
+            state when the auto-apply arm fired.
 
         Raises:
             ValueError: repository contract violations — exactly one
                 proposer required, ``ops`` must be a list,
-                ``rationale`` a string.
+                ``rationale`` a string — or
+                ``ERR_CHANGESET_APPLY_FAILED_MSG`` when the
+                auto-apply arm's apply re-verification fails (the
+                whole proposal rolls back).
             PermissionError: ``ERR_CHANGESET_SCOPES_NOT_COVERED_MSG`` —
                 the principal's allowed scopes do not cover the
                 derived perimeter; the whole proposal rolls back.
@@ -478,6 +527,15 @@ class CatalogChangeSetService:
         )
         self.validate(changeset)
         self._enforce_scope_check(changeset, scope_check)
+        # Auto-apply arm (``can_auto_apply_additive``): eligibility
+        # gates live in the helper; approve/apply re-run every gate
+        # inside this transaction — one commit, all-or-nothing. The
+        # actor is the proposer by construction — a credential
+        # proposer maps to ``None`` and vetoes the arm.
+        if auto_apply_additive:
+            changeset = self._auto_apply_if_additive(
+                changeset, actor=changeset.proposed_by_user,
+            )
         return changeset
 
     @transaction.atomic
@@ -488,6 +546,8 @@ class CatalogChangeSetService:
         ops: list,
         rationale: str,
         scope_check: Optional[Callable[[list], bool]] = None,
+        auto_apply_additive: bool = False,
+        actor: 'Optional[User]' = None,
     ) -> CatalogChangeSet:
         """Replace ops/rationale on a changeset and re-validate.
 
@@ -509,22 +569,48 @@ class CatalogChangeSetService:
         clears ``review_note``: a verdict written against the old
         payload must not describe the new one.
 
+        When ``auto_apply_additive`` is set, the auto-apply arm of
+        :meth:`propose` runs after the scope gate: a purely additive
+        re-validation lands ``approved → applied`` inside this
+        transaction, and the ``review_note`` cleared
+        above leaves room for the arm's ``auto:`` marker — never the
+        other way around, since nothing writes the note between the
+        scope gate and the arm. The arm fires ONLY when ``actor`` IS
+        the changeset's ``proposed_by_user``: PATCH keeps its
+        shared-document semantics — any principal the endpoint
+        admits may correct another proposer's payload — but the
+        chained verdict attributes ``reviewed_by`` and the audit
+        LogEntry to the proposer, so a cross-proposer patch never
+        auto-applies (it would mint a machine verdict under an
+        identity that did not act); the corrected document simply
+        waits for human review exactly as without the flag.
+
         Args:
             changeset_id: changeset UUID or its string form.
             ops: replacement op list.
             rationale: replacement rationale for the reviewer.
             scope_check: same contract as :meth:`propose`.
+            auto_apply_additive: same contract as :meth:`propose`.
+            actor: the principal executing the patch — the acting
+                user the HTTP layer resolves (``request.user``),
+                arriving as a plain model instance so this service
+                never imports the auth layer. ``None`` (or a user
+                different from the changeset's
+                ``proposed_by_user``) vetoes the auto-apply arm.
 
         Returns:
             The same ``CatalogChangeSet`` instance at ``valid`` or
-            ``invalid``.
+            ``invalid`` — or the terminal ``applied``/``stale``
+            state when the auto-apply arm fired.
 
         Raises:
             ChangesetNotFoundError: no changeset row with that id.
             ChangesetStateConflictError: the current status has no
                 ``→ validating`` edge.
-            ValueError: malformed ``changeset_id`` or repository
-                contract violations.
+            ValueError: malformed ``changeset_id``, repository
+                contract violations, or
+                ``ERR_CHANGESET_APPLY_FAILED_MSG`` from the
+                auto-apply arm (the whole correction rolls back).
             PermissionError: ``ERR_CHANGESET_SCOPES_NOT_COVERED_MSG`` —
                 same post-validation gate as :meth:`propose`.
         """
@@ -547,6 +633,15 @@ class CatalogChangeSetService:
         )
         self.validate(changeset)
         self._enforce_scope_check(changeset, scope_check)
+        # Auto-apply arm (``can_auto_apply_additive``) — same gate
+        # and chain as propose(); runs after the scope check so the
+        # ``auto:`` review_note it writes is never overwritten. The
+        # caller-supplied actor gates the arm to the proposer's own
+        # corrections.
+        if auto_apply_additive:
+            changeset = self._auto_apply_if_additive(
+                changeset, actor=actor,
+            )
         return changeset
 
     @transaction.atomic
@@ -1046,6 +1141,162 @@ class CatalogChangeSetService:
                     scopes=changeset.scopes,
                 )
             )
+
+    # ------------------------------------------------------------------ #
+    # Additive auto-apply arm (token capability → chained verdict)       #
+    # ------------------------------------------------------------------ #
+
+    def _auto_apply_if_additive(
+        self,
+        changeset: CatalogChangeSet,
+        actor: 'Optional[User]',
+    ) -> CatalogChangeSet:
+        """Approve + apply a purely additive changeset in this transaction.
+
+        The auto-apply arm of the ``can_auto_apply_additive`` token
+        capability — the flag reaches :meth:`propose`/:meth:`patch`
+        as a plain kwarg, so this service never sees the auth
+        principal; the acting user arrives separately as ``actor``.
+        Eligibility is gated on the caller's hydrated copy (the row
+        is already locked/created inside the caller's transaction):
+
+        - ``status == valid`` — anything else has no ``→ approved``
+          edge anyway, but the explicit gate keeps the intent legible;
+        - an attributable user proposer — ``reviewed_by`` and the
+          audit LogEntry need one; a credential-proposed changeset
+          can never carry the token capability this arm serves;
+        - ``actor`` IS that proposer — the chained verdict lands
+          under the proposer's identity, so it may only fire when
+          the acting principal is the one it will be attributed to.
+          :meth:`propose` passes the proposer itself (identical by
+          construction); :meth:`patch` passes the caller-supplied
+          acting user, which may differ — PATCH is a shared
+          document — so a cross-proposer correction vetoes the arm:
+          the patch edits the document, but a machine verdict must
+          never be minted under an identity that did not act. The
+          corrected payload waits for human review like any other;
+        - :meth:`_is_purely_additive` accepting the ops and the
+          validation report.
+
+        The chain then runs the REAL reviewer arm: :meth:`approve`
+        and :meth:`apply` re-read the row ``FOR UPDATE`` and re-run
+        every gate — transition edge, stale re-check, op
+        re-validation, impact re-check — inside this transaction;
+        nothing is skipped, it is executed under one commit.
+        ``reviewed_by`` lands on the proposing user and
+        ``review_note`` carries ``CHANGESET_AUTO_APPLY_REVIEW_NOTE``
+        — written before the apply so a ``stale`` outcome keeps the
+        honest trail of the attempt — while the ``auto:`` LogEntry
+        (``CHANGESET_AUTO_APPLY_LOG_MESSAGE``) only lands when the
+        changeset actually reaches ``applied``.
+
+        Degraded outcomes: :meth:`apply` returning ``stale``
+        (catalog or usage drifted between validation and apply) is
+        a normal return — the changeset commits at ``stale`` and the
+        corrective loop re-validates it; no ``auto`` LogEntry is
+        written. A ``ValueError`` or ``ChangesetStateConflictError``
+        from either step propagates untouched: the caller's
+        ``atomic`` block rolls the whole propose/patch back —
+        all-or-nothing, same contract as the ``scope_check``
+        rejection.
+
+        Args:
+            changeset: the just-validated changeset instance of the
+                calling :meth:`propose`/:meth:`patch`.
+            actor: the acting principal — :meth:`propose` sends the
+                proposer itself, :meth:`patch` sends its ``actor``
+                kwarg. ``None``, or a user whose pk differs from
+                ``changeset.proposed_by_user_id``, vetoes the arm.
+
+        Returns:
+            The terminal changeset instance — ``approve``/``apply``
+            re-fetch the row ``FOR UPDATE`` internally, so the
+            instance their writes land on is not the caller's
+            hydrated copy (callers must rebind). Returns the input
+            unchanged when the arm does not fire.
+        """
+        if not (
+            changeset.status == CHANGESET_STATUS_VALID
+            and actor is not None
+            and changeset.proposed_by_user_id is not None
+            and actor.pk == changeset.proposed_by_user_id
+            and self._is_purely_additive(
+                changeset.ops, changeset.validation_report,
+            )
+        ):
+            return changeset
+        changeset = self.approve(
+            changeset, user=changeset.proposed_by_user,
+        )
+        self.changeset_repository.update_fields(
+            changeset, review_note=CHANGESET_AUTO_APPLY_REVIEW_NOTE,
+        )
+        changeset = self.apply(
+            changeset, user=changeset.proposed_by_user,
+        )
+        if changeset.status == CHANGESET_STATUS_APPLIED:
+            self.changeset_repository.record_changeset_action(
+                changeset.proposed_by_user,
+                changeset,
+                CHANGESET_AUTO_APPLY_LOG_MESSAGE,
+            )
+        return changeset
+
+    @classmethod
+    def _is_purely_additive(
+        cls, ops: Any, validation_report: Any,
+    ) -> bool:
+        """Whether a ``valid`` changeset is safe to auto-apply.
+
+        Three conditions, all required — malformed input vetoes
+        (``False``), never raises:
+
+        - ``ops`` is a non-empty list of dicts whose ``op`` name is a
+          string declaring the ``additive`` risk class in
+          ``_OP_SPECS`` — the create-only vocabulary of the grammar.
+          The check reads the declared risk table, not the ``add_``
+          naming convention, so an unknown op (absent from
+          ``_OP_SPECS``) fails closed exactly like a mutative or
+          destructive one.
+        - ``validation_report.tiers_passed == 3`` — every tier
+          cleared. Necessary but NOT sufficient: ``tiers_passed``
+          only counts ``breaking`` findings.
+        - No ``breaking`` or ``warning`` finding — a ``warning`` does
+          not fail a tier (the payload applied cleanly in the trial
+          apply), but it marks payload normalization or impact a
+          human should see, so it vetoes the auto-apply as well.
+          ``info`` findings — which the additive ops themselves emit
+          — do not.
+
+        Both parameters tolerate malformed input (hence ``Any`` —
+        callers pass the stored ``list``/``dict`` shapes but the
+        predicate must answer ``False``, never raise, on anything
+        else).
+        """
+        if not isinstance(ops, list) or not ops:
+            return False
+        for op in ops:
+            if not isinstance(op, dict):
+                return False
+            name = op.get('op')
+            if not isinstance(name, str):
+                return False
+            if cls._OP_SPECS.get(name, {}).get('risk') != 'additive':
+                return False
+        if not isinstance(validation_report, dict):
+            return False
+        if validation_report.get('tiers_passed') != 3:
+            return False
+        findings = validation_report.get('findings')
+        if not isinstance(findings, list):
+            return False
+        return not any(
+            not isinstance(finding, dict)
+            or finding.get('severity') in (
+                SEVERITY_BREAKING, SEVERITY_WARNING,
+            )
+            for finding in findings
+        )
 
     # ------------------------------------------------------------------ #
     # Tier 1 — syntactic                                                  #

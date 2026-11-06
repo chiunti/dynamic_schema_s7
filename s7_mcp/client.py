@@ -165,7 +165,14 @@ class S7Client:
         proposed_by_user, reviewed_by, review_note, applied_at,
         created_at,
         updated_at}`` — with ``status`` already ``valid`` or ``invalid``.
-        A validation failure is still a persisted 201, not an error:
+        When the token also carries the ``can_auto_apply_additive``
+        capability and the validated payload is purely additive — only
+        ``add_*`` ops, no ``warning``/``breaking`` findings — the
+        backend chains approve+apply inside the same request, so
+        ``status`` may answer ``applied`` directly (or ``stale`` when an
+        apply-time gate detects catalog drift), with ``reviewed_by``
+        set to the token's user. A validation failure is still a
+        persisted 201, not an error:
         ``validation_report.findings`` (``{op_index, severity, entity,
         code, message, remediation?}`` entries) is the feedback channel.
 
@@ -207,7 +214,10 @@ class S7Client:
         non-blank ``rationale`` is required on every PATCH — replaces
         ``ops`` wholesale (never merged) and re-validates synchronously.
         The 200 envelope is the re-validated serialized changeset at
-        ``valid``/``invalid`` with a refreshed ``validation_report``.
+        ``valid``/``invalid`` — or ``applied``/``stale`` under the same
+        ``can_auto_apply_additive`` conditions as the propose, a purely
+        additive revision auto-applying in-request — with a refreshed
+        ``validation_report``.
 
         Error envelopes: 404 ``{"error": "changeset_not_found",
         "changeset_id"}`` on an unknown id; 409 ``{"error": "changeset

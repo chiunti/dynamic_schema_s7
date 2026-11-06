@@ -39,6 +39,10 @@ from django.db.models import Q
 #    LogEntry for token principals, so the audit trail cannot count
 #    them); folded per the unpublished-batch carve-out, dev-local sync
 #    = manual ADD COLUMN since 0007 was already applied.
+#    can_auto_apply_additive grants the token the additive auto-apply
+#    capability — purely additive, finding-free changesets approve and
+#    apply in-request without human review; folded per the same
+#    carve-out, dev-local sync = manual ADD COLUMN.
 
 # --- catalog hardening -------------------------------------------------------
 #
@@ -2201,6 +2205,19 @@ class Migration(migrations.Migration):
                     "Grants the token the changeset-propose capability on "
                     "top of catalog-authoring level — proposing governed "
                     "mutations without direct apply."
+                ),
+            ),
+        ),
+        migrations.AddField(
+            model_name="usermcptoken",
+            name="can_auto_apply_additive",
+            field=models.BooleanField(
+                default=False,
+                help_text=(
+                    "Grants the token the additive auto-apply capability "
+                    "on top of changeset propose — purely additive, "
+                    "finding-free changesets approve and apply in-request "
+                    "without human review."
                 ),
             ),
         ),

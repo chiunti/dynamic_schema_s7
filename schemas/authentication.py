@@ -163,3 +163,17 @@ class CanProposeChangeset(UserMCPTokenPermission):
             return set(scopes or ()) <= set(allowed)
         except TypeError:
             return False
+
+    @staticmethod
+    def can_auto_apply(auth) -> bool:
+        """Whether the token row in ``auth`` carries the additive auto-apply capability.
+
+        Duck-typed like ``covers_scopes``: a ``ProjectAPICredential`` (or
+        any auth object without ``can_auto_apply_additive``) fails closed
+        — auto-apply is a user-token capability only. The flag is
+        meaningless without ``can_propose_changeset`` (the endpoint
+        permission already gates that half); it only decides whether a
+        passing proposal may skip the human review arm for purely
+        additive payloads.
+        """
+        return bool(getattr(auth, 'can_auto_apply_additive', False))

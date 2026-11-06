@@ -398,3 +398,14 @@ CHANGESET_TRANSITIONS = {
     ),
     CHANGESET_STATUS_SUPERSEDED: frozenset(),
 }
+
+
+# Proposer-facing review_note and audit LogEntry marker written by the
+# additive auto-apply arm (capability `can_auto_apply_additive` on the
+# proposing token) — the "auto:" prefix greppably distinguishes
+# machine-applied changesets from human-reviewed ones. The note is
+# written before apply() runs, so it claims approval only — the
+# changeset's `status` is the source of truth for the apply outcome
+# (a `stale` outcome must not leave an "applied" claim behind).
+CHANGESET_AUTO_APPLY_REVIEW_NOTE = "auto: purely additive — approved without human review"
+CHANGESET_AUTO_APPLY_LOG_MESSAGE = "auto: approved+applied purely additive changeset"

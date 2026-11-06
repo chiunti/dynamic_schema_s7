@@ -660,6 +660,16 @@ class CatalogChangeSetListCreateView(APIView):
     malformed request body (missing ``rationale``, empty/non-list
     ``ops``) answers 400 with the first serializer error.
 
+    When the token also carries ``can_auto_apply_additive`` (AI-33) and
+    the validated payload is purely additive — every op an ``add_*``
+    with no ``warning``/``breaking`` findings — the service chains
+    approve+apply inside the same transaction, so the 201 may carry
+    ``status`` ``applied`` directly (or ``stale`` when an apply-time
+    gate detects catalog drift), with ``reviewed_by`` set to the
+    token's user and an ``auto`` marker on the review note. Every
+    other outcome still waits for human review — the envelope shape
+    is unchanged.
+
     The gate is ``CanProposeChangeset``: no token answers DRF's JSON
     401; a project credential, an L1 token or a token without the
     ``can_propose_changeset`` flag fails the duck-typed ``request.auth``
@@ -698,6 +708,9 @@ class CatalogChangeSetListCreateView(APIView):
                 scope_check=lambda scopes: CanProposeChangeset.covers_scopes(
                     request.auth, scopes
                 ),
+                auto_apply_additive=CanProposeChangeset.can_auto_apply(
+                    request.auth
+                ),
             )
         except PermissionError as exc:
             return Response(
@@ -734,10 +747,17 @@ class CatalogChangeSetDetailView(APIView):
     ``PATCH`` takes the same ``{"ops", "rationale"}`` body as the
     propose endpoint: it replaces the mutation document on the same
     changeset and re-runs validation synchronously (the corrected-ops
-    feedback loop). PATCH requires a ``→ validating`` edge on the
-    current status — ``draft``, ``validating``, ``approved``,
-    ``applied``, ``rejected`` and ``superseded`` answer 409 with the
-    invalid-transition message.
+    feedback loop) — and the same ``can_auto_apply_additive`` arm as
+    the propose applies (AI-33): a purely-additive revision may chain
+    approve+apply in-request, so the 200 may carry ``applied`` (or
+    ``stale`` on apply-gate drift) instead of ``valid``. The
+    auto-apply only runs when the acting user IS the changeset's
+    proposer — PATCH stays a shared document (any admitted principal
+    may correct another proposer's payload), but a cross-proposer
+    patch's result waits for human review. PATCH requires
+    a ``→ validating`` edge on the current status — ``draft``,
+    ``validating``, ``approved``, ``applied``, ``rejected`` and
+    ``superseded`` answer 409 with the invalid-transition message.
 
     Same gate as the collection view (``CanProposeChangeset``): 401
     without a token, 403 for credentials/L1/flag-less tokens, plus a
@@ -802,6 +822,10 @@ class CatalogChangeSetDetailView(APIView):
                 scope_check=lambda scopes: CanProposeChangeset.covers_scopes(
                     request.auth, scopes
                 ),
+                auto_apply_additive=CanProposeChangeset.can_auto_apply(
+                    request.auth
+                ),
+                actor=request.user,
             )
         except ChangesetNotFoundError as exc:
             return Response(

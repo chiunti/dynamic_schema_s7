@@ -20,7 +20,7 @@ class UserMCPTokenAddForm(forms.ModelForm):
         model = UserMCPToken
         fields = (
             "user", "name", "mcp_level", "can_propose_changeset",
-            "allowed_scopes", "expires_at",
+            "can_auto_apply_additive", "allowed_scopes", "expires_at",
         )
 
     def __init__(self, *args, **kwargs):
@@ -50,8 +50,8 @@ class UserMCPTokenChangeForm(forms.ModelForm):
     class Meta:
         model = UserMCPToken
         fields = (
-            "mcp_level", "can_propose_changeset", "allowed_scopes",
-            "expires_at",
+            "mcp_level", "can_propose_changeset",
+            "can_auto_apply_additive", "allowed_scopes", "expires_at",
         )
 
     def __init__(self, *args, **kwargs):
@@ -64,7 +64,9 @@ class UserMCPTokenChangeForm(forms.ModelForm):
 @admin.register(UserMCPToken)
 class UserMCPTokenAdmin(admin.ModelAdmin):
     list_display = ("name", "user_email", "level", "expires_at", "status", "created_at")
-    list_filter = ("mcp_level", "can_propose_changeset")
+    list_filter = (
+        "mcp_level", "can_propose_changeset", "can_auto_apply_additive",
+    )
     search_fields = ("name", "user__email")
     readonly_fields = (
         "user", "name", "token_digest", "revoked_at", "created_at",
@@ -85,12 +87,17 @@ class UserMCPTokenAdmin(admin.ModelAdmin):
                 }),
                 ("Capability", {
                     "fields": (
-                        "mcp_level", "can_propose_changeset", "allowed_scopes",
+                        "mcp_level", "can_propose_changeset",
+                        "can_auto_apply_additive", "allowed_scopes",
                     ),
                     "description": (
                         "Level 1: schema authoring. Level 2: catalog "
                         "authoring. The changeset-propose flag requires "
-                        "level 2; allowed_scopes left empty is unrestricted."
+                        "level 2; allowed_scopes left empty is unrestricted. "
+                        "The auto-apply flag lets a purely additive "
+                        "changeset be approved and applied in the same "
+                        "request without human review; it is inert without "
+                        "the propose flag."
                     ),
                 }),
                 ("Lifecycle", {
@@ -103,7 +110,8 @@ class UserMCPTokenAdmin(admin.ModelAdmin):
             }),
             ("Capability", {
                 "fields": (
-                    "mcp_level", "can_propose_changeset", "allowed_scopes",
+                    "mcp_level", "can_propose_changeset",
+                    "can_auto_apply_additive", "allowed_scopes",
                 ),
             }),
             ("Lifecycle", {
@@ -162,10 +170,16 @@ class UserMCPTokenAdmin(admin.ModelAdmin):
         )
         # The capability flags are form fields, not provisioning inputs —
         # apply the submitted values to the stored row in one update so a
-        # propose-enabled token can be granted in a single add.
+        # propose- or auto-apply-enabled token can be granted in a single add.
         token.can_propose_changeset = form.cleaned_data["can_propose_changeset"]
+        token.can_auto_apply_additive = (
+            form.cleaned_data["can_auto_apply_additive"]
+        )
         token.allowed_scopes = form.cleaned_data["allowed_scopes"]
-        token.save(update_fields=["can_propose_changeset", "allowed_scopes"])
+        token.save(update_fields=[
+            "can_propose_changeset", "can_auto_apply_additive",
+            "allowed_scopes",
+        ])
         obj.pk = token.pk
         self.message_user(
             request,

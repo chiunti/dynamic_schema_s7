@@ -11,7 +11,10 @@ Thin mapping only, same contract as ``s7-author``: each tool forwards to
 one authenticated endpoint and returns the JSON envelope verbatim. There
 is no business logic here and no approve/apply/reject/supersede tools by
 design — review verdicts and the governed apply are human actions in the
-admin.
+admin, except that a token carrying the ``can_auto_apply_additive``
+capability may see a purely additive proposal approve+apply inside the
+propose/fix request itself (``status`` ``applied``, or ``stale`` when an
+apply-time gate detects catalog drift).
 
 Two transports share this surface: stdio (the default, one process per
 local agent — credentials come from the ``S7_*`` environment) and
@@ -103,8 +106,14 @@ def s7_propose_changeset(ops: list[dict], rationale: str,
     ops, rationale, scopes, base_revision, validation_report,
     proposed_by_credential, proposed_by_user, reviewed_by, review_note,
     applied_at, created_at, updated_at}`` — with ``status`` already
-    ``valid`` or
-    ``invalid``. A validation failure is still a persisted 201, not an
+    ``valid`` or ``invalid``. When the token also carries the
+    ``can_auto_apply_additive`` capability and the validated payload is
+    purely additive — only ``add_*`` ops, no ``warning``/``breaking``
+    findings — the backend chains approve+apply inside the same
+    request, so ``status`` may answer ``applied`` directly (or
+    ``stale`` when an apply-time gate detects catalog drift), with
+    ``reviewed_by`` set to the token's user. A validation failure is
+    still a persisted 201, not an
     error: ``validation_report.findings`` — entries ``{op_index,
     severity, entity, code, message, remediation?}`` classified
     ``breaking``/``warning``/``info`` — is the feedback channel; fix the
@@ -150,7 +159,10 @@ def s7_fix_changeset(changeset_id: str, ops: list[dict], rationale: str,
     The correction arm of the feedback loop: ``ops`` replaces the
     mutation document wholesale — it is never merged — and validation
     re-runs synchronously, so the 200 envelope is the same serialized
-    changeset shape at ``valid``/``invalid`` with a refreshed
+    changeset shape at ``valid``/``invalid`` — or ``applied``/``stale``
+    under the same ``can_auto_apply_additive`` conditions as the
+    propose, a purely additive revision auto-applying in-request —
+    with a refreshed
     ``validation_report`` (and recomputed ``scopes``/``base_revision``).
     The endpoint requires a fresh non-blank ``rationale`` on every PATCH
     — the thin mapping keeps it mandatory: write one for the reviewer,

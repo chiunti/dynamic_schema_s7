@@ -222,6 +222,14 @@ class UserMCPToken(models.Model):
             "carry no project bound since the catalog grammar is global."
         ),
     )
+    can_auto_apply_additive = models.BooleanField(
+        default=False,
+        help_text=(
+            "Grants the token the additive auto-apply capability on top of "
+            "changeset propose — purely additive, finding-free changesets "
+            "approve and apply in-request without human review."
+        ),
+    )
     expires_at = models.DateField()
     revoked_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)

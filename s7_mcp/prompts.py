@@ -142,7 +142,10 @@ You are proposing a governed change to the shared catalog grammar through a \
 changeset — the reviewed mutation channel served by this MCP server. A \
 changeset is an ordered list of mutation ops (`ops`) plus a `rationale`; the \
 backend validates it synchronously on every submission and a human reviews \
-it before anything is applied. Follow these steps:
+it before anything is applied — unless the token carries the \
+`can_auto_apply_additive` capability, which lets a purely additive \
+changeset (only `add_*` ops, no `warning`/`breaking` findings) approve and \
+apply in the same request. Follow these steps:
 
 1. DISCOVER — ground every op in the live catalog before writing it. If the \
 agent also has the s7-author server registered, read the `s7://catalog-grammar` \
@@ -183,7 +186,11 @@ findings the revision addresses. Iterate until `status` is `valid`. Only \
 5. HAND-OFF — a `valid` changeset is ready for human review: tell the user \
 to approve and apply it in the admin. There is intentionally no \
 approve/apply/reject/supersede tool — review verdicts, abandons and \
-the governed apply are human actions, never credential capabilities. If a later `s7_get_changeset` \
+the governed apply are human actions, never credential capabilities. The \
+single exception is the per-token `can_auto_apply_additive` capability: a \
+purely additive changeset under it lands `applied` (or `stale`, if an \
+apply-time gate detects catalog drift) already at propose/patch time — \
+check the response `status` before handing off. If a later `s7_get_changeset` \
 shows `rejected` or `superseded`, its `review_note` carries the \
 reviewer's reason — address it in a NEW changeset (both are terminal).
 

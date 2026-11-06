@@ -243,9 +243,9 @@ python -m s7_mcp.catalog_server --transport streamable-http --host 0.0.0.0 --por
 
 | Tool | Endpoint | Purpose |
 |---|---|---|
-| `s7_propose_changeset(ops, rationale)` | `POST catalog/changesets/` | Create a changeset from ordered mutation `ops` + a non-blank `rationale` (the human reviewer's context) → 201 serialized changeset `{id, status, ops, rationale, scopes, base_revision, validation_report, proposed_by_credential, proposed_by_user, reviewed_by, review_note, applied_at, created_at, updated_at}` with `status` already `valid`/`invalid` — a validation failure is still a persisted 201; `validation_report.findings` (`{op_index, severity, entity, code, message, remediation?}`) is the feedback channel. |
+| `s7_propose_changeset(ops, rationale)` | `POST catalog/changesets/` | Create a changeset from ordered mutation `ops` + a non-blank `rationale` (the human reviewer's context) → 201 serialized changeset `{id, status, ops, rationale, scopes, base_revision, validation_report, proposed_by_credential, proposed_by_user, reviewed_by, review_note, applied_at, created_at, updated_at}` with `status` already `valid`/`invalid` — or `applied`/`stale` when the token carries `can_auto_apply_additive` and the payload is purely additive (see below) — a validation failure is still a persisted 201; `validation_report.findings` (`{op_index, severity, entity, code, message, remediation?}`) is the feedback channel. |
 | `s7_get_changeset(changeset_id)` | `GET catalog/changesets/<id>/` | Read `status` + `validation_report` → serialized changeset. Unknown id → 404 `{error: "changeset_not_found", changeset_id}`; uncovered scopes → 403 `{error: "changeset_scopes_not_covered", scopes}`. |
-| `s7_fix_changeset(changeset_id, ops, rationale)` | `PATCH catalog/changesets/<id>/` | Replace `ops` wholesale (never merged) with a fresh non-blank `rationale` — required on every PATCH — and re-validate synchronously → 200 re-validated changeset. Only `proposed`/`invalid`/`valid`/`stale` accept PATCH; `draft`/`validating`/`approved`/`applied`/`rejected`/`superseded` → 409 `{error: "changeset cannot transition from '<status>' to 'validating'"}`. |
+| `s7_fix_changeset(changeset_id, ops, rationale)` | `PATCH catalog/changesets/<id>/` | Replace `ops` wholesale (never merged) with a fresh non-blank `rationale` — required on every PATCH — and re-validate synchronously → 200 re-validated changeset at `valid`/`invalid` — or `applied`/`stale` under the same `can_auto_apply_additive` conditions as the propose. Only `proposed`/`invalid`/`valid`/`stale` accept PATCH; `draft`/`validating`/`approved`/`applied`/`rejected`/`superseded` → 409 `{error: "changeset cannot transition from '<status>' to 'validating'"}`. |
 
 ### Required capability
 
@@ -258,8 +258,12 @@ server-side must be covered by it — an uncovered proposal or read answers
 without persisting.
 
 `approve`, `apply` and `reject` are **never** tools — by design. Review
-verdicts and the governed apply are human actions in the admin; a `valid`
-changeset is the agent's finished work.
+verdicts and the governed apply are human actions in the admin, except
+that a token carrying the `can_auto_apply_additive` capability may see a
+purely additive proposal approve+apply inside the propose/fix request
+itself (`status` `applied`, or `stale` when an apply-time gate detects
+catalog drift). Every other `valid` changeset is the agent's finished
+work.
 
 ### Prompts
 
@@ -317,4 +321,6 @@ changeset is the agent's finished work.
 - **No `publish`/`approve`/`apply`/`reject` tools** — by design. Imports are
   forced to `draft`; publishing is a human action in the admin, and on the
   `s7-catalog` surface review verdicts and the changeset apply are too —
-  the agent's loop ends at `status: "valid"`.
+  the agent's loop ends at `status: "valid"` (except under the
+  `can_auto_apply_additive` capability, where a purely additive changeset
+  may already answer `applied`/`stale` in the propose/fix response).

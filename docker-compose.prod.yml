@@ -22,7 +22,9 @@ services:
           memory: ${DB_MEMORY_RESERVATION:-256M}
 
   web:
-    build: .
+    build:
+      context: .
+      target: web
     command: >
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
@@ -67,7 +69,9 @@ services:
   # service over the internal network. Drop this service entirely if the MCP
   # endpoint is deployed elsewhere.
   mcp:
-    build: .
+    build:
+      context: .
+      target: mcp
     command: python -m s7_mcp --transport streamable-http --host 0.0.0.0 --port 8000
     expose:
       - "8000"

@@ -171,6 +171,16 @@
   },
   {
     "model": "schemas.datatype",
+    "pk": "35776621-b460-562a-ad9f-b471ec9705e0",
+    "fields": {
+      "name": "natural_name",
+      "description": "Maps to schema_nodes.name column — bidirectional sync with JSON export",
+      "primary_storage_type": "",
+      "editor_extension": ""
+    }
+  },
+  {
+    "model": "schemas.datatype",
     "pk": "f0d08030-75d3-54f1-8711-fa6f114ac14a",
     "fields": {
       "name": "natural_order",

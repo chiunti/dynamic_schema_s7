@@ -522,6 +522,17 @@ class NodeService:
                         self.schema_repository.update_node_key(node.id, node.key)
                         continue
 
+                    # natural_name maps to schema_nodes.name column — update directly,
+                    # but only as a non-variant declaration: the name carrier is
+                    # resolved at variant_key IS NULL scope, so variant-scoped defs
+                    # stay inert (same rule as natural_key).
+                    if d.data_type.name == 'natural_name':
+                        if d.variant_key is not None:
+                            continue
+                        node.name = str(value).strip() if value else node.name
+                        self.schema_repository.update_node_name(node.id, node.name)
+                        continue
+
                     # natural_version maps to schema_nodes.version column — update directly,
                     # but only as a non-variant declaration: the version carrier is
                     # resolved at variant_key IS NULL scope, so variant-scoped defs
@@ -920,6 +931,9 @@ class NodeService:
             elif dt_name == 'natural_key':
                 prop_value = {"value_string": node.key, "value_number": None, "value_bool": None, "value_json": None}
                 prop_has_value = bool(node.key)
+            elif dt_name == 'natural_name':
+                prop_value = {"value_string": node.name, "value_number": None, "value_bool": None, "value_json": None}
+                prop_has_value = bool(node.name)
             elif dt_name == 'natural_version':
                 prop_value = {"value_string": node.version, "value_number": None, "value_bool": None, "value_json": None}
                 prop_has_value = bool(node.version)

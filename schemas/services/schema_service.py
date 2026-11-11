@@ -1093,16 +1093,21 @@ class SchemaService:
             if max_children == 1:
                 # Map JSON properties to Node fields (including natural attributes like version)
                 node_fields = self._map_json_to_node_fields(item, json_key_to_field_map, child_node_type, sort_order_offset + idx, collection_key)
-                # Override name/key with collection_key for singleton slots
-                node_fields['name'] = collection_key
+                # Singleton slots keep their machine identity pinned to
+                # key=collection_key (s7_build_node_json joins the child on
+                # ch.key = ntc.collection_key); the display name is
+                # author-writable — an explicit item 'name' wins, otherwise
+                # it falls back to collection_key.
                 node_fields['key'] = collection_key
+                node_fields['name'] = item.get('name') or collection_key
             else:
                 node_fields = self._map_json_to_node_fields(item, json_key_to_field_map, child_node_type, sort_order_offset + idx)
-                # Collections: prefer explicit 'key' from JSON.
+                # Collections: prefer explicit 'key' from JSON; 'name' wins for
+                # the display column when the author sent both.
                 json_key_val = item.get('key')
                 if json_key_val:
                     node_fields['key'] = json_key_val
-                    node_fields['name'] = json_key_val
+                    node_fields['name'] = item.get('name') or json_key_val
 
             # Extract key from node_fields to avoid duplicate argument
             node_key = node_fields.pop('key')
@@ -1180,10 +1185,11 @@ class SchemaService:
             if map_key in item and item[map_key] is not None:
                 node_fields[field_name] = item[map_key]
         
-        # Handle key assignment: if key exists in JSON, assign it to both key and name
+        # Handle key assignment: if key exists in JSON it pins the machine key;
+        # the display name takes an explicit item 'name' or falls back to key.
         if 'key' in item and item['key']:
             node_fields['key'] = item['key']
-            node_fields['name'] = item['key']
+            node_fields['name'] = item.get('name') or item['key']
         elif node_fields['key'] is None:
             # Use provided json_key for structural matches (e.g., 'props' instead of '<props_type>_0')
             if json_key:
@@ -1191,6 +1197,7 @@ class SchemaService:
                 node_fields['name'] = json_key
             elif 'name' in item and item['name']:
                 node_fields['key'] = item['name']
+                node_fields['name'] = item['name']
             else:
                 # Generate a unique key based on node type and index
                 node_fields['key'] = f'{node_type.name}_{idx}'

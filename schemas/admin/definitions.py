@@ -49,7 +49,7 @@ class DomainItemAdmin(admin.ModelAdmin):
 
 
 COLUMN_MAPPING_DATATYPES = {
-    'natural_uuid', 'natural_key', 'natural_version', 'natural_order', 'display_order'
+    'natural_uuid', 'natural_key', 'natural_name', 'natural_version', 'natural_order', 'display_order'
 }
 
 
